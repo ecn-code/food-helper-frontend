@@ -34,8 +34,8 @@
 		{/if}
 		<p class="truncate">{label}</p>
 	</div>
-	<p class="mt-3 text-2xl font-semibold tracking-tight text-[hsl(var(--foreground))] tabular-nums">{value}</p>
+	<p class="mt-3 break-words text-2xl font-semibold tracking-tight text-[hsl(var(--foreground))] tabular-nums">{value}</p>
 	{#if hint}
-		<p class="mt-1 truncate text-xs text-[hsl(var(--muted-foreground))]">{hint}</p>
+		<p class="mt-1 break-words text-xs text-[hsl(var(--muted-foreground))]">{hint}</p>
 	{/if}
 </div>

@@ -1,12 +1,3 @@
-export type MediaPayload = {
-	id: number;
-	fileName: string;
-	contentType: string;
-	sizeBytes?: number;
-	width?: number;
-	height?: number;
-};
-
 export type NutritionalValues = {
 	calories: number;
 	carbohydrates: number;
@@ -19,14 +10,16 @@ export type Product = {
 	name: string;
 	description: string;
 	gramsPerUnit: number;
+	defaultPrice: number | null;
 	nutritionalValues: NutritionalValues;
-	photo: MediaPayload | null;
+	photo: string | null;
 };
 
 export type ProductFormValues = {
 	name: string;
 	description: string;
 	gramsPerUnit: string;
+	defaultPrice: string;
 	calories: string;
 	carbohydrates: string;
 	proteins: string;
@@ -39,6 +32,7 @@ export const emptyProductForm = (): ProductFormValues => ({
 	name: '',
 	description: '',
 	gramsPerUnit: '100',
+	defaultPrice: '',
 	calories: '',
 	carbohydrates: '',
 	proteins: '',
@@ -49,6 +43,7 @@ export const toProductFormValues = (product: Product): ProductFormValues => ({
 	name: product.name,
 	description: product.description,
 	gramsPerUnit: String(product.gramsPerUnit ?? 100),
+	defaultPrice: product.defaultPrice === null || product.defaultPrice === undefined ? '' : String(product.defaultPrice),
 	calories: String(product.nutritionalValues.calories),
 	carbohydrates: String(product.nutritionalValues.carbohydrates),
 	proteins: String(product.nutritionalValues.proteins),

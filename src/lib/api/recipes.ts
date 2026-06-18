@@ -1,6 +1,6 @@
-import { request } from '$lib/server/backend-api';
+import { request } from '$lib/api/backend';
 
-export type NutritionalValuesPayload = {
+export type NutritionalValues = {
 	calories: number;
 	carbohydrates: number;
 	proteins: number;
@@ -16,7 +16,7 @@ export type RecipeIngredientPayload = {
 	productId: number;
 	productName: string;
 	grams: number;
-	nutritionalValues: NutritionalValuesPayload;
+	nutritionalValues: NutritionalValues;
 };
 
 export type RecipeDerivedProductPayload = {
@@ -24,15 +24,6 @@ export type RecipeDerivedProductPayload = {
 	producedGrams: number;
 	gramsPerUnit: number;
 	unitsProduced: number;
-};
-
-export type MediaPayload = {
-	id: number;
-	fileName: string;
-	contentType: string;
-	sizeBytes: number;
-	width: number;
-	height: number;
 };
 
 export type PhotoUploadPayload = {
@@ -61,11 +52,26 @@ export type RecipePayload = {
 	name: string;
 	description: string;
 	instructions: string;
-	nutritionalValues: NutritionalValuesPayload;
+	nutritionalValues: NutritionalValues;
 	products: RecipeIngredientPayload[];
 	derivedProduct: RecipeDerivedProductPayload | null;
-	photo: MediaPayload | null;
+	photo: string | null;
 };
+
+export type PaginatedResponse<T> = {
+	items: T[];
+	page: number;
+	size: number;
+	totalElements: number;
+	totalPages: number;
+};
+
+export type ListRecipesParams = {
+	page?: number;
+	size?: number;
+};
+
+const DEFAULT_PAGE_SIZE = 100;
 
 function authHeaders(authorization: string) {
 	return {
@@ -99,6 +105,21 @@ function sanitizeDerivedProductRequest(values: CreateRecipeDerivedProductRequest
 	};
 }
 
+function normalizePage(value: number | undefined, fallback: number) {
+	return Math.max(0, Math.trunc(value ?? fallback));
+}
+
+function normalizePageSize(value: number | undefined) {
+	return Math.min(100, Math.max(1, Math.trunc(value ?? DEFAULT_PAGE_SIZE)));
+}
+
+function buildPageQuery(params: ListRecipesParams = {}) {
+	const searchParams = new URLSearchParams();
+	searchParams.set('page', String(normalizePage(params.page, 0)));
+	searchParams.set('size', String(normalizePageSize(params.size)));
+	return searchParams.toString();
+}
+
 export async function createRecipe(values: CreateRecipeRequest, authorization: string) {
 	return await request<RecipePayload>('/api/v1/recipes', {
 		method: 'POST',
@@ -107,10 +128,25 @@ export async function createRecipe(values: CreateRecipeRequest, authorization: s
 	});
 }
 
-export async function listRecipes(authorization: string) {
-	return await request<RecipePayload[]>('/api/v1/recipes', {
+export async function listRecipesPage(authorization: string, params: ListRecipesParams = {}) {
+	return await request<PaginatedResponse<RecipePayload>>(`/api/v1/recipes?${buildPageQuery(params)}`, {
 		headers: authHeaders(authorization)
 	});
+}
+
+export async function listRecipes(authorization: string) {
+	const recipes: RecipePayload[] = [];
+	let page = 0;
+	let totalPages = 1;
+
+	do {
+		const response = await listRecipesPage(authorization, { page, size: DEFAULT_PAGE_SIZE });
+		recipes.push(...response.items);
+		totalPages = Math.max(response.totalPages, 1);
+		page += 1;
+	} while (page < totalPages);
+
+	return recipes;
 }
 
 export async function updateRecipe(id: number, values: UpdateRecipeRequest, authorization: string) {

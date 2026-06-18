@@ -1,11 +1,10 @@
 import type {
-	MediaPayload,
-	NutritionalValuesPayload,
+	NutritionalValues,
 	RecipeDerivedProductPayload,
 	RecipeIngredientAssignment,
 	RecipeIngredientPayload,
 	RecipePayload
-} from '$lib/server/recipes-api';
+} from '$lib/api/recipes';
 
 export type RecipeIngredientFormValues = {
 	productId: string;
@@ -29,10 +28,10 @@ export type Recipe = {
 	name: string;
 	description: string;
 	instructions: string;
-	nutritionalValues: NutritionalValuesPayload;
+	nutritionalValues: NutritionalValues;
 	ingredients: RecipeIngredientPayload[];
 	derivedProduct: RecipeDerivedProductPayload | null;
-	photo: MediaPayload | null;
+	photo: string | null;
 };
 
 export type RecipeDerivedProductFormValues = {

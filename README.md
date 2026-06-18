@@ -16,7 +16,7 @@ Frontend en SvelteKit para gestionar productos del backend `FoodHelper`.
 
 ## Backend
 
-La aplicacion espera el backend en `BACKEND_BASE_URL`.
+La aplicacion espera el backend en `PUBLIC_BACKEND_BASE_URL`.
 
 Valor por defecto:
 
@@ -38,7 +38,7 @@ npm run dev
 Si necesitas apuntar a otra URL del backend:
 
 ```sh
-BACKEND_BASE_URL=http://127.0.0.1:8080 npm run dev
+PUBLIC_BACKEND_BASE_URL=http://127.0.0.1:8080 npm run dev
 ```
 
 ## Tests
@@ -52,7 +52,7 @@ npm run test:e2e
 Tests contra backend real ya levantado:
 
 ```sh
-BACKEND_BASE_URL=http://127.0.0.1:8080 npm run test:e2e:real
+PUBLIC_BACKEND_BASE_URL=http://127.0.0.1:8080 npm run test:e2e:real
 ```
 
 ## Build

@@ -1,10 +1,6 @@
-import { env } from '$env/dynamic/private';
+import { PUBLIC_BACKEND_BASE_URL } from '$env/static/public';
 
 const defaultBaseUrl = 'http://127.0.0.1:8080';
-
-type ApiErrorPayload = {
-	message?: string;
-};
 
 export class ApiError extends Error {
 	status: number;
@@ -17,12 +13,12 @@ export class ApiError extends Error {
 }
 
 export function apiBaseUrl() {
-	return env.BACKEND_BASE_URL || defaultBaseUrl;
+	return PUBLIC_BACKEND_BASE_URL || defaultBaseUrl;
 }
 
 async function parseError(response: Response) {
 	try {
-		const payload = (await response.json()) as ApiErrorPayload;
+		const payload = (await response.json()) as { message?: string };
 		return payload.message || `Backend request failed with status ${response.status}`;
 	} catch {
 		return `Backend request failed with status ${response.status}`;
@@ -44,9 +40,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 		throw new ApiError(response.status, await parseError(response));
 	}
 
-	if (response.status === 204) {
-		return undefined as T;
-	}
+	if (response.status === 204) return undefined as T;
 
 	return (await response.json()) as T;
 }

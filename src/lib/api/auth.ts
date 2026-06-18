@@ -1,4 +1,4 @@
-import { request } from '$lib/server/backend-api';
+import { request } from '$lib/api/backend';
 
 export type LoginValues = {
 	username: string;
