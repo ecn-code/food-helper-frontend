@@ -13,6 +13,18 @@ const validRegistrationCode = 'foodhelper-invite';
 let mediaStore = new Map();
 let recipes = [];
 let stockEntries = [];
+let supermarkets = [];
+let nextSupermarketId = 1;
+let moneyMovements = [];
+let nextMoneyMovementId = 1;
+let manualMoneyBoxes = [];
+let nextManualMoneyBoxId = 1000;
+let nutritionalRules = {
+	calories: { minimum: null, maximum: null },
+	carbohydrates: { minimum: null, maximum: null },
+	proteins: { minimum: null, maximum: null },
+	fats: { minimum: null, maximum: null }
+};
 let proposedWeekMenus = [];
 let establishedWeekMenus = [];
 let nextProposedWeekMenuId = 1;
@@ -76,6 +88,12 @@ function resetAuth() {
 	mediaStore = new Map();
 	recipes = [];
 	stockEntries = [];
+	supermarkets = [];
+	nextSupermarketId = 1;
+	moneyMovements = [];
+	nextMoneyMovementId = 1;
+	manualMoneyBoxes = [];
+	nextManualMoneyBoxId = 1000;
 	proposedWeekMenus = [];
 	establishedWeekMenus = [];
 	nextProposedWeekMenuId = 1;
@@ -84,6 +102,36 @@ function resetAuth() {
 	nextEstablishedWeekMenuId = 1;
 	proposedWeekMenuDayParts = defaultProposedWeekMenuDayParts.map((dayPart) => ({ ...dayPart }));
 	nextProposedWeekMenuDayPartId = 4;
+}
+
+function moneyBoxMovements(moneyBoxId) {
+	return moneyMovements.filter((item) => item.moneyBoxId === moneyBoxId).sort((a, b) => b.id - a.id);
+}
+
+function userMoneyBoxResponse(user) {
+	const movements = moneyBoxMovements(user.id);
+	return {
+		id: user.id,
+		type: 'USER',
+		name: user.username,
+		userId: user.id,
+		username: user.username,
+		balance: movements.reduce((sum, item) => sum + item.amount, 0),
+		movements
+	};
+}
+
+function manualMoneyBoxResponse(box) {
+	const movements = moneyBoxMovements(box.id);
+	return {
+		id: box.id,
+		type: 'MANUAL',
+		name: box.name,
+		userId: null,
+		username: null,
+		balance: movements.reduce((sum, item) => sum + item.amount, 0),
+		movements
+	};
 }
 
 function sendJson(res, status, body) {
@@ -198,7 +246,7 @@ function dateDifferenceInDays(startDate, endDate) {
 }
 
 function clampWeekRange(startDate, endDate) {
-	return Number.isFinite(dateDifferenceInDays(startDate, endDate)) && dateDifferenceInDays(startDate, endDate) >= 0 && dateDifferenceInDays(startDate, endDate) <= 7;
+	return Number.isFinite(dateDifferenceInDays(startDate, endDate)) && dateDifferenceInDays(startDate, endDate) >= 0 && dateDifferenceInDays(startDate, endDate) <= 15;
 }
 
 function nutritionalZero() {
@@ -211,6 +259,29 @@ function addNutrition(totals, nutritionalValues) {
 	totals.proteins += nutritionalValues.proteins;
 	totals.fats += nutritionalValues.fats;
 	return totals;
+}
+
+function evaluateNutritionalRules(totals, plannedDays) {
+	const divisor = plannedDays > 0 ? plannedDays : 1;
+	const evaluate = (metric) => {
+		const value = Number((totals[metric] / divisor).toFixed(2));
+		const rule = nutritionalRules[metric];
+		let status = 'WITHIN_RANGE';
+
+		if (rule.minimum === null && rule.maximum === null) status = 'NOT_CONFIGURED';
+		else if (rule.minimum !== null && value < rule.minimum) status = 'BELOW_MINIMUM';
+		else if (rule.maximum !== null && value > rule.maximum) status = 'ABOVE_MAXIMUM';
+
+		return { value, minimum: rule.minimum, maximum: rule.maximum, status };
+	};
+
+	return {
+		plannedDays,
+		calories: evaluate('calories'),
+		carbohydrates: evaluate('carbohydrates'),
+		proteins: evaluate('proteins'),
+		fats: evaluate('fats')
+	};
 }
 
 function normalizeMenuProduct(product) {
@@ -283,7 +354,8 @@ function proposedWeekMenuResponse(menu) {
 		startDate: menu.startDate,
 		endDate: menu.endDate,
 		days,
-		nutritionalValues: totals
+		nutritionalValues: totals,
+		nutritionalRules: evaluateNutritionalRules(totals, days.length)
 	};
 }
 
@@ -471,15 +543,35 @@ function calculateMenuCoverage(menu, stockSnapshot) {
 function establishedWeekMenuResponse(menu) {
 	return {
 		id: menu.id,
+		planningId: menu.proposedWeekMenuId,
 		proposedWeekMenuId: menu.proposedWeekMenuId,
+		payerUserId: menu.payerUserId ?? 1,
+		payerUsername: menu.payerUsername ?? 'elias',
 		startDate: menu.startDate,
 		endDate: menu.endDate,
 		days: menu.days,
 		nutritionalValues: menu.nutritionalValues,
 		stockSummary: menu.stockSummary,
 		usedStock: menu.usedStock,
-		shoppingList: menu.shoppingList
+		shoppingList: menu.shoppingList,
+		nutritionalRules: evaluateNutritionalRules(menu.nutritionalValues, menu.days.length)
 	};
+}
+
+function menuStatsResponse(menu) {
+	const days = menu.days ?? [];
+	const count = Math.max(days.length, 1);
+	const ordered = [...days].sort((a, b) => Number(a.nutritionalValues?.calories ?? 0) - Number(b.nutritionalValues?.calories ?? 0));
+	const period = {
+		maxDay: ordered.length ? { date: ordered.at(-1).date, calories: ordered.at(-1).nutritionalValues.calories } : null,
+		minDay: ordered.length ? { date: ordered[0].date, calories: ordered[0].nutritionalValues.calories } : null,
+		averageCalories: Number(menu.nutritionalValues.calories ?? 0) / count,
+		averageCarbohydrates: Number(menu.nutritionalValues.carbohydrates ?? 0) / count,
+		averageProteins: Number(menu.nutritionalValues.proteins ?? 0) / count,
+		averageFats: Number(menu.nutritionalValues.fats ?? 0) / count,
+		moneySpent: Number(menu.stockSummary.estimatedCost ?? 0)
+	};
+	return { menuId: menu.id, period, month: { ...period } };
 }
 
 function validateProposedWeekMenuPayload(payload) {
@@ -487,7 +579,7 @@ function validateProposedWeekMenuPayload(payload) {
 	if (Number.isNaN(Date.parse(payload.startDate)) || Number.isNaN(Date.parse(payload.endDate))) {
 		return 'startDate and endDate must be valid dates';
 	}
-	if (!clampWeekRange(payload.startDate, payload.endDate)) return 'range must fit within 8 days inclusive';
+	if (!clampWeekRange(payload.startDate, payload.endDate)) return 'range must fit within 16 days inclusive';
 	return null;
 }
 
@@ -618,6 +710,43 @@ function paginate(items, url) {
 	};
 }
 
+function normalizeSearch(value) {
+	return String(value ?? '')
+		.trim()
+		.toLowerCase()
+		.normalize('NFD')
+		.replace(/[\u0300-\u036f]/g, '');
+}
+
+function parseNumericFilter(value) {
+	if (value === null || value === undefined || String(value).trim() === '') return null;
+	const numericValue = Number(value);
+	return Number.isNaN(numericValue) ? null : numericValue;
+}
+
+function productMatchesFilters(product, url) {
+	const search = normalizeSearch(url.searchParams.get('search'));
+	if (search) {
+		const haystack = normalizeSearch(`${product.name} ${product.description}`);
+		if (!haystack.includes(search)) return false;
+	}
+
+	for (const metric of ['calories', 'carbohydrates', 'proteins', 'fats']) {
+		const min = parseNumericFilter(url.searchParams.get(`${metric}Min`));
+		const max = parseNumericFilter(url.searchParams.get(`${metric}Max`));
+		const value = product.nutritionalValues[metric];
+
+		if (min !== null && value < min) return false;
+		if (max !== null && value > max) return false;
+	}
+
+	return true;
+}
+
+function filterProducts(url) {
+	return products.filter((product) => productMatchesFilters(product, url));
+}
+
 function validateRecipePayload(payload) {
 	if (!payload.name || String(payload.name).trim() === '') return 'name must not be blank';
 	if (!payload.description || String(payload.description).trim() === '') return 'description must not be blank';
@@ -721,7 +850,13 @@ function productStatsResponse() {
 					expirationDate: earliestExpiration.expirationDate,
 					message: null
 				}
-			: null,
+			: {
+					productId: null,
+					productName: 'Sin lotes',
+					quantity: null,
+					expirationDate: null,
+					message: 'Sin lotes'
+				},
 		summaries: products.map((product) => ({
 			productId: product.id,
 			productName: product.name,
@@ -831,6 +966,12 @@ function reset() {
 	];
 	recipes = [];
 	stockEntries = [];
+	nutritionalRules = {
+		calories: { minimum: null, maximum: null },
+		carbohydrates: { minimum: null, maximum: null },
+		proteins: { minimum: null, maximum: null },
+		fats: { minimum: null, maximum: null }
+	};
 }
 
 function createMediaRecord(upload) {
@@ -962,11 +1103,103 @@ const server = http.createServer(async (req, res) => {
 		(url.pathname.startsWith('/api/v1/products') ||
 			url.pathname.startsWith('/api/v1/recipes') ||
 			url.pathname.startsWith('/api/v1/stock') ||
+			url.pathname.startsWith('/api/v1/supermarkets') ||
+			url.pathname.startsWith('/api/v1/money-boxes') ||
+			url.pathname.startsWith('/api/v1/users') ||
+			url.pathname.startsWith('/api/v1/nutritional-rules') ||
+			url.pathname.startsWith('/api/v1/planning') ||
+			url.pathname.startsWith('/api/v1/menus') ||
 			url.pathname.startsWith('/api/v1/proposed-week-menus') ||
 			url.pathname.startsWith('/api/v1/proposed-week-menu-day-parts')) &&
 		!requireAuth(req, res, url.pathname)
 	) {
 		return;
+	}
+
+	if (url.pathname === '/api/v1/supermarkets' && req.method === 'GET') {
+		sendJson(res, 200, [...supermarkets].sort((a, b) => a.name.localeCompare(b.name)));
+		return;
+	}
+	if (url.pathname === '/api/v1/supermarkets' && req.method === 'POST') {
+		const payload = await parseBody(req);
+		const created = { id: nextSupermarketId++, name: String(payload.name ?? '').trim() };
+		supermarkets.push(created); sendJson(res, 201, created); return;
+	}
+	const supermarketMatch = url.pathname.match(/^\/api\/v1\/supermarkets\/(\d+)$/);
+	if (supermarketMatch) {
+		const id = Number(supermarketMatch[1]); const index = supermarkets.findIndex((item) => item.id === id);
+		if (index < 0) { sendJson(res, 404, errorBody(404, 'Not Found', 'Supermarket not found', url.pathname)); return; }
+		if (req.method === 'PUT') { const payload = await parseBody(req); supermarkets[index] = { id, name: String(payload.name ?? '').trim() }; sendJson(res, 200, supermarkets[index]); return; }
+		if (req.method === 'DELETE') { supermarkets.splice(index, 1); res.writeHead(204, { 'access-control-allow-origin': '*' }); res.end(); return; }
+	}
+	if (url.pathname === '/api/v1/nutritional-rules') {
+		if (req.method === 'GET') { sendJson(res, 200, nutritionalRules); return; }
+		if (req.method === 'PUT') { nutritionalRules = await parseBody(req); sendJson(res, 200, nutritionalRules); return; }
+	}
+	if (url.pathname === '/api/v1/money-boxes' && req.method === 'GET') {
+		const userBoxes = [...users.values()].map(userMoneyBoxResponse);
+		sendJson(res, 200, [...userBoxes, ...manualMoneyBoxes.map(manualMoneyBoxResponse)]);
+		return;
+	}
+	if (url.pathname === '/api/v1/money-boxes' && req.method === 'POST') {
+		const payload = await parseBody(req);
+		const name = String(payload.name ?? '').trim();
+		if (!name) { sendJson(res, 400, errorBody(400, 'Bad Request', 'Name is required', url.pathname)); return; }
+		if (manualMoneyBoxes.some((box) => box.name.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+			sendJson(res, 409, errorBody(409, 'Conflict', 'Money box name already exists', url.pathname)); return;
+		}
+		const created = { id: nextManualMoneyBoxId++, name };
+		manualMoneyBoxes.push(created);
+		sendJson(res, 201, manualMoneyBoxResponse(created));
+		return;
+	}
+	const unifiedMoneyBoxMatch = url.pathname.match(/^\/api\/v1\/money-boxes\/(\d+)$/);
+	if (unifiedMoneyBoxMatch && req.method === 'GET') {
+		const id = Number(unifiedMoneyBoxMatch[1]);
+		const user = [...users.values()].find((item) => item.id === id);
+		const manualBox = manualMoneyBoxes.find((item) => item.id === id);
+		if (!user && !manualBox) { sendJson(res, 404, errorBody(404, 'Not Found', 'Money box not found', url.pathname)); return; }
+		sendJson(res, 200, user ? userMoneyBoxResponse(user) : manualMoneyBoxResponse(manualBox));
+		return;
+	}
+	if (unifiedMoneyBoxMatch && req.method === 'DELETE') {
+		const id = Number(unifiedMoneyBoxMatch[1]);
+		const index = manualMoneyBoxes.findIndex((item) => item.id === id);
+		if (index < 0) { sendJson(res, 404, errorBody(404, 'Not Found', 'Manual money box not found', url.pathname)); return; }
+		manualMoneyBoxes.splice(index, 1);
+		moneyMovements = moneyMovements.filter((item) => item.moneyBoxId !== id);
+		res.writeHead(204, { 'access-control-allow-origin': '*' }); res.end(); return;
+	}
+	const unifiedMoneyMovementMatch = url.pathname.match(/^\/api\/v1\/money-boxes\/(\d+)\/movements$/);
+	if (unifiedMoneyMovementMatch && req.method === 'POST') {
+		const moneyBoxId = Number(unifiedMoneyMovementMatch[1]);
+		const user = [...users.values()].find((item) => item.id === moneyBoxId);
+		const manualBox = manualMoneyBoxes.find((item) => item.id === moneyBoxId);
+		if (!user && !manualBox) { sendJson(res, 404, errorBody(404, 'Not Found', 'Money box not found', url.pathname)); return; }
+		const payload = await parseBody(req);
+		const created = { id: nextMoneyMovementId++, moneyBoxId, userId: user?.id ?? null, amount: Number(payload.amount), description: payload.description ?? null, menuId: null, createdAt: new Date().toISOString() };
+		moneyMovements.push(created); sendJson(res, 201, created); return;
+	}
+	const deleteMoneyMovementMatch = url.pathname.match(/^\/api\/v1\/money-boxes\/(\d+)\/movements\/(\d+)$/);
+	if (deleteMoneyMovementMatch && req.method === 'DELETE') {
+		const moneyBoxId = Number(deleteMoneyMovementMatch[1]);
+		const movementId = Number(deleteMoneyMovementMatch[2]);
+		const movement = moneyMovements.find((item) => item.id === movementId && item.moneyBoxId === moneyBoxId);
+		if (!movement) { sendJson(res, 404, errorBody(404, 'Not Found', 'Money movement not found', url.pathname)); return; }
+		if (movement.menuId !== null) { sendJson(res, 409, errorBody(409, 'Conflict', 'Menu movements cannot be deleted', url.pathname)); return; }
+		moneyMovements = moneyMovements.filter((item) => item.id !== movementId);
+		res.writeHead(204, { 'access-control-allow-origin': '*' }); res.end(); return;
+	}
+	const moneyBoxMatch = url.pathname.match(/^\/api\/v1\/users\/(\d+)\/money-box$/);
+	if (moneyBoxMatch && req.method === 'GET') {
+		const userId = Number(moneyBoxMatch[1]); const movements = moneyMovements.filter((item) => item.userId === userId).sort((a, b) => b.id - a.id);
+		sendJson(res, 200, { userId, username: 'elias', balance: movements.reduce((sum, item) => sum + item.amount, 0), movements }); return;
+	}
+	const moneyMovementMatch = url.pathname.match(/^\/api\/v1\/users\/(\d+)\/money-box\/movements$/);
+	if (moneyMovementMatch && req.method === 'POST') {
+		const userId = Number(moneyMovementMatch[1]); const payload = await parseBody(req);
+		const created = { id: nextMoneyMovementId++, moneyBoxId: userId, userId, amount: Number(payload.amount), description: payload.description ?? null, menuId: null, createdAt: new Date().toISOString() };
+		moneyMovements.push(created); sendJson(res, 201, created); return;
 	}
 
 	if (req.method === 'GET' && url.pathname === '/api/v1/products/stats') {
@@ -1102,7 +1335,7 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
-	if (req.method === 'POST' && url.pathname === '/api/v1/proposed-week-menus') {
+	if (req.method === 'POST' && (url.pathname === '/api/v1/proposed-week-menus' || url.pathname === '/api/v1/planning')) {
 		const payload = await parseBody(req).catch(() => null);
 		if (!payload) {
 			sendJson(res, 400, errorBody(400, 'Bad Request', 'Malformed JSON', url.pathname));
@@ -1126,7 +1359,7 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
-	if (req.method === 'GET' && url.pathname === '/api/v1/proposed-week-menu-day-parts') {
+	if (req.method === 'GET' && (url.pathname === '/api/v1/proposed-week-menu-day-parts' || url.pathname === '/api/v1/planning/day-parts')) {
 		sendJson(
 			res,
 			200,
@@ -1138,7 +1371,7 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
-	if (req.method === 'POST' && url.pathname === '/api/v1/proposed-week-menu-day-parts') {
+	if (req.method === 'POST' && (url.pathname === '/api/v1/proposed-week-menu-day-parts' || url.pathname === '/api/v1/planning/day-parts')) {
 		const payload = await parseBody(req).catch(() => null);
 		if (!payload) {
 			sendJson(res, 400, errorBody(400, 'Bad Request', 'Malformed JSON', url.pathname));
@@ -1162,7 +1395,7 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
-	const proposedWeekMenuDayPartMatch = url.pathname.match(/^\/api\/v1\/proposed-week-menu-day-parts\/(\d+)$/);
+	const proposedWeekMenuDayPartMatch = url.pathname.match(/^\/api\/v1\/(?:proposed-week-menu-day-parts|planning\/day-parts)\/(\d+)$/);
 	if (proposedWeekMenuDayPartMatch && req.method === 'PUT') {
 		const id = Number(proposedWeekMenuDayPartMatch[1]);
 		const existingIndex = proposedWeekMenuDayParts.findIndex((dayPart) => dayPart.id === id);
@@ -1194,7 +1427,7 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
-	const proposedWeekMenuMatch = url.pathname.match(/^\/api\/v1\/proposed-week-menus\/(\d+)$/);
+	const proposedWeekMenuMatch = url.pathname.match(/^\/api\/v1\/(?:proposed-week-menus|planning)\/(\d+)$/);
 	if (proposedWeekMenuMatch && req.method === 'GET') {
 		const id = Number(proposedWeekMenuMatch[1]);
 		const menu = proposedWeekMenuById(id);
@@ -1207,7 +1440,7 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
-	const proposedWeekMenuDayMatch = url.pathname.match(/^\/api\/v1\/proposed-week-menus\/(\d+)\/days$/);
+	const proposedWeekMenuDayMatch = url.pathname.match(/^\/api\/v1\/(?:proposed-week-menus|planning)\/(\d+)\/days$/);
 	if (proposedWeekMenuDayMatch && req.method === 'PUT') {
 		const id = Number(proposedWeekMenuDayMatch[1]);
 		const menu = proposedWeekMenuById(id);
@@ -1255,19 +1488,23 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
-	const proposedWeekMenuPublishMatch = url.pathname.match(/^\/api\/v1\/proposed-week-menus\/(\d+)\/publish$/);
+	const proposedWeekMenuPublishMatch = url.pathname.match(/^\/api\/v1\/(?:proposed-week-menus\/(\d+)\/publish|planning\/(\d+)\/menu)$/);
 	if (proposedWeekMenuPublishMatch && req.method === 'POST') {
-		const id = Number(proposedWeekMenuPublishMatch[1]);
+		const id = Number(proposedWeekMenuPublishMatch[1] ?? proposedWeekMenuPublishMatch[2]);
 		const menu = proposedWeekMenuById(id);
 		if (!menu) {
 			sendJson(res, 404, errorBody(404, 'Not Found', 'Proposed week menu not found', url.pathname));
 			return;
 		}
 
+		const payload = await parseBody(req);
+		const payerUserId = Number(payload.payerUserId ?? 1);
 		const coverage = calculateMenuCoverage(menu, stockEntries.map((entry) => ({ ...entry })));
 		const established = {
 			id: nextEstablishedWeekMenuId++,
 			proposedWeekMenuId: menu.id,
+			payerUserId,
+			payerUsername: 'elias',
 			startDate: menu.startDate,
 			endDate: menu.endDate,
 			days: coverage.days,
@@ -1277,11 +1514,12 @@ const server = http.createServer(async (req, res) => {
 			shoppingList: coverage.shoppingList
 		};
 		establishedWeekMenus.push(established);
+		moneyMovements.push({ id: nextMoneyMovementId++, moneyBoxId: payerUserId, userId: payerUserId, amount: -Number(coverage.stockSummary.estimatedCost ?? 0), description: 'Menú', menuId: established.id, createdAt: new Date().toISOString() });
 		sendJson(res, 201, establishedWeekMenuResponse(established));
 		return;
 	}
 
-	const establishedWeekMenuMatch = url.pathname.match(/^\/api\/v1\/established-week-menus\/(\d+)$/);
+	const establishedWeekMenuMatch = url.pathname.match(/^\/api\/v1\/(?:established-week-menus|menus)\/(\d+)$/);
 	if (establishedWeekMenuMatch && req.method === 'GET') {
 		const id = Number(establishedWeekMenuMatch[1]);
 		const menu = establishedWeekMenuById(id);
@@ -1307,7 +1545,7 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
-	const establishedWeekMenuShoppingListMatch = url.pathname.match(/^\/api\/v1\/established-week-menus\/(\d+)\/shopping-list$/);
+	const establishedWeekMenuShoppingListMatch = url.pathname.match(/^\/api\/v1\/(?:established-week-menus|menus)\/(\d+)\/shopping-list$/);
 	if (establishedWeekMenuShoppingListMatch && req.method === 'GET') {
 		const id = Number(establishedWeekMenuShoppingListMatch[1]);
 		const menu = establishedWeekMenuById(id);
@@ -1318,6 +1556,19 @@ const server = http.createServer(async (req, res) => {
 
 		sendJson(res, 200, menu.shoppingList);
 		return;
+	}
+
+	const closeMenuMatch = url.pathname.match(/^\/api\/v1\/menus\/(\d+)\/close$/);
+	if (closeMenuMatch && req.method === 'POST') {
+		const menu = establishedWeekMenuById(Number(closeMenuMatch[1]));
+		if (!menu) { sendJson(res, 404, errorBody(404, 'Not Found', 'Menu not found', url.pathname)); return; }
+		menu.stats = menuStatsResponse(menu); sendJson(res, 200, menu.stats); return;
+	}
+	const menuStatsMatch = url.pathname.match(/^\/api\/v1\/menus\/(\d+)\/stats$/);
+	if (menuStatsMatch && req.method === 'GET') {
+		const menu = establishedWeekMenuById(Number(menuStatsMatch[1]));
+		if (!menu?.stats) { sendJson(res, 404, errorBody(404, 'Not Found', 'Menu stats not found', url.pathname)); return; }
+		sendJson(res, 200, menu.stats); return;
 	}
 
 	if (req.method === 'GET' && url.pathname === '/api/v1/stock') {
@@ -1340,6 +1591,18 @@ const server = http.createServer(async (req, res) => {
 		});
 		sendJson(res, 200, sortStockEntries(filtered).map(stockResponse));
 		return;
+	}
+
+	const stockAdjustmentMatch = url.pathname.match(/^\/api\/v1\/stock\/(\d+)\/(add|remove)$/);
+	if (stockAdjustmentMatch && req.method === 'POST') {
+		const stockEntry = stockEntryById(Number(stockAdjustmentMatch[1]));
+		if (!stockEntry) { sendJson(res, 404, errorBody(404, 'Not Found', 'Stock entry not found', url.pathname)); return; }
+		const payload = await parseBody(req); const quantity = Number(payload.quantity);
+		if (!Number.isFinite(quantity) || quantity <= 0) { sendJson(res, 400, errorBody(400, 'Bad Request', 'quantity must be greater than 0', url.pathname)); return; }
+		if (stockAdjustmentMatch[2] === 'add') stockEntry.quantity += quantity;
+		else stockEntry.quantity -= quantity;
+		if (stockEntry.quantity <= 0) stockEntries = stockEntries.filter((entry) => entry.id !== stockEntry.id);
+		res.writeHead(204, { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type, authorization' }); res.end(); return;
 	}
 
 	const stockEntryMatch = url.pathname.match(/^\/api\/v1\/stock\/(\d+)$/);
@@ -1428,7 +1691,7 @@ const server = http.createServer(async (req, res) => {
 	}
 
 	if (req.method === 'GET' && url.pathname === '/api/v1/products') {
-		sendJson(res, 200, paginate(products, url));
+		sendJson(res, 200, paginate(filterProducts(url), url));
 		return;
 	}
 
@@ -1469,7 +1732,9 @@ const server = http.createServer(async (req, res) => {
 					proteins: Number(payload.proteins),
 					fats: Number(payload.fats)
 				},
-				photo: payload.photo ? createMediaRecord(payload.photo) : null
+				photo: payload.photo ? createMediaRecord(payload.photo) : null,
+				supermarketIds: Array.isArray(payload.supermarketIds) ? payload.supermarketIds.map(Number) : [],
+				supermarkets: supermarkets.filter((item) => (payload.supermarketIds ?? []).map(Number).includes(item.id))
 			};
 			products.push(created);
 			sendJson(res, 201, created);
@@ -1524,6 +1789,8 @@ const server = http.createServer(async (req, res) => {
 			if (payload.photo) {
 				product.photo = createMediaRecord(payload.photo);
 			}
+			product.supermarketIds = Array.isArray(payload.supermarketIds) ? payload.supermarketIds.map(Number) : [];
+			product.supermarkets = supermarkets.filter((item) => product.supermarketIds.includes(item.id));
 			sendJson(res, 200, product);
 			return;
 		}

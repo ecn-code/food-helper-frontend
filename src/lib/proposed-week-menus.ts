@@ -3,6 +3,7 @@ import type {
 	ProposedWeekMenuDayPartResponse,
 	ProposedWeekMenuProductResponse,
 	ProposedWeekMenuResponse,
+	NutritionalRulesEvaluation,
 	ProposedWeekMenuSectionResponse
 } from '$lib/api/proposed-week-menus';
 import type { NutritionalValues } from '$lib/products';
@@ -91,6 +92,7 @@ export type ProposedWeekMenu = {
 	endDate: string;
 	days: ProposedWeekMenuDay[];
 	nutritionalValues: NutritionalValues;
+	nutritionalRules?: NutritionalRulesEvaluation;
 };
 
 function sortBySortOrder<T extends { sortOrder: number }>(items: T[]) {
@@ -148,7 +150,8 @@ export function toProposedWeekMenuModel(menu: ProposedWeekMenuResponse): Propose
 		startDate: menu.startDate,
 		endDate: menu.endDate,
 		days: sortByDate(menu.days).map(toProposedWeekMenuDayModel),
-		nutritionalValues: menu.nutritionalValues
+		nutritionalValues: menu.nutritionalValues,
+		nutritionalRules: menu.nutritionalRules
 	};
 }
 

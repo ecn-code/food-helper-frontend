@@ -42,7 +42,8 @@ export function readProductValues(formData: FormData): ProductFormValues {
 		calories: readString(formData, 'calories'),
 		carbohydrates: readString(formData, 'carbohydrates'),
 		proteins: readString(formData, 'proteins'),
-		fats: readString(formData, 'fats')
+		fats: readString(formData, 'fats'),
+		supermarketIds: formData.getAll('supermarketIds').map((value) => String(value))
 	};
 }
 

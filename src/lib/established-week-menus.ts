@@ -7,6 +7,7 @@ import type {
 import type { ProposedWeekMenuDay, ProposedWeekMenuSection, ProposedWeekMenuProduct } from '$lib/proposed-week-menus';
 import { toProposedWeekMenuDayModel } from '$lib/proposed-week-menus';
 import type { NutritionalValues } from '$lib/products';
+import type { NutritionalRulesEvaluation } from '$lib/api/proposed-week-menus';
 
 export type EstablishedWeekMenuDay = ProposedWeekMenuDay;
 export type EstablishedWeekMenuSection = ProposedWeekMenuSection;
@@ -19,6 +20,8 @@ export type EstablishedWeekMenuStockSummary = EstablishedWeekMenuStockSummaryRes
 export type EstablishedWeekMenu = {
 	id: number;
 	proposedWeekMenuId: number;
+	payerUserId: number;
+	payerUsername: string;
 	startDate: string;
 	endDate: string;
 	days: EstablishedWeekMenuDay[];
@@ -26,18 +29,22 @@ export type EstablishedWeekMenu = {
 	stockSummary: EstablishedWeekMenuStockSummary;
 	usedStock: EstablishedWeekMenuUsedStock[];
 	shoppingList: EstablishedWeekMenuShoppingListItem[];
+	nutritionalRules?: NutritionalRulesEvaluation;
 };
 
 export function toEstablishedWeekMenuModel(menu: EstablishedWeekMenuResponse): EstablishedWeekMenu {
 	return {
 		id: menu.id,
-		proposedWeekMenuId: menu.proposedWeekMenuId,
+		proposedWeekMenuId: menu.planningId,
+		payerUserId: menu.payerUserId,
+		payerUsername: menu.payerUsername,
 		startDate: menu.startDate,
 		endDate: menu.endDate,
 		days: [...menu.days].sort((left, right) => left.date.localeCompare(right.date)).map(toProposedWeekMenuDayModel),
 		nutritionalValues: menu.nutritionalValues,
 		stockSummary: menu.stockSummary,
 		usedStock: menu.usedStock,
-		shoppingList: menu.shoppingList
+		shoppingList: menu.shoppingList,
+		nutritionalRules: menu.nutritionalRules
 	};
 }

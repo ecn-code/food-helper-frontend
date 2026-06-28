@@ -1,6 +1,6 @@
 # FoodHelper Front
 
-Frontend en SvelteKit para gestionar productos del backend `FoodHelper`.
+Frontend estatico en SvelteKit para gestionar el catalogo y la planificacion de `FoodHelper`.
 
 ## Alcance actual
 
@@ -11,7 +11,13 @@ Frontend en SvelteKit para gestionar productos del backend `FoodHelper`.
 - Eliminar productos
 - Ver stock e inventario por caducidad
 - Crear entradas de stock por producto
+- Editar, incrementar, retirar y filtrar entradas de stock
 - Listar y gestionar recetas
+- Gestionar supermercados y asignarlos a productos
+- Consultar la hucha y registrar movimientos
+- Configurar reglas nutricionales diarias
+- Crear planificaciones de hasta 16 dias y convertirlas en menus
+- Filtrar listas de compra, cerrar menus y consultar sus estadisticas
 - Tests de integracion end-to-end con Playwright en navegador headless
 
 ## Backend
@@ -24,7 +30,7 @@ Valor por defecto:
 http://127.0.0.1:8080
 ```
 
-El login usa `POST /api/v1/auth/login`. El frontend guarda la sesion en una cookie httpOnly y envia el token como `Authorization: Bearer` en las operaciones de productos.
+El login usa `POST /api/v1/auth/login`. El frontend conserva la sesion en el navegador y envia el token como `Authorization: Bearer` en las operaciones autenticadas.
 
 Puedes copiar `.env.example` a `.env` si quieres fijarlo para desarrollo local.
 

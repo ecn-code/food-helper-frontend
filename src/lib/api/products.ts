@@ -1,5 +1,6 @@
 import type { Product, ProductFormValues } from '$lib/products';
 import { request } from '$lib/api/backend';
+import { appendProductFilters, type ProductFilters } from '$lib/product-filters';
 
 export type ProductPhotoPayload = {
 	fileName: string;
@@ -24,6 +25,7 @@ type ProductPayload = {
 		fats: number;
 	};
 	photo: string | null;
+	supermarkets: { id: number; name: string }[];
 };
 
 export type PaginatedResponse<T> = {
@@ -37,9 +39,14 @@ export type PaginatedResponse<T> = {
 export type ListProductsParams = {
 	page?: number;
 	size?: number;
+	filters?: ProductFilters;
 };
 
 const DEFAULT_PAGE_SIZE = 100;
+type ListAllProductsParams = {
+	size?: number;
+	filters?: ProductFilters;
+};
 
 function toPayload(values: ProductRequestValues) {
 	const photo = values.photo
@@ -59,6 +66,7 @@ function toPayload(values: ProductRequestValues) {
 		carbohydrates: Number(values.carbohydrates),
 		proteins: Number(values.proteins),
 		fats: Number(values.fats),
+		supermarketIds: values.supermarketIds.map(Number),
 		...(photo ? { photo } : {})
 	};
 }
@@ -71,7 +79,8 @@ function fromPayload(product: ProductPayload): Product {
 		gramsPerUnit: product.gramsPerUnit,
 		defaultPrice: product.defaultPrice,
 		nutritionalValues: product.nutritionalValues,
-		photo: product.photo
+		photo: product.photo,
+		supermarkets: product.supermarkets ?? []
 	};
 }
 
@@ -93,22 +102,34 @@ function buildPageQuery(params: ListProductsParams = {}) {
 	const searchParams = new URLSearchParams();
 	searchParams.set('page', String(normalizePage(params.page, 0)));
 	searchParams.set('size', String(normalizePageSize(params.size)));
+	if (params.filters) {
+		appendProductFilters(searchParams, params.filters);
+	}
 	return searchParams.toString();
 }
 
 export async function listProductsPage(authorization: string, params: ListProductsParams = {}) {
-	return await request<PaginatedResponse<ProductPayload>>(`/api/v1/products?${buildPageQuery(params)}`, {
+	const response = await request<PaginatedResponse<ProductPayload>>(`/api/v1/products?${buildPageQuery(params)}`, {
 		headers: authHeaders(authorization)
 	});
+
+	return {
+		...response,
+		items: response.items.map(fromPayload)
+	};
 }
 
-export async function listProducts(authorization: string) {
+export async function listProducts(authorization: string, params: ListAllProductsParams = {}) {
 	const products: Product[] = [];
 	let page = 0;
 	let totalPages = 1;
 
 	do {
-		const response = await listProductsPage(authorization, { page, size: DEFAULT_PAGE_SIZE });
+		const response = await listProductsPage(authorization, {
+			page,
+			size: params.size ?? DEFAULT_PAGE_SIZE,
+			filters: params.filters
+		});
 		products.push(...response.items.map(fromPayload));
 		totalPages = Math.max(response.totalPages, 1);
 		page += 1;

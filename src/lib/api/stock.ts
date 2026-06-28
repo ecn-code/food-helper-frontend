@@ -38,8 +38,21 @@ function sanitizeCreateStockEntryRequest(values: CreateStockEntryRequest) {
 	};
 }
 
-export async function listStockEntries(authorization: string) {
-	return await request<StockEntryPayload[]>('/api/v1/stock', {
+export type ListStockEntriesParams = { expiresBefore?: string; productIds?: number[] };
+
+export async function listStockEntries(authorization: string, params: ListStockEntriesParams = {}) {
+	const query = new URLSearchParams();
+	if (params.expiresBefore) query.set('expiresBefore', params.expiresBefore);
+	for (const productId of params.productIds ?? []) query.append('productIds', String(Number(productId)));
+	const suffix = query.size ? `?${query.toString()}` : '';
+	return await request<StockEntryPayload[]>(`/api/v1/stock${suffix}`, {
+		headers: authHeaders(authorization)
+	});
+}
+
+export async function listStockEntriesByProduct(productId: number, authorization: string, expiresBefore?: string) {
+	const query = expiresBefore ? `?expiresBefore=${encodeURIComponent(expiresBefore)}` : '';
+	return await request<StockEntryPayload[]>(`/api/v1/products/${productId}/stock${query}`, {
 		headers: authHeaders(authorization)
 	});
 }

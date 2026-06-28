@@ -71,7 +71,7 @@ export type ListRecipesParams = {
 	size?: number;
 };
 
-const DEFAULT_PAGE_SIZE = 100;
+const DEFAULT_PAGE_SIZE = 20;
 
 function authHeaders(authorization: string) {
 	return {
@@ -134,13 +134,13 @@ export async function listRecipesPage(authorization: string, params: ListRecipes
 	});
 }
 
-export async function listRecipes(authorization: string) {
+export async function listRecipes(authorization: string, params: { size?: number } = {}) {
 	const recipes: RecipePayload[] = [];
 	let page = 0;
 	let totalPages = 1;
 
 	do {
-		const response = await listRecipesPage(authorization, { page, size: DEFAULT_PAGE_SIZE });
+		const response = await listRecipesPage(authorization, { page, size: params.size ?? DEFAULT_PAGE_SIZE });
 		recipes.push(...response.items);
 		totalPages = Math.max(response.totalPages, 1);
 		page += 1;

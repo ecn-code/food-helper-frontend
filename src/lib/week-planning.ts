@@ -1,5 +1,6 @@
 import type { EstablishedWeekMenu } from '$lib/established-week-menus';
 import type { ProposedWeekMenu } from '$lib/proposed-week-menus';
+import type { Product } from '$lib/products';
 import type { StockEntry } from '$lib/stock';
 
 export type WeekDayCalories = {
@@ -87,7 +88,8 @@ function dayCalories(day: ProposedWeekMenu['days'][number]) {
 
 export function buildWeekPlanningSummary(
 	menu: ProposedWeekMenu | EstablishedWeekMenu | null,
-	stockEntries: StockEntry[]
+	stockEntries: StockEntry[],
+	products: Product[] = []
 ): WeekPlanningSummary {
 	if (!menu) {
 		return {
@@ -168,6 +170,7 @@ export function buildWeekPlanningSummary(
 	}
 
 	const stockByProduct = new Map<number, StockEntry[]>();
+	const productById = new Map(products.map((product) => [product.id, product]));
 	for (const stockEntry of stockEntries) {
 		const entries = stockByProduct.get(stockEntry.productId) ?? [];
 		entries.push(stockEntry);
@@ -177,10 +180,11 @@ export function buildWeekPlanningSummary(
 	const requirements = [...requirementsByProduct.values()]
 		.map((requirement) => {
 			const lots = [...(stockByProduct.get(requirement.productId) ?? [])].sort(sortStockEntries);
+			const productDefaultPrice = productById.get(requirement.productId)?.defaultPrice;
 			let remainingUnits = requirement.requiredUnits;
 			let availableUnits = 0;
 			let coveredUnits = 0;
-			let estimatedCost = 0;
+			let stockCost = 0;
 
 			for (const lot of lots) {
 				const lotQuantity = Number(lot.quantity ?? 0);
@@ -191,9 +195,15 @@ export function buildWeekPlanningSummary(
 
 				const consumedUnits = Math.min(remainingUnits, lotQuantity);
 				coveredUnits += consumedUnits;
-				estimatedCost += consumedUnits * Number(lot.price ?? 0);
+				stockCost += consumedUnits * Number(lot.price ?? 0);
 				remainingUnits -= consumedUnits;
 			}
+
+			const missingUnits = Math.max(0, requirement.requiredUnits - coveredUnits);
+			const missingCost =
+				Number.isFinite(productDefaultPrice ?? Number.NaN) && productDefaultPrice !== null
+					? missingUnits * Number(productDefaultPrice)
+					: 0;
 
 			return {
 				productId: requirement.productId,
@@ -201,8 +211,8 @@ export function buildWeekPlanningSummary(
 				requiredUnits: roundUnits(requirement.requiredUnits),
 				availableUnits: roundUnits(availableUnits),
 				coveredUnits: roundUnits(coveredUnits),
-				missingUnits: roundUnits(Math.max(0, requirement.requiredUnits - coveredUnits)),
-				estimatedCost: roundNumber(estimatedCost)
+				missingUnits: roundUnits(missingUnits),
+				estimatedCost: roundNumber(stockCost + missingCost)
 			};
 		})
 		.sort((left, right) => {

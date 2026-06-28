@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 	import {
 		BookOpen,
 		CircleAlert,
@@ -17,6 +17,7 @@
 		Package,
 		Pencil,
 		Plus,
+		RefreshCw,
 		Save,
 		Settings,
 		Trash2,
@@ -25,6 +26,10 @@
 		Wheat,
 		Wifi,
 		WifiOff,
+		Search,
+		Store,
+		PiggyBank,
+		SlidersHorizontal,
 		X
 	} from '@lucide/svelte';
 	import { apiBaseUrl, checkHealth, ApiError } from '$lib/api/backend';
@@ -39,6 +44,7 @@
 		createProduct as createProductRequest,
 		deleteProduct as deleteProductRequest,
 		listProducts,
+		listProductsPage,
 		updateProduct as updateProductRequest,
 		type ProductPhotoPayload
 	} from '$lib/api/products';
@@ -46,11 +52,12 @@
 		createDerivedProduct as createDerivedProductRequest,
 		createRecipe as createRecipeRequest,
 		deleteRecipe as deleteRecipeRequest,
-		listRecipes,
+		listRecipesPage,
 		updateRecipe as updateRecipeRequest
 	} from '$lib/api/recipes';
 	import {
 		createStockEntry as createStockEntryRequest,
+		addStockQuantity as addStockQuantityRequest,
 		listStockEntries,
 		removeStockQuantity as removeStockQuantityRequest,
 		updateStockEntry as updateStockEntryRequest
@@ -128,6 +135,27 @@
 	} from '$lib/proposed-week-menus';
 	import { toEstablishedWeekMenuModel, type EstablishedWeekMenu } from '$lib/established-week-menus';
 	import { buildWeekPlanningSummary } from '$lib/week-planning';
+	import ProductFilters from '$lib/components/products/ProductFilters.svelte';
+	import ProductPickerDialog from '$lib/components/products/ProductPickerDialog.svelte';
+	import RecipeFilters from '$lib/components/recipes/RecipeFilters.svelte';
+	import SupermarketsPanel from '$lib/components/settings/SupermarketsPanel.svelte';
+	import MoneyBoxPanel from '$lib/components/settings/MoneyBoxPanel.svelte';
+	import NutritionalRulesPanel from '$lib/components/settings/NutritionalRulesPanel.svelte';
+	import MenuCompletionPanel from '$lib/components/planning/MenuCompletionPanel.svelte';
+	import DailyNutritionalEvaluation from '$lib/components/planning/DailyNutritionalEvaluation.svelte';
+	import NutritionalEvaluationPanel from '$lib/components/planning/NutritionalEvaluationPanel.svelte';
+	import { listSupermarkets, type Supermarket } from '$lib/api/supermarkets';
+	import {
+		emptyProductFilters,
+		hasActiveProductFilters,
+		type ProductFilters as ProductFiltersState
+	} from '$lib/product-filters';
+	import {
+		emptyRecipeFilters,
+		filterRecipes,
+		hasActiveRecipeFilters,
+		type RecipeFilters as RecipeFiltersState
+	} from '$lib/recipe-filters';
 	import {
 		validateLoginForm,
 		validateRegisterForm,
@@ -234,7 +262,9 @@
 		| 'product-delete'
 		| 'stock'
 		| 'stock-delete'
+		| 'stock-add'
 		| 'product-view'
+		| 'product-picker'
 		| 'recipe-view'
 		| 'recipe-create'
 		| 'recipe-edit'
@@ -245,12 +275,30 @@
 		| 'day-part'
 		| null;
 	type AuthMode = 'login' | 'register';
-	type SectionMode = 'products' | 'recipes' | 'week' | 'day-parts';
+	type SectionMode = 'products' | 'recipes' | 'week' | 'day-parts' | 'supermarkets' | 'money-box' | 'nutritional-rules';
 	type PhotoPreview = {
 		fileName: string;
 		contentType: string;
 		previewUrl: string;
 	};
+
+	type ProductPickerTarget =
+		| {
+				type: 'recipe-create';
+				productIndex: number;
+				selectedProductId: string;
+		  }
+		| {
+				type: 'recipe-edit';
+				productIndex: number;
+				selectedProductId: string;
+		  }
+		| {
+				type: 'week-day';
+				sectionIndex: number;
+				productIndex: number;
+				selectedProductId: string;
+		  };
 
 	type SignedPhoto = string;
 
@@ -268,6 +316,7 @@
 		proposedWeekMenuDayParts: ProposedWeekMenuDayPart[];
 		productStats: ProductStatsResponse | null;
 		recipeStats: RecipeStatsResponse | null;
+		supermarkets: Supermarket[];
 		productsLoaded: boolean;
 		recipesLoaded: boolean;
 		stockEntriesLoaded: boolean;
@@ -276,9 +325,16 @@
 		proposedWeekMenuDayPartsLoaded: boolean;
 		productStatsLoaded: boolean;
 		recipeStatsLoaded: boolean;
+		supermarketsLoaded: boolean;
 		createDefaults: ProductFormValues;
 		createRecipeDefaults: RecipeFormValues;
 		createRecipeDerivedProductDefaults: RecipeDerivedProductFormValues;
+	};
+
+	type KnownProposedWeekMenu = {
+		id: number;
+		startDate: string;
+		endDate: string;
 	};
 
 	const inputClass =
@@ -289,6 +345,8 @@
 		'min-h-24 w-full cursor-text select-text rounded-md border border-[hsl(var(--input))] bg-[hsl(var(--card))] px-3 py-2 text-sm leading-6 text-[hsl(var(--foreground))] shadow-sm transition-colors placeholder:text-[hsl(var(--muted-foreground))] focus:border-[hsl(var(--ring))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--ring)/0.14)] disabled:cursor-not-allowed disabled:bg-[hsl(var(--muted))] disabled:opacity-70';
 	const fieldLabelClass = 'mb-1.5 block text-sm font-medium text-[hsl(var(--foreground))]';
 	const fieldErrorClass = 'mt-1.5 block text-xs text-[hsl(var(--destructive))]';
+	const PRODUCT_PAGE_SIZE = 20;
+	const RECIPE_PAGE_SIZE = 20;
 
 	let data = $state<DataState>({
 		backendBaseUrl: apiBaseUrl(),
@@ -304,6 +362,7 @@
 		proposedWeekMenuDayParts: [],
 		productStats: null,
 		recipeStats: null,
+		supermarkets: [],
 		productsLoaded: false,
 		recipesLoaded: false,
 		stockEntriesLoaded: false,
@@ -312,6 +371,7 @@
 		proposedWeekMenuDayPartsLoaded: false,
 		productStatsLoaded: false,
 		recipeStatsLoaded: false,
+		supermarketsLoaded: false,
 		createDefaults: emptyProductForm(),
 		createRecipeDefaults: emptyRecipeForm(),
 		createRecipeDerivedProductDefaults: emptyRecipeDerivedProductForm()
@@ -332,6 +392,7 @@
 	let currentSection = $state<SectionMode>('products');
 	let activeProposedWeekMenuId = $state<number | null>(null);
 	let activeEstablishedWeekMenuId = $state<number | null>(null);
+	let knownProposedWeekMenus = $state<KnownProposedWeekMenu[]>([]);
 	let createPhotoPreview = $state<PhotoPreview | null>(null);
 	let editPhotoPreview = $state<PhotoPreview | null>(null);
 	let brokenProductPhotoUrls = $state<Record<SignedPhoto, true>>({});
@@ -342,6 +403,10 @@
 	let stockProduct = $state<Product | null>(null);
 	let editingStockEntry = $state<StockEntry | null>(null);
 	let deletingStockEntry = $state<StockEntry | null>(null);
+	let adjustingStockEntry = $state<StockEntry | null>(null);
+	let stockAdjustmentQuantity = $state('');
+	let stockProductFilter = $state('');
+	let stockExpiresBefore = $state('');
 	let deleteRecipeItem = $state<Recipe | null>(null);
 	let editingProductId = $state<number | null>(null);
 	let editingRecipeId = $state<number | null>(null);
@@ -353,7 +418,51 @@
 	let weekDayDraft = $state<ProposedWeekMenuDayFormValues>(emptyProposedWeekMenuDayForm());
 	let createPhotoInput = $state<HTMLInputElement | null>(null);
 	let editPhotoInput = $state<HTMLInputElement | null>(null);
+	let productFilters = $state<ProductFiltersState>(emptyProductFilters());
+	let recipeFilters = $state<RecipeFiltersState>(emptyRecipeFilters());
+	let visibleProducts = $state<Product[]>([]);
+	let visibleProductsLoaded = $state(false);
+	let visibleProductsLoading = $state(false);
+	let productStatsLoading = $state(false);
+	let productStatsError = $state<string | null>(null);
+	let productsPage = $state(0);
+	let productsTotalElements = $state(0);
+	let productsTotalPages = $state(1);
+	let productsLoadingMore = $state(false);
+	let productsFullyLoaded = $state(false);
+	let productsScrollSentinel = $state<HTMLElement | null>(null);
+	let recipesPage = $state(0);
+	let recipesTotalElements = $state(0);
+	let recipesTotalPages = $state(1);
+	let recipesLoadingMore = $state(false);
+	let recipesScrollSentinel = $state<HTMLElement | null>(null);
+	let productPickerTarget = $state<ProductPickerTarget | null>(null);
+	let productPickerPreviousModalMode = $state<ModalMode>(null);
 	let hydrated = $state(false);
+	let visibleProductsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+	let loginSuccessTimer: ReturnType<typeof setTimeout> | null = null;
+	let visibleProductsRequestToken = 0;
+	let productsRequestToken = 0;
+
+	function clearLoginSuccessTimer() {
+		if (loginSuccessTimer !== null) {
+			clearTimeout(loginSuccessTimer);
+			loginSuccessTimer = null;
+		}
+	}
+
+	function scheduleLoginSuccessDismiss() {
+		clearLoginSuccessTimer();
+		loginSuccessTimer = setTimeout(() => {
+			loginSuccessTimer = null;
+			if (form?.type === 'login' && form.success) {
+				form = null;
+			}
+		}, 3000);
+	}
+	let recipesRequestToken = 0;
+	let productsIntersectionObserver: IntersectionObserver | null = null;
+	let recipesIntersectionObserver: IntersectionObserver | null = null;
 
 	function loginErrors(): AuthFormErrors {
 		return form?.type === 'login' && 'fieldErrors' in form
@@ -366,7 +475,7 @@
 	}
 
 	function normalizeSection(value: string | null | undefined): SectionMode {
-		return value === 'recipes' || value === 'week' || value === 'day-parts' ? value : 'products';
+		return value === 'recipes' || value === 'week' || value === 'day-parts' || value === 'supermarkets' || value === 'money-box' || value === 'nutritional-rules' ? value : 'products';
 	}
 
 	function activeWeekMenuKind() {
@@ -390,13 +499,16 @@
 
 	function sectionLabel(section: SectionMode) {
 		if (section === 'recipes') return 'Recetas';
-		if (section === 'week') return activeWeekMenuKind() === 'established' ? 'Semana establecida' : 'Semana propuesta';
+		if (section === 'week') return activeWeekMenuKind() === 'established' ? 'Semana establecida' : 'Planificación';
 		if (section === 'day-parts') return 'Partes del dia';
+		if (section === 'supermarkets') return 'Supermercados';
+		if (section === 'money-box') return 'Huchas';
+		if (section === 'nutritional-rules') return 'Reglas nutricionales';
 		return 'Productos';
 	}
 
 	function sectionHint(section: SectionMode) {
-		if (section === 'recipes') return `${loadingCountLabel(!recipesSectionLoading(), data.recipes.length)} recetas`;
+		if (section === 'recipes') return `${recipeCountLabel()} recetas`;
 		if (section === 'week') {
 			const menu = activeWeekMenu();
 			if (menu) return weekDateRangeLabel(menu.startDate, menu.endDate);
@@ -405,7 +517,10 @@
 		if (section === 'day-parts') {
 			return `${loadingCountLabel(data.proposedWeekMenuDayPartsLoaded, data.proposedWeekMenuDayParts.length)} partes configuradas`;
 		}
-		return `${loadingCountLabel(!productsSectionLoading(), data.products.length)} productos`;
+		if (section === 'supermarkets') return 'Comercios y disponibilidad';
+		if (section === 'money-box') return 'Saldos y movimientos';
+		if (section === 'nutritional-rules') return 'Límites diarios';
+		return `${loadingCountLabel(data.productsLoaded, productsTotalElements)} productos`;
 	}
 
 	function createErrors(): ProductFormErrors {
@@ -462,7 +577,164 @@
 			: {};
 	}
 
+	function catalogProducts() {
+		return hasActiveProductFilters(productFilters) ? visibleProducts : data.products;
+	}
+
+	function catalogProductCount() {
+		return hasActiveProductFilters(productFilters) ? visibleProducts.length : data.products.length;
+	}
+
+	function filteredProducts() {
+		return catalogProducts();
+	}
+
+	function productCountLabel() {
+		if (!data.productsLoaded) return 'Cargando...';
+		if (hasActiveProductFilters(productFilters)) {
+			if (visibleProductsLoading) return 'Buscando...';
+			return `${visibleProducts.length} de ${productsTotalElements}`;
+		}
+		return `${data.products.length} de ${productsTotalElements}`;
+	}
+
+	function filteredRecipes() {
+		return filterRecipes(data.recipes, recipeFilters);
+	}
+
+	function recipeCountLabel() {
+		if (!data.recipesLoaded) return 'Cargando...';
+		if (hasActiveRecipeFilters(recipeFilters)) {
+			return `${filteredRecipes().length} de ${recipesTotalElements}`;
+		}
+		return `${data.recipes.length} de ${recipesTotalElements}`;
+	}
+
+	function productLabel(productId: string | number | null | undefined) {
+		if (productId === null || productId === undefined || String(productId).trim() === '') {
+			return 'Selecciona un producto';
+		}
+
+		const numericId = Number(productId);
+		if (Number.isNaN(numericId) || numericId <= 0) {
+			return 'Selecciona un producto';
+		}
+
+		const loadedProduct = data.products.find((product) => product.id === numericId);
+		if (loadedProduct) return loadedProduct.name;
+
+		for (const recipe of data.recipes) {
+			const ingredient = recipe.ingredients.find((item) => item.productId === numericId);
+			if (ingredient) return ingredient.productName;
+		}
+
+		return 'Producto no encontrado';
+	}
+
+	function clearProductFilters() {
+		productFilters = emptyProductFilters();
+		refreshVisibleProducts(true);
+	}
+
+	function updateProductFilters(next: ProductFiltersState) {
+		productFilters = next;
+		refreshVisibleProducts();
+	}
+
+	function clearRecipeFilters() {
+		recipeFilters = emptyRecipeFilters();
+	}
+
+	function updateRecipeFilters(next: RecipeFiltersState) {
+		recipeFilters = next;
+	}
+
+	function openProductPicker(target: ProductPickerTarget) {
+		productPickerTarget = target;
+		productPickerPreviousModalMode = modalMode;
+		modalMode = 'product-picker';
+	}
+
+	function closeProductPicker() {
+		productPickerTarget = null;
+		if (modalMode === 'product-picker') {
+			modalMode = productPickerPreviousModalMode;
+		}
+		productPickerPreviousModalMode = null;
+	}
+
+	function selectProductFromPicker(productId: number) {
+		const target = productPickerTarget;
+		if (!target) return;
+
+		const selectedProductId = String(productId);
+		if (target.type === 'recipe-create') {
+			recipeCreateDraft = {
+				...recipeCreateDraft,
+				ingredients: recipeCreateDraft.ingredients.map((ingredient, index) =>
+					index === target.productIndex
+						? { ...ingredient, productId: selectedProductId }
+						: ingredient
+				)
+			};
+		} else if (target.type === 'recipe-edit') {
+			recipeEditDraft = {
+				...recipeEditDraft,
+				ingredients: recipeEditDraft.ingredients.map((ingredient, index) =>
+					index === target.productIndex
+						? { ...ingredient, productId: selectedProductId }
+						: ingredient
+				)
+			};
+		} else if (target.type === 'week-day') {
+			weekDayDraft = {
+				...weekDayDraft,
+				sections: weekDayDraft.sections.map((section, sectionIndex) =>
+					sectionIndex === target.sectionIndex
+						? {
+								...section,
+								products: section.products.map((product, productIndex) =>
+									productIndex === target.productIndex
+										? { ...product, productId: selectedProductId }
+										: product
+								)
+						  }
+						: section
+				)
+			};
+		}
+
+		closeProductPicker();
+	}
+
 	function resetCatalogState() {
+		if (visibleProductsRefreshTimer !== null) {
+			clearTimeout(visibleProductsRefreshTimer);
+			visibleProductsRefreshTimer = null;
+		}
+		visibleProductsRequestToken += 1;
+		productsRequestToken += 1;
+		recipesRequestToken += 1;
+		if (productsIntersectionObserver) {
+			productsIntersectionObserver.disconnect();
+			productsIntersectionObserver = null;
+		}
+		if (recipesIntersectionObserver) {
+			recipesIntersectionObserver.disconnect();
+			recipesIntersectionObserver = null;
+		}
+		visibleProducts = [];
+		visibleProductsLoaded = false;
+		visibleProductsLoading = false;
+		productsPage = 0;
+		productsTotalElements = 0;
+		productsTotalPages = 1;
+		productsLoadingMore = false;
+		productsFullyLoaded = false;
+		recipesPage = 0;
+		recipesTotalElements = 0;
+		recipesTotalPages = 1;
+		recipesLoadingMore = false;
 		data.products = [];
 		data.recipes = [];
 		data.stockEntries = [];
@@ -470,7 +742,10 @@
 		data.establishedWeekMenu = null;
 		data.proposedWeekMenuDayParts = [];
 		data.productStats = null;
+		productStatsLoading = false;
+		productStatsError = null;
 		data.recipeStats = null;
+		data.supermarkets = [];
 		data.productsLoaded = false;
 		data.recipesLoaded = false;
 		data.stockEntriesLoaded = false;
@@ -479,6 +754,10 @@
 		data.proposedWeekMenuDayPartsLoaded = false;
 		data.productStatsLoaded = false;
 		data.recipeStatsLoaded = false;
+		data.supermarketsLoaded = false;
+		productFilters = emptyProductFilters();
+		recipeFilters = emptyRecipeFilters();
+		productPickerTarget = null;
 		brokenProductPhotoUrls = {};
 		activeProposedWeekMenuId = null;
 		activeEstablishedWeekMenuId = null;
@@ -490,33 +769,285 @@
 		if (typeof window !== 'undefined') {
 			window.localStorage.removeItem('foodhelper_proposed_week_menu_id');
 			window.localStorage.removeItem('foodhelper_established_week_menu_id');
+			window.localStorage.removeItem('foodhelper_proposed_week_menus');
 		}
 	}
 
 	async function loadProducts(session = authSession) {
 		if (!session) return;
 
+		if (productsLoadingMore) return;
+
+		const requestToken = ++productsRequestToken;
 		const authorization = authorizationHeader(session);
-		data.products = await listProducts(authorization);
-		brokenProductPhotoUrls = {};
-		data.productsLoaded = true;
+		data.products = [];
+		data.productsLoaded = false;
+		visibleProducts = [];
+		visibleProductsLoaded = false;
+		visibleProductsLoading = false;
+		productsPage = 0;
+		productsTotalElements = 0;
+		productsTotalPages = 1;
+		productsFullyLoaded = false;
+		productsLoadingMore = true;
+
+		try {
+			const response = await listProductsPage(authorization, { page: 0, size: PRODUCT_PAGE_SIZE });
+			if (requestToken !== productsRequestToken) return;
+
+			data.products = response.items;
+			brokenProductPhotoUrls = {};
+			data.productsLoaded = true;
+			productsPage = response.page + 1;
+			productsTotalElements = response.totalElements;
+			productsTotalPages = Math.max(response.totalPages, 1);
+			productsFullyLoaded = productsPage >= productsTotalPages;
+			refreshVisibleProducts(true, session);
+		} finally {
+			if (requestToken === productsRequestToken) {
+				productsLoadingMore = false;
+			}
+		}
+	}
+
+	async function loadMoreProducts(session = authSession) {
+		if (!session) return;
+		if (productsLoadingMore || productsPage >= productsTotalPages || productsFullyLoaded) return;
+
+		const requestToken = productsRequestToken;
+		const authorization = authorizationHeader(session);
+		const pageToLoad = productsPage;
+		productsLoadingMore = true;
+
+		try {
+			const response = await listProductsPage(authorization, { page: pageToLoad, size: PRODUCT_PAGE_SIZE });
+			if (requestToken !== productsRequestToken) return;
+
+			data.products = [...data.products, ...response.items];
+			productsPage = response.page + 1;
+			productsTotalElements = response.totalElements;
+			productsTotalPages = Math.max(response.totalPages, 1);
+			productsFullyLoaded = productsPage >= productsTotalPages;
+			refreshVisibleProducts(true, session);
+		} finally {
+			if (requestToken === productsRequestToken) {
+				productsLoadingMore = false;
+			}
+		}
+	}
+
+	async function loadAllProducts(session = authSession) {
+		if (!session) return;
+
+		const requestToken = ++productsRequestToken;
+		const authorization = authorizationHeader(session);
+		data.productsLoaded = false;
+		productsLoadingMore = true;
+
+		try {
+			const products = await listProducts(authorization);
+			if (requestToken !== productsRequestToken) return;
+
+			data.products = products;
+			brokenProductPhotoUrls = {};
+			data.productsLoaded = true;
+			productsPage = 1;
+			productsTotalElements = products.length;
+			productsTotalPages = 1;
+			productsFullyLoaded = true;
+			refreshVisibleProducts(true, session);
+		} finally {
+			if (requestToken === productsRequestToken) {
+				productsLoadingMore = false;
+			}
+		}
+	}
+
+	function cancelVisibleProductsRefresh() {
+		if (visibleProductsRefreshTimer !== null) {
+			clearTimeout(visibleProductsRefreshTimer);
+			visibleProductsRefreshTimer = null;
+		}
+		visibleProductsRequestToken += 1;
+	}
+
+	async function loadVisibleProducts(session = authSession) {
+		if (!session) return;
+
+		if (!hasActiveProductFilters(productFilters)) {
+			visibleProducts = data.products;
+			visibleProductsLoaded = data.productsLoaded;
+			visibleProductsLoading = false;
+			return;
+		}
+
+		const requestToken = ++visibleProductsRequestToken;
+		const authorization = authorizationHeader(session);
+
+		try {
+			const products = await listProducts(authorization, { filters: productFilters });
+			if (requestToken !== visibleProductsRequestToken) return;
+			visibleProducts = products;
+			visibleProductsLoaded = true;
+		} catch (error) {
+			if (requestToken !== visibleProductsRequestToken) return;
+			if (handleExpiredSession(error)) {
+				return;
+			}
+			data.backendError = error instanceof ApiError ? error.message : 'No se pudieron cargar los productos filtrados.';
+		} finally {
+			if (requestToken === visibleProductsRequestToken) {
+				visibleProductsLoading = false;
+			}
+		}
+	}
+
+	function refreshVisibleProducts(immediate = false, session = authSession) {
+		cancelVisibleProductsRefresh();
+
+		if (!session) {
+			visibleProducts = [];
+			visibleProductsLoaded = false;
+			visibleProductsLoading = false;
+			return;
+		}
+
+		if (!hasActiveProductFilters(productFilters)) {
+			visibleProducts = data.products;
+			visibleProductsLoaded = data.productsLoaded;
+			visibleProductsLoading = false;
+			return;
+		}
+
+		visibleProductsLoaded = false;
+		visibleProductsLoading = true;
+
+		if (immediate) {
+			void loadVisibleProducts(session);
+			return;
+		}
+
+		visibleProductsRefreshTimer = setTimeout(() => {
+			visibleProductsRefreshTimer = null;
+			void loadVisibleProducts(session);
+		}, 180);
 	}
 
 	async function loadProductStats(session = authSession) {
-		if (!session) return;
+		if (!session || productStatsLoading) return;
 
 		const authorization = authorizationHeader(session);
-		data.productStats = await listProductStats(authorization);
-		data.productStatsLoaded = true;
+		productStatsLoading = true;
+		productStatsError = null;
+
+		try {
+			data.productStats = await listProductStats(authorization);
+			data.productStatsLoaded = true;
+		} catch (error) {
+			data.productStats = null;
+			data.productStatsLoaded = false;
+
+			if (error instanceof ApiError && error.status === 401) {
+				throw error;
+			}
+
+			productStatsError = 'No se pudieron cargar las estadísticas de productos.';
+		} finally {
+			productStatsLoading = false;
+		}
 	}
 
-	async function loadRecipes(session = authSession) {
+	async function loadRecipes(session = authSession, reset = true) {
 		if (!session) return;
 
+		if (recipesLoadingMore) return;
+		if (!reset && recipesPage >= recipesTotalPages) return;
+
+		const pageToLoad = reset ? 0 : recipesPage;
+		const requestToken = reset ? ++recipesRequestToken : recipesRequestToken;
 		const authorization = authorizationHeader(session);
-		data.recipes = (await listRecipes(authorization)).map(toRecipeModel);
-		data.recipesLoaded = true;
+
+		if (reset) {
+			data.recipesLoaded = false;
+			data.recipes = [];
+			recipesPage = 0;
+			recipesTotalElements = 0;
+			recipesTotalPages = 1;
+		}
+
+		recipesLoadingMore = true;
+
+		try {
+			const response = await listRecipesPage(authorization, { page: pageToLoad, size: RECIPE_PAGE_SIZE });
+			if (requestToken !== recipesRequestToken) return;
+
+			const nextRecipes = response.items.map(toRecipeModel);
+			data.recipes = reset ? nextRecipes : [...data.recipes, ...nextRecipes];
+			recipesPage = response.page + 1;
+			recipesTotalElements = response.totalElements;
+			recipesTotalPages = Math.max(response.totalPages, 1);
+			data.recipesLoaded = true;
+		} finally {
+			if (requestToken === recipesRequestToken) {
+				recipesLoadingMore = false;
+			}
+		}
 	}
+
+	async function loadMoreRecipes(session = authSession) {
+		await loadRecipes(session, false);
+	}
+
+	$effect(() => {
+		if (!hydrated || !productsScrollSentinel || currentSection !== 'products') return;
+		if (hasActiveProductFilters(productFilters)) return;
+
+		if (productsIntersectionObserver) {
+			productsIntersectionObserver.disconnect();
+			productsIntersectionObserver = null;
+		}
+
+		productsIntersectionObserver = new IntersectionObserver(
+			(entries) => {
+				const entry = entries[0];
+				if (!entry?.isIntersecting) return;
+				if (!authSession || productsLoadingMore || productsPage >= productsTotalPages || productsFullyLoaded) return;
+				void loadMoreProducts(authSession);
+			},
+			{ rootMargin: '360px 0px' }
+		);
+		productsIntersectionObserver.observe(productsScrollSentinel);
+
+		return () => {
+			productsIntersectionObserver?.disconnect();
+			productsIntersectionObserver = null;
+		};
+	});
+
+	$effect(() => {
+		if (!hydrated || !recipesScrollSentinel || currentSection !== 'recipes') return;
+
+		if (recipesIntersectionObserver) {
+			recipesIntersectionObserver.disconnect();
+			recipesIntersectionObserver = null;
+		}
+
+		recipesIntersectionObserver = new IntersectionObserver(
+			(entries) => {
+				const entry = entries[0];
+				if (!entry?.isIntersecting) return;
+				if (!authSession || recipesLoadingMore || recipesPage >= recipesTotalPages) return;
+				void loadMoreRecipes(authSession);
+			},
+			{ rootMargin: '360px 0px' }
+		);
+		recipesIntersectionObserver.observe(recipesScrollSentinel);
+
+		return () => {
+			recipesIntersectionObserver?.disconnect();
+			recipesIntersectionObserver = null;
+		};
+	});
 
 	async function loadRecipeStats(session = authSession) {
 		if (!session) return;
@@ -534,6 +1065,12 @@
 		data.stockEntriesLoaded = true;
 	}
 
+	async function loadSupermarketsForProducts(session = authSession) {
+		if (!session) return;
+		data.supermarkets = await listSupermarkets(authorizationHeader(session));
+		data.supermarketsLoaded = true;
+	}
+
 	async function loadProposedWeekMenu(session = authSession, menuId = activeProposedWeekMenuId) {
 		if (!session) return;
 
@@ -549,12 +1086,14 @@
 			data.proposedWeekMenuLoaded = true;
 			activeProposedWeekMenuId = data.proposedWeekMenu.id;
 			activeEstablishedWeekMenuId = null;
+			rememberProposedWeekMenu(data.proposedWeekMenu);
 			if (typeof window !== 'undefined') {
 				window.localStorage.setItem('foodhelper_proposed_week_menu_id', String(activeProposedWeekMenuId));
 				window.localStorage.removeItem('foodhelper_established_week_menu_id');
 			}
 		} catch (error) {
 			if (error instanceof ApiError && error.status === 404) {
+				forgetProposedWeekMenu(menuId);
 				clearActiveWeekMenu();
 				data.proposedWeekMenuLoaded = true;
 				return;
@@ -630,6 +1169,8 @@
 			tasks.push(loadProductStats(session));
 		}
 
+		tasks.push(loadSupermarketsForProducts(session));
+
 		await Promise.all(tasks);
 	}
 
@@ -641,12 +1182,8 @@
 
 		const tasks: Promise<void>[] = [];
 
-		if (force || !data.productsLoaded) {
-			tasks.push(loadProducts(session));
-		}
-
 		if (force || !data.recipesLoaded) {
-			tasks.push(loadRecipes(session));
+			tasks.push(loadRecipes(session, true));
 		}
 
 		if (force || !data.recipeStatsLoaded) {
@@ -666,8 +1203,8 @@
 		const tasks: Promise<void>[] = [];
 
 		if (kind === 'proposed') {
-			if (force || !data.productsLoaded) {
-				tasks.push(loadProducts(session));
+			if (force || !productsFullyLoaded) {
+				tasks.push(loadAllProducts(session));
 			}
 
 			if (force || !data.proposedWeekMenuLoaded) {
@@ -717,6 +1254,10 @@
 			return;
 		}
 
+		if (currentSection === 'supermarkets' || currentSection === 'money-box' || currentSection === 'nutritional-rules') {
+			return;
+		}
+
 		await refreshProductsView(session, force);
 	}
 
@@ -736,6 +1277,7 @@
 			data.session = storedSession ? publicAuthSession(storedSession) : null;
 			data.authError = null;
 			data.backendError = null;
+			knownProposedWeekMenus = readKnownProposedWeekMenus();
 
 				const storedProposedWeekMenuId =
 					typeof window !== 'undefined'
@@ -798,6 +1340,10 @@
 		};
 	});
 
+	onDestroy(() => {
+		clearLoginSuccessTimer();
+	});
+
 	function openCreateModal() {
 		createDraft = data.createDefaults;
 		createPhotoPreview = null;
@@ -839,9 +1385,28 @@
 		return product.defaultPrice === null ? 'Sin precio' : formatCurrency(product.defaultPrice);
 	}
 
+	function productFromStockEntry(stockEntry: StockEntry): Product {
+		return (
+			data.products.find((item: Product) => item.id === stockEntry.productId) ?? {
+				id: stockEntry.productId,
+				name: stockEntry.productName,
+				description: '',
+				gramsPerUnit: 0,
+				defaultPrice: null,
+				nutritionalValues: {
+					calories: 0,
+					carbohydrates: 0,
+					proteins: 0,
+					fats: 0
+				},
+				photo: null,
+				supermarkets: []
+			}
+		);
+	}
+
 	function openEditStockModal(stockEntry: StockEntry) {
-		const product = data.products.find((item: Product) => item.id === stockEntry.productId);
-		if (!product) return;
+		const product = productFromStockEntry(stockEntry);
 
 		stockProduct = product;
 		editingStockEntry = stockEntry;
@@ -856,10 +1421,29 @@
 		modalMode = 'stock';
 	}
 
+	function openAddStockQuantityModal(stockEntry: StockEntry) {
+		adjustingStockEntry = stockEntry;
+		stockAdjustmentQuantity = '';
+		modalMode = 'stock-add';
+	}
+
+	function filteredStockEntries() {
+		return data.stockEntries.filter((entry) => {
+			if (stockProductFilter && String(entry.productId) !== stockProductFilter) return false;
+			if (stockExpiresBefore && (!entry.expirationDate || entry.expirationDate >= stockExpiresBefore)) return false;
+			return true;
+		});
+	}
+
+	function stockFilterProducts() {
+		return [...new Map(data.stockEntries.map((entry) => [entry.productId, { id: entry.productId, name: entry.productName }])).values()]
+			.sort((left, right) => left.name.localeCompare(right.name));
+	}
+
 	function openDeleteStockModal(stockEntry: StockEntry) {
 		deletingStockEntry = stockEntry;
 		editingStockEntry = null;
-		stockProduct = data.products.find((item: Product) => item.id === stockEntry.productId) ?? null;
+		stockProduct = productFromStockEntry(stockEntry);
 		modalMode = 'stock-delete';
 	}
 
@@ -1020,6 +1604,7 @@
 
 	function closeModal() {
 		modalMode = null;
+		productPickerTarget = null;
 		previewProduct = null;
 		detailProduct = null;
 		detailRecipe = null;
@@ -1027,6 +1612,8 @@
 		stockProduct = null;
 		editingStockEntry = null;
 		deletingStockEntry = null;
+		adjustingStockEntry = null;
+		stockAdjustmentQuantity = '';
 		deleteRecipeItem = null;
 		editingProductId = null;
 		editingRecipeId = null;
@@ -1179,6 +1766,60 @@
 		return `${formatShortDate(startDate)} al ${formatShortDate(endDate)}`;
 	}
 
+	function knownProposedWeekMenuLabel(menu: KnownProposedWeekMenu) {
+		return `#${menu.id} · ${weekDateRangeLabel(menu.startDate, menu.endDate)}`;
+	}
+
+	function sortKnownProposedWeekMenus(menus: KnownProposedWeekMenu[]) {
+		return [...menus].sort((left, right) => {
+			const byStartDate = right.startDate.localeCompare(left.startDate);
+			if (byStartDate !== 0) return byStartDate;
+			return right.id - left.id;
+		});
+	}
+
+	function readKnownProposedWeekMenus() {
+		if (typeof window === 'undefined') return [];
+
+		try {
+			const parsed = JSON.parse(window.localStorage.getItem('foodhelper_proposed_week_menus') ?? '[]');
+			if (!Array.isArray(parsed)) return [];
+
+			return sortKnownProposedWeekMenus(
+				parsed
+					.map((menu) => ({
+						id: Number(menu?.id),
+						startDate: String(menu?.startDate ?? ''),
+						endDate: String(menu?.endDate ?? '')
+					}))
+					.filter((menu) => menu.id > 0 && menu.startDate && menu.endDate)
+			);
+		} catch {
+			return [];
+		}
+	}
+
+	function saveKnownProposedWeekMenus(menus = knownProposedWeekMenus) {
+		if (typeof window === 'undefined') return;
+		window.localStorage.setItem('foodhelper_proposed_week_menus', JSON.stringify(sortKnownProposedWeekMenus(menus)));
+	}
+
+	function rememberProposedWeekMenu(menu: ProposedWeekMenu) {
+		const nextMenu = {
+			id: menu.id,
+			startDate: menu.startDate,
+			endDate: menu.endDate
+		};
+		const others = knownProposedWeekMenus.filter((item) => item.id !== menu.id);
+		knownProposedWeekMenus = sortKnownProposedWeekMenus([nextMenu, ...others]);
+		saveKnownProposedWeekMenus();
+	}
+
+	function forgetProposedWeekMenu(menuId: number) {
+		knownProposedWeekMenus = knownProposedWeekMenus.filter((menu) => menu.id !== menuId);
+		saveKnownProposedWeekMenus();
+	}
+
 	function weekDays() {
 		const menu = activeWeekMenu();
 		if (!menu) return [];
@@ -1197,7 +1838,7 @@
 	}
 
 	function weekPlanningSummary() {
-		return buildWeekPlanningSummary(activeWeekMenu(), data.stockEntries);
+		return buildWeekPlanningSummary(activeWeekMenu(), data.stockEntries, data.products);
 	}
 
 	function weekDayProductCount(day: ProposedWeekMenu['days'][number]) {
@@ -1215,6 +1856,9 @@
 		data.establishedWeekMenuLoaded = false;
 		activeProposedWeekMenuId = menu?.id ?? null;
 		activeEstablishedWeekMenuId = null;
+		if (menu) {
+			rememberProposedWeekMenu(menu);
+		}
 		if (typeof window !== 'undefined') {
 			if (activeProposedWeekMenuId) {
 				window.localStorage.setItem('foodhelper_proposed_week_menu_id', String(activeProposedWeekMenuId));
@@ -1223,6 +1867,43 @@
 			}
 			window.localStorage.removeItem('foodhelper_established_week_menu_id');
 		}
+	}
+
+	async function selectProposedWeekMenu(menuId: number) {
+		if (!authSession || menuId <= 0 || menuId === activeProposedWeekMenuId) return;
+
+		activeProposedWeekMenuId = menuId;
+		activeEstablishedWeekMenuId = null;
+		data.proposedWeekMenu = null;
+		data.establishedWeekMenu = null;
+		data.proposedWeekMenuLoaded = false;
+		data.establishedWeekMenuLoaded = false;
+		if (typeof window !== 'undefined') {
+			window.localStorage.setItem('foodhelper_proposed_week_menu_id', String(menuId));
+			window.localStorage.removeItem('foodhelper_established_week_menu_id');
+		}
+
+		try {
+			await refreshWeekView(authSession, true);
+			setSection('week');
+		} catch (error) {
+			if (error instanceof ApiError && error.status === 404) {
+				forgetProposedWeekMenu(menuId);
+				clearActiveWeekMenu();
+				data.proposedWeekMenuLoaded = true;
+				return;
+			}
+			if (handleExpiredSession(error)) {
+				return;
+			}
+			data.backendError = error instanceof ApiError ? error.message : 'No se pudo cargar la planificación.';
+		}
+	}
+
+	function handleProposedWeekMenuSelection(event: Event) {
+		const selectedMenuId = Number((event.currentTarget as HTMLSelectElement | null)?.value ?? '');
+		if (Number.isNaN(selectedMenuId) || selectedMenuId <= 0) return;
+		void selectProposedWeekMenu(selectedMenuId);
 	}
 
 	function setActiveEstablishedWeekMenu(menu: EstablishedWeekMenu | null) {
@@ -1305,8 +1986,8 @@
 			const diff = dateDifferenceInDays(values.startDate, values.endDate);
 			if (!Number.isFinite(diff) || diff < 0) {
 				fieldErrors.endDate = 'La fecha de fin debe ser posterior o igual a la de inicio';
-			} else if (diff > 7) {
-				fieldErrors.endDate = 'La semana propuesta no puede superar 8 dias incluidos';
+			} else if (diff > 15) {
+				fieldErrors.endDate = 'La planificación no puede superar 16 días incluidos';
 			}
 		}
 
@@ -1443,13 +2124,15 @@
 	}
 
 	function highestMetric(metric: keyof NutritionalValues) {
+		if (!data.productStats) return productStatsLoading ? '…' : '—';
 		const key = productMetricKey(metric);
-		return formatNumber(data.productStats?.[key].value ?? 0);
+		return formatNumber(data.productStats[key].value);
 	}
 
 	function richestProduct(metric: keyof NutritionalValues) {
+		if (!data.productStats) return productStatsLoading ? 'Cargando estadísticas' : 'Estadísticas no disponibles';
 		const key = productMetricKey(metric);
-		return data.productStats?.[key].message ?? data.productStats?.[key].productName ?? 'Sin datos';
+		return data.productStats[key].message ?? data.productStats[key].productName;
 	}
 
 	function productStockSummary(productId: number) {
@@ -1464,8 +2147,9 @@
 		return productStockSummary(productId)?.nextExpirationDate ?? null;
 	}
 
-	function totalStockQuantity() {
-		return data.productStats?.stock.totalQuantity ?? 0;
+	function totalStockQuantityLabel() {
+		if (!data.productStats) return productStatsLoading ? '…' : '—';
+		return formatNumber(data.productStats.stock.totalQuantity);
 	}
 
 	function stockEntriesCount() {
@@ -1473,11 +2157,11 @@
 	}
 
 	function productsSectionLoading() {
-		return !data.productsLoaded || !data.stockEntriesLoaded || !data.productStatsLoaded;
+		return !data.productsLoaded;
 	}
 
 	function recipesSectionLoading() {
-		return !data.productsLoaded || !data.recipesLoaded || !data.recipeStatsLoaded;
+		return !data.recipesLoaded || !data.recipeStatsLoaded;
 	}
 
 	function stockSectionLoading() {
@@ -1488,8 +2172,20 @@
 		return loaded ? String(count) : 'Cargando...';
 	}
 
-	function earliestExpirationProduct() {
-		return data.productStats?.earliestExpiration ?? null;
+	function earliestExpirationLabel() {
+		if (!data.productStats) return productStatsLoading ? '…' : '—';
+		return data.productStats.earliestExpiration.productName;
+	}
+
+	function earliestExpirationHint() {
+		if (!data.productStats) {
+			return productStatsLoading ? 'Cargando estadísticas' : 'Estadísticas no disponibles';
+		}
+
+		const expiration = data.productStats.earliestExpiration;
+		if (!expiration.expirationDate) return expiration.message ?? 'Sin caducidad';
+
+		return `Caduca ${formatDate(expiration.expirationDate)} · ${formatNumber(expiration.quantity ?? 0)} uds`;
 	}
 
 	function formatDate(value: string | null | undefined) {
@@ -1577,6 +2273,7 @@
 
 	async function submitLogin(event: SubmitEvent) {
 		event.preventDefault();
+		clearLoginSuccessTimer();
 		form = null;
 
 		const values = { ...loginDraft };
@@ -1599,6 +2296,7 @@
 				success: 'Sesion iniciada correctamente',
 				values: { username: auth.username }
 			};
+			scheduleLoginSuccessDismiss();
 			await settleSuccessfulAuth(toAuthSession(auth));
 		} catch (error) {
 			if (handleExpiredSession(error)) {
@@ -1931,6 +2629,26 @@
 		}
 	}
 
+	async function submitAddStockQuantity(event: SubmitEvent) {
+		event.preventDefault();
+		if (!authSession || !adjustingStockEntry) return;
+		const quantity = Number(stockAdjustmentQuantity);
+		if (!Number.isFinite(quantity) || quantity <= 0) {
+			form = { type: 'stock', error: 'La cantidad debe ser mayor que cero', id: adjustingStockEntry.productId };
+			return;
+		}
+		try {
+			await addStockQuantityRequest(adjustingStockEntry.id, { quantity }, authorizationHeader(authSession));
+			const productId = adjustingStockEntry.productId;
+			closeModal();
+			form = { type: 'stock', success: 'Cantidad añadida correctamente', id: productId };
+			await refreshProductsView(authSession, true);
+		} catch (error) {
+			if (handleExpiredSession(error)) return;
+			form = { type: 'stock', error: error instanceof ApiError ? error.message : 'No se pudo añadir la cantidad', id: adjustingStockEntry.productId };
+		}
+	}
+
 	async function submitCreateRecipe(event: SubmitEvent) {
 		event.preventDefault();
 		if (!authSession) return;
@@ -2140,7 +2858,7 @@
 			modalMode = null;
 			form = {
 				type: 'week-create',
-				success: 'Semana propuesta creada correctamente',
+				success: 'Planificación creada correctamente',
 				values
 			};
 			await refreshWeekView(authSession, true);
@@ -2280,7 +2998,11 @@
 
 		try {
 			const menu = toEstablishedWeekMenuModel(
-				await publishProposedWeekMenuRequest(activeProposedWeekMenuId, authorizationHeader(authSession))
+				await publishProposedWeekMenuRequest(
+					activeProposedWeekMenuId,
+					authSession.userId,
+					authorizationHeader(authSession)
+				)
 			);
 			setActiveEstablishedWeekMenu(menu);
 			data.stockEntriesLoaded = false;
@@ -2378,6 +3100,9 @@
 						<Settings class="size-4 shrink-0" aria-hidden="true" />
 						<span class="truncate">Partes del dia</span>
 					</a>
+					<a class={`flex h-9 items-center gap-2 rounded-md px-2.5 text-sm font-medium ${currentSection === 'supermarkets' ? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))] transition-colors hover:bg-[hsl(var(--secondary))] hover:text-[hsl(var(--foreground))]'}`} href="#supermarkets" onclick={(event) => { event.preventDefault(); setSection('supermarkets'); }}><Store class="size-4 shrink-0" aria-hidden="true" /><span class="truncate">Supermercados</span></a>
+					<a class={`flex h-9 items-center gap-2 rounded-md px-2.5 text-sm font-medium ${currentSection === 'money-box' ? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))] transition-colors hover:bg-[hsl(var(--secondary))] hover:text-[hsl(var(--foreground))]'}`} href="#money-box" onclick={(event) => { event.preventDefault(); setSection('money-box'); }}><PiggyBank class="size-4 shrink-0" aria-hidden="true" /><span class="truncate">Huchas</span></a>
+					<a class={`flex h-9 items-center gap-2 rounded-md px-2.5 text-sm font-medium ${currentSection === 'nutritional-rules' ? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))] transition-colors hover:bg-[hsl(var(--secondary))] hover:text-[hsl(var(--foreground))]'}`} href="#nutritional-rules" onclick={(event) => { event.preventDefault(); setSection('nutritional-rules'); }}><SlidersHorizontal class="size-4 shrink-0" aria-hidden="true" /><span class="truncate">Reglas nutricionales</span></a>
 					<a
 						class={`flex h-9 items-center gap-2 rounded-md px-2.5 text-sm font-medium ${
 							currentSection === 'week'
@@ -2391,7 +3116,7 @@
 						}}
 					>
 						<CalendarClock class="size-4 shrink-0" aria-hidden="true" />
-						<span class="truncate">Semana propuesta</span>
+						<span class="truncate">Planificación</span>
 					</a>
 				{:else}
 				<a
@@ -2666,10 +3391,10 @@
 					</div>
 				</section>
 			{:else}
-			<div class="flex flex-wrap items-center gap-2 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-1 shadow-sm lg:hidden" aria-label="Selector de pantalla">
+			<div class="grid grid-cols-2 gap-1 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-1 shadow-sm sm:grid-cols-4 lg:hidden" aria-label="Selector de pantalla">
 				<button
 					type="button"
-					class={`inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+					class={`inline-flex min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
 						currentSection === 'recipes'
 							? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]'
 							: 'text-[hsl(var(--muted-foreground))]'
@@ -2677,11 +3402,11 @@
 					onclick={() => setSection('recipes')}
 				>
 					<BookOpen class="size-4" aria-hidden="true" />
-					Recetas
+					<span class="truncate">Recetas</span>
 				</button>
 				<button
 					type="button"
-					class={`inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+					class={`inline-flex min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
 						currentSection === 'products'
 							? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]'
 							: 'text-[hsl(var(--muted-foreground))]'
@@ -2689,11 +3414,11 @@
 					onclick={() => setSection('products')}
 				>
 					<LayoutList class="size-4" aria-hidden="true" />
-					Productos
+					<span class="truncate">Productos</span>
 				</button>
 				<button
 					type="button"
-					class={`inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+					class={`inline-flex min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
 						currentSection === 'day-parts'
 							? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]'
 							: 'text-[hsl(var(--muted-foreground))]'
@@ -2701,11 +3426,11 @@
 					onclick={() => setSection('day-parts')}
 				>
 					<Settings class="size-4" aria-hidden="true" />
-					Partes
+					<span class="truncate">Partes</span>
 				</button>
 				<button
 					type="button"
-					class={`inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+					class={`inline-flex min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
 						currentSection === 'week'
 							? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]'
 							: 'text-[hsl(var(--muted-foreground))]'
@@ -2713,8 +3438,11 @@
 					onclick={() => setSection('week')}
 				>
 					<CalendarClock class="size-4" aria-hidden="true" />
-					Semana
+					<span class="truncate">Semana</span>
 				</button>
+				<button type="button" class={`inline-flex min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium ${currentSection === 'supermarkets' ? 'bg-[hsl(var(--secondary))]' : 'text-[hsl(var(--muted-foreground))]'}`} onclick={() => setSection('supermarkets')}><Store class="size-4" /><span class="truncate">Supermercados</span></button>
+				<button type="button" class={`inline-flex min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium ${currentSection === 'money-box' ? 'bg-[hsl(var(--secondary))]' : 'text-[hsl(var(--muted-foreground))]'}`} onclick={() => setSection('money-box')}><PiggyBank class="size-4" /><span class="truncate">Huchas</span></button>
+				<button type="button" class={`inline-flex min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium ${currentSection === 'nutritional-rules' ? 'bg-[hsl(var(--secondary))]' : 'text-[hsl(var(--muted-foreground))]'}`} onclick={() => setSection('nutritional-rules')}><SlidersHorizontal class="size-4" /><span class="truncate">Reglas</span></button>
 			</div>
 			{#if form?.success}
 				<p
@@ -2756,6 +3484,47 @@
 				</Button>
 			</section>
 
+			<ProductFilters
+				filters={productFilters}
+				onChange={updateProductFilters}
+				onClear={clearProductFilters}
+				testIdPrefix="product-filter"
+			/>
+
+			<div class="flex flex-wrap items-center justify-between gap-3">
+				<span class="inline-flex w-fit items-center gap-1.5 rounded-md border border-[hsl(var(--border))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]">
+					<Leaf class="size-3.5" aria-hidden="true" />
+					<span data-testid="product-count">
+						{productCountLabel()}
+					</span>
+					productos
+				</span>
+			</div>
+
+			{#if productStatsError}
+				<div
+					class="flex flex-col gap-3 rounded-lg border border-[hsl(var(--destructive)/0.2)] bg-[hsl(var(--destructive)/0.04)] px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between"
+					data-testid="product-stats-error"
+				>
+					<div class="flex min-w-0 items-start gap-2 text-sm text-[hsl(var(--destructive))]">
+						<CircleAlert class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+						<span class="break-words">{productStatsError}</span>
+					</div>
+					<Button
+						type="button"
+						variant="secondary"
+						size="sm"
+						class="shrink-0"
+						onclick={() => void loadProductStats()}
+						disabled={productStatsLoading}
+						data-testid="product-stats-retry"
+					>
+						<RefreshCw class={`size-4 ${productStatsLoading ? 'animate-spin' : ''}`} aria-hidden="true" />
+						Reintentar
+					</Button>
+				</div>
+			{/if}
+
 				<section class="grid gap-3 md:grid-cols-2 xl:grid-cols-6" aria-label="Metricas del catalogo">
 					<MetricCard
 						label="Top Kcal"
@@ -2789,17 +3558,15 @@
 					</MetricCard>
 					<MetricCard
 						label="Stock total"
-						value={formatNumber(totalStockQuantity())}
-						hint="Suma de todas las entradas"
+						value={totalStockQuantityLabel()}
+						hint={data.productStats ? 'Suma de todas las entradas' : richestProduct('calories')}
 					>
 						<Package class="size-4" aria-hidden="true" />
 					</MetricCard>
 					<MetricCard
 						label="Producto que antes caduca"
-						value={earliestExpirationProduct()?.productName ?? 'Sin lotes'}
-						hint={earliestExpirationProduct()?.expirationDate
-							? `Caduca ${formatDate(earliestExpirationProduct()?.expirationDate)} · ${formatNumber(earliestExpirationProduct()?.quantity ?? 0)} uds`
-							: 'Sin caducidad'}
+						value={earliestExpirationLabel()}
+						hint={earliestExpirationHint()}
 						tone="accent"
 					>
 						<CalendarClock class="size-4" aria-hidden="true" />
@@ -2816,8 +3583,8 @@
 					</div>
 						<span class="inline-flex w-fit shrink-0 items-center gap-1.5 rounded-md border border-[hsl(var(--border))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]">
 							<Leaf class="size-3.5" aria-hidden="true" />
-						<span data-testid="product-count">
-							{loadingCountLabel(!productsSectionLoading(), data.products.length)}
+						<span data-testid="product-loaded-count">
+							{productCountLabel()}
 						</span>
 						registrados
 					</span>
@@ -2836,7 +3603,7 @@
 							Estamos esperando al backend para mostrar el catalogo.
 						</p>
 					</div>
-				{:else if data.products.length === 0}
+				{:else if productsTotalElements === 0}
 					<div class="p-8 text-center">
 						<div class="mx-auto grid size-10 place-items-center rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
 							<Package class="size-5 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
@@ -2849,6 +3616,22 @@
 							<Button type="button" onclick={openCreateModal} disabled={!data.backendAvailable}>
 								<Plus class="size-4" aria-hidden="true" />
 								Añadir producto
+							</Button>
+						</div>
+					</div>
+				{:else if filteredProducts().length === 0}
+					<div class="grid place-items-center px-8 py-16 text-center">
+						<div class="grid size-12 place-items-center rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
+							<Search class="size-5 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
+						</div>
+						<h3 class="mt-4 text-sm font-semibold text-[hsl(var(--foreground))]">No hay coincidencias</h3>
+						<p class="mt-1 max-w-sm text-sm text-[hsl(var(--muted-foreground))]">
+							Prueba a limpiar filtros o a buscar por otro nombre, calorías o macros.
+						</p>
+						<div class="mt-4">
+							<Button type="button" variant="secondary" onclick={clearProductFilters}>
+								<X class="size-4" aria-hidden="true" />
+								Reiniciar búsqueda
 							</Button>
 						</div>
 					</div>
@@ -2877,9 +3660,9 @@
 											<th class="px-3 py-2.5 text-right font-medium">Precio</th>
 											<th class="px-4 py-2.5 text-right font-medium">Acciones</th>
 										</tr>
-									</thead>
+								</thead>
 								<tbody class="divide-y divide-[hsl(var(--border))]">
-									{#each data.products as product (product.id)}
+									{#each filteredProducts() as product (product.id)}
 										<tr class="transition-colors hover:bg-[hsl(var(--secondary)/0.55)]" data-testid={`product-card-${product.id}`}>
 											<td class="px-4 py-3 align-top">
 										<div class="flex min-w-0 items-start gap-3">
@@ -3004,7 +3787,7 @@
 						</div>
 
 						<div class="divide-y divide-[hsl(var(--border))] md:hidden">
-							{#each data.products as product (product.id)}
+							{#each filteredProducts() as product (product.id)}
 								<article class="space-y-4 p-4">
 									<div class="flex min-w-0 items-start gap-3">
 									{#if product.photo && !productPhotoIsBroken(product.photo)}
@@ -3143,6 +3926,31 @@
 									</article>
 							{/each}
 						</div>
+						<div class="border-t border-[hsl(var(--border))] px-4 py-4 text-center" bind:this={productsScrollSentinel}>
+							{#if productsLoadingMore}
+								<div class="inline-flex items-center gap-2 text-sm text-[hsl(var(--muted-foreground))]">
+									<span
+										class="size-4 animate-spin rounded-full border-2 border-[hsl(var(--muted-foreground))] border-t-transparent"
+										aria-hidden="true"
+									></span>
+									Cargando más productos
+								</div>
+							{:else if !hasActiveProductFilters(productFilters) && productsPage < productsTotalPages}
+								<Button
+									type="button"
+									variant="secondary"
+									size="sm"
+									onclick={() => loadMoreProducts(authSession)}
+								>
+									<LayoutList class="size-4" aria-hidden="true" />
+									Cargar más
+								</Button>
+							{:else}
+								<p class="text-xs text-[hsl(var(--muted-foreground))]">
+									{catalogProductCount()} de {productsTotalElements} productos cargados
+								</p>
+							{/if}
+						</div>
 						</div>
 					{/if}
 				</section>
@@ -3158,11 +3966,17 @@
 							<span class="inline-flex w-fit shrink-0 items-center gap-1.5 rounded-md border border-[hsl(var(--border))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]">
 								<Package class="size-3.5" aria-hidden="true" />
 								<span data-testid="stock-count">
-									{loadingCountLabel(!stockSectionLoading(), stockEntriesCount())}
+									{loadingCountLabel(!stockSectionLoading(), filteredStockEntries().length)}
 								</span>
 								entradas
 							</span>
 					</div>
+					{#if !stockSectionLoading() && data.stockEntries.length > 0}
+						<div class="grid gap-3 border-b border-[hsl(var(--border))] p-4 sm:grid-cols-2">
+							<label class="space-y-2"><span class="text-sm font-medium">Producto</span><select class={inputClass} bind:value={stockProductFilter}><option value="">Todos los productos</option>{#each stockFilterProducts() as product}<option value={product.id}>{product.name}</option>{/each}</select></label>
+							<label class="space-y-2"><span class="text-sm font-medium">Caduca antes de</span><input class={inputClass} type="date" bind:value={stockExpiresBefore} /></label>
+						</div>
+					{/if}
 
 					{#if stockSectionLoading()}
 						<div class="grid place-items-center px-8 py-16 text-center">
@@ -3187,8 +4001,10 @@
 								Abre el alta de stock desde un producto para ir registrando lotes y vencimientos.
 							</p>
 						</div>
+					{:else if filteredStockEntries().length === 0}
+						<div class="p-8 text-center"><Search class="mx-auto size-8 text-[hsl(var(--muted-foreground))]" /><h3 class="mt-3 text-sm font-semibold">No hay entradas que coincidan</h3><p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">Cambia los filtros para volver a ver el inventario.</p></div>
 					{:else}
-						<div class="overflow-x-auto">
+						<div class="hidden overflow-x-auto md:block">
 							<table class="w-full table-fixed text-sm">
 								<colgroup>
 									<col class="w-[30%]" />
@@ -3209,7 +4025,7 @@
 									</tr>
 								</thead>
 								<tbody class="divide-y divide-[hsl(var(--border))]">
-									{#each data.stockEntries as stockEntry (stockEntry.id)}
+									{#each filteredStockEntries() as stockEntry (stockEntry.id)}
 										<tr class="transition-colors hover:bg-[hsl(var(--secondary)/0.55)]">
 											<td class="px-4 py-3 align-top">
 												<div class="min-w-0">
@@ -3230,7 +4046,8 @@
 												{formatDate(stockEntry.entryDate)}
 											</td>
 											<td class="px-4 py-3 align-top">
-												<div class="flex justify-end gap-1">
+											<div class="flex justify-end gap-1">
+												<Button variant="ghost" size="icon" type="button" aria-label="Añadir cantidad" title="Añadir cantidad" onclick={() => openAddStockQuantityModal(stockEntry)}><Plus class="size-4" aria-hidden="true" /></Button>
 													<Button
 														variant="ghost"
 														size="icon"
@@ -3261,6 +4078,69 @@
 								</tbody>
 							</table>
 						</div>
+
+						<div class="divide-y divide-[hsl(var(--border))] md:hidden">
+							{#each filteredStockEntries() as stockEntry (stockEntry.id)}
+								<article class="space-y-4 p-4">
+									<div class="flex items-start justify-between gap-3">
+										<div class="min-w-0">
+											<h3 class="truncate text-sm font-semibold text-[hsl(var(--foreground))]">{stockEntry.productName}</h3>
+											<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Producto #{stockEntry.productId}</p>
+										</div>
+										<div class="shrink-0 text-right">
+											<p class="text-sm font-semibold tabular-nums text-[hsl(var(--foreground))]">
+												{formatNumber(stockEntry.quantity)}
+											</p>
+											<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">uds</p>
+										</div>
+									</div>
+
+									<dl class="grid grid-cols-2 gap-2 text-sm">
+										<div class="rounded-md border border-[hsl(var(--border))] p-2.5">
+											<dt class="text-xs text-[hsl(var(--muted-foreground))]">Precio</dt>
+											<dd class="mt-1 font-medium tabular-nums">{formatCurrency(stockEntry.price)}</dd>
+										</div>
+										<div class="rounded-md border border-[hsl(var(--border))] p-2.5">
+											<dt class="text-xs text-[hsl(var(--muted-foreground))]">Caducidad</dt>
+											<dd class="mt-1 font-medium tabular-nums">{formatDate(stockEntry.expirationDate)}</dd>
+										</div>
+										<div class="rounded-md border border-[hsl(var(--border))] p-2.5">
+											<dt class="text-xs text-[hsl(var(--muted-foreground))]">Entrada</dt>
+											<dd class="mt-1 font-medium tabular-nums">{formatDate(stockEntry.entryDate)}</dd>
+										</div>
+										<div class="rounded-md border border-[hsl(var(--border))] p-2.5">
+											<dt class="text-xs text-[hsl(var(--muted-foreground))]">Cantidad</dt>
+											<dd class="mt-1 font-medium tabular-nums">{formatNumber(stockEntry.quantity)}</dd>
+										</div>
+									</dl>
+
+									<div class="grid grid-cols-3 gap-2">
+										<Button variant="secondary" size="sm" type="button" onclick={() => openAddStockQuantityModal(stockEntry)}><Plus class="size-4" aria-hidden="true" />Añadir</Button>
+										<Button
+											variant="secondary"
+											size="sm"
+											type="button"
+											onclick={() => openEditStockModal(stockEntry)}
+											data-testid={`stock-edit-card-button-${stockEntry.id}`}
+										>
+											<Pencil class="size-4" aria-hidden="true" />
+											Editar
+										</Button>
+										<Button
+											variant="ghost"
+											size="sm"
+											type="button"
+											class="text-[hsl(var(--destructive))] hover:bg-[hsl(var(--destructive)/0.08)] hover:text-[hsl(var(--destructive))]"
+											onclick={() => openDeleteStockModal(stockEntry)}
+											data-testid={`stock-delete-card-button-${stockEntry.id}`}
+										>
+											<Trash2 class="size-4" aria-hidden="true" />
+											Borrar
+										</Button>
+									</div>
+								</article>
+							{/each}
+						</div>
 					{/if}
 					</section>
 
@@ -3271,7 +4151,7 @@
 							<div class="min-w-0">
 								<div class="flex flex-wrap items-center gap-2">
 									<h2 class="text-2xl font-semibold tracking-tight text-[hsl(var(--foreground))]">
-										{activeWeekMenuKind() === 'established' ? 'Semana establecida' : 'Semana propuesta'}
+										{activeWeekMenuKind() === 'established' ? 'Semana establecida' : 'Planificación'}
 									</h2>
 									{#if activeMenu}
 										<span
@@ -3286,7 +4166,7 @@
 								<p class="mt-1 max-w-2xl text-sm leading-6 text-[hsl(var(--muted-foreground))]">
 									{activeWeekMenuKind() === 'established'
 										? 'Semana ya publicada. Este snapshot es de solo lectura y conserva el stock consumido y la lista de compra.'
-										: 'Crea una semana dentro de un rango de hasta 8 dias incluidos y reparte menus por dia, seccion y producto.'}
+										: 'Crea una planificación de hasta 16 días y reparte menús por día, sección y producto.'}
 								</p>
 							</div>
 							<div class="flex flex-wrap gap-2 sm:shrink-0">
@@ -3303,19 +4183,35 @@
 							</div>
 							</div>
 
-							{#if activeWeekMenuKind() === 'proposed' && data.proposedWeekMenuDayPartsLoaded && data.proposedWeekMenuDayParts.length === 0}
-								<div class="flex flex-col gap-3 rounded-lg border border-[hsl(var(--accent)/0.28)] bg-[hsl(var(--accent)/0.08)] p-4 sm:flex-row sm:items-center sm:justify-between">
-									<div class="min-w-0">
-										<h3 class="text-sm font-semibold text-[hsl(var(--foreground))]">Faltan las partes del dia</h3>
-										<p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">
-											Define primero las secciones reutilizables para poder asignarlas a un menu diario.
-										</p>
+							{#if knownProposedWeekMenus.length > 0}
+								<section class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4 shadow-sm">
+									<div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(260px,360px)] lg:items-end">
+										<div class="min-w-0">
+											<h3 class="flex items-center gap-2 text-sm font-semibold text-[hsl(var(--foreground))]">
+												<LayoutList class="size-4 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
+												Semanas propuestas
+											</h3>
+											<p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">
+												{knownProposedWeekMenus.length} propuestas guardadas en este navegador.
+											</p>
+										</div>
+										<label class="block min-w-0">
+											<span class={fieldLabelClass}>Propuesta activa</span>
+											<select
+												class={inputClass}
+												value={activeProposedWeekMenuId ?? ''}
+												onchange={handleProposedWeekMenuSelection}
+												disabled={!data.backendAvailable}
+												data-testid="proposed-week-menu-selector"
+											>
+												<option value="" disabled>Selecciona una propuesta</option>
+												{#each knownProposedWeekMenus as menu (menu.id)}
+													<option value={menu.id}>{knownProposedWeekMenuLabel(menu)}</option>
+												{/each}
+											</select>
+										</label>
 									</div>
-									<Button type="button" variant="secondary" onclick={() => setSection('day-parts')} data-testid="week-day-parts-link">
-										<Settings class="size-4" aria-hidden="true" />
-										Definir partes
-									</Button>
-								</div>
+								</section>
 							{/if}
 
 							{#if activeWeekMenuKind() === 'established' && !data.establishedWeekMenuLoaded}
@@ -3339,7 +4235,7 @@
 											aria-hidden="true"
 										></div>
 									</div>
-									<h3 class="mt-4 text-sm font-semibold text-[hsl(var(--foreground))]">Cargando semana propuesta</h3>
+									<h3 class="mt-4 text-sm font-semibold text-[hsl(var(--foreground))]">Cargando planificación</h3>
 									<p class="mt-1 max-w-sm text-sm text-[hsl(var(--muted-foreground))]">
 										Estamos consultando la semana activa y sus menus diarios.
 									</p>
@@ -3362,11 +4258,19 @@
 										</Button>
 									</div>
 								</div>
-							{:else}
-								{@const weekSummary = weekPlanningSummary()}
-								{@const weekDayList = weekDays()}
+						{:else}
+							{@const weekSummary = weekPlanningSummary()}
+							{@const weekDayList = weekDays()}
+							{#if data.establishedWeekMenu}
+								<MenuCompletionPanel
+									menuId={data.establishedWeekMenu.id}
+									payerUsername={data.establishedWeekMenu.payerUsername}
+									authorization={authorizationHeader(authSession!)}
+									initialShoppingList={data.establishedWeekMenu.shoppingList}
+								/>
+							{/if}
 
-							<section class="grid gap-3 md:grid-cols-2 xl:grid-cols-4" aria-label="Metricas de la semana">
+						<section class="grid gap-3 md:grid-cols-2 xl:grid-cols-4" aria-label="Metricas de la semana">
 								<div data-testid="week-planned-days-card">
 									<MetricCard
 										label="Dias planificados"
@@ -3403,12 +4307,15 @@
 									<MetricCard
 										label="Coste estimado"
 										value={formatCurrency(weekSummary.estimatedCost)}
-										hint="Segun stock disponible"
+										hint="Stock disponible y precio por defecto"
 									>
 										<Database class="size-4" aria-hidden="true" />
 									</MetricCard>
 								</div>
-							</section>
+						</section>
+						{#if activeMenu.nutritionalRules}
+							<NutritionalEvaluationPanel evaluation={activeMenu.nutritionalRules} />
+						{/if}
 
 							<section
 								class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-sm"
@@ -3418,7 +4325,8 @@
 									<div class="min-w-0">
 										<h3 class="text-base font-semibold text-[hsl(var(--foreground))]">Stock necesario</h3>
 										<p class="mt-1 max-w-2xl text-sm text-[hsl(var(--muted-foreground))]">
-											Resumen de unidades necesarias por producto y su cobertura real con el stock actual.
+											Resumen de unidades necesarias por producto, su cobertura real con el stock actual y el coste
+											estimado del faltante con el precio por defecto.
 										</p>
 									</div>
 									<span class="inline-flex w-fit shrink-0 items-center gap-1.5 rounded-md border border-[hsl(var(--border))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]">
@@ -3438,7 +4346,7 @@
 										</p>
 									</div>
 								{:else}
-									<div class="overflow-x-auto">
+									<div class="hidden overflow-x-auto md:block">
 										<table class="w-full table-fixed text-sm">
 											<colgroup>
 												<col class="w-[34%]" />
@@ -3481,6 +4389,50 @@
 											</tbody>
 										</table>
 									</div>
+
+									<div class="divide-y divide-[hsl(var(--border))] md:hidden">
+										{#each weekSummary.requirements as requirement (requirement.productId)}
+											<article
+												class={`space-y-4 p-4 ${requirement.missingUnits > 0 ? 'bg-[hsl(var(--destructive)/0.04)]' : ''}`}
+												data-testid={`week-stock-card-${requirement.productId}`}
+											>
+												<div class="flex items-start justify-between gap-3">
+													<div class="min-w-0">
+														<h4 class="truncate text-sm font-semibold text-[hsl(var(--foreground))]">{requirement.productName}</h4>
+														<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Producto #{requirement.productId}</p>
+													</div>
+													<span
+														class={`shrink-0 rounded-md px-2 py-1 text-xs font-medium ${
+															requirement.missingUnits > 0
+																? 'bg-[hsl(var(--destructive)/0.1)] text-[hsl(var(--destructive))]'
+																: 'bg-[hsl(var(--primary)/0.08)] text-[hsl(var(--primary))]'
+														}`}
+													>
+														{requirement.missingUnits > 0 ? 'Falta stock' : 'Cubierto'}
+													</span>
+												</div>
+
+												<dl class="grid grid-cols-2 gap-2 text-sm">
+													<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-2.5">
+														<dt class="text-xs text-[hsl(var(--muted-foreground))]">Necesarias</dt>
+														<dd class="mt-1 font-medium tabular-nums">{formatNumber(requirement.requiredUnits)}</dd>
+													</div>
+													<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-2.5">
+														<dt class="text-xs text-[hsl(var(--muted-foreground))]">Disponibles</dt>
+														<dd class="mt-1 font-medium tabular-nums">{formatNumber(requirement.availableUnits)}</dd>
+													</div>
+													<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-2.5">
+														<dt class="text-xs text-[hsl(var(--muted-foreground))]">Faltan</dt>
+														<dd class="mt-1 font-medium tabular-nums">{formatNumber(requirement.missingUnits)}</dd>
+													</div>
+													<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-2.5">
+														<dt class="text-xs text-[hsl(var(--muted-foreground))]">Coste estimado</dt>
+														<dd class="mt-1 font-medium tabular-nums">{formatCurrency(requirement.estimatedCost)}</dd>
+													</div>
+												</dl>
+											</article>
+										{/each}
+									</div>
 								{/if}
 							</section>
 
@@ -3497,6 +4449,28 @@
 										{weekDayList.length} dias
 									</span>
 								</div>
+
+								{#if data.proposedWeekMenuDayPartsLoaded && data.proposedWeekMenuDayParts.length === 0}
+									<div
+										class="flex flex-col gap-3 border-b border-[hsl(var(--accent)/0.3)] bg-[hsl(var(--accent)/0.08)] p-4 sm:flex-row sm:items-center sm:justify-between"
+										role="alert"
+										data-testid="week-day-parts-warning"
+									>
+										<div class="flex min-w-0 items-start gap-3">
+											<CircleAlert class="mt-0.5 size-5 shrink-0 text-[hsl(var(--accent))]" aria-hidden="true" />
+											<div class="min-w-0">
+												<h4 class="text-sm font-semibold text-[hsl(var(--foreground))]">Añade una parte del día para continuar</h4>
+												<p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">
+													Los botones para añadir menús estarán deshabilitados hasta que configures al menos una parte del día.
+												</p>
+											</div>
+										</div>
+										<Button type="button" variant="secondary" onclick={() => setSection('day-parts')} data-testid="week-day-parts-link">
+											<Settings class="size-4" aria-hidden="true" />
+											Añadir parte del día
+										</Button>
+									</div>
+								{/if}
 
 								<div class="divide-y divide-[hsl(var(--border))]">
 									{#each weekDayList as date (date)}
@@ -3530,6 +4504,12 @@
 											</div>
 
 											{#if day}
+											{#if activeMenu.nutritionalRules}
+												<DailyNutritionalEvaluation
+													values={day.nutritionalValues}
+													rules={activeMenu.nutritionalRules}
+												/>
+											{:else}
 												<div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
 													<MetricCard label="Calorias" value={formatNumber(day.nutritionalValues.calories)} hint="Total del dia">
 														<Flame class="size-4" aria-hidden="true" />
@@ -3544,6 +4524,7 @@
 														<Droplets class="size-4" aria-hidden="true" />
 													</MetricCard>
 												</div>
+											{/if}
 
 												<div class="space-y-3">
 													{#each day.sections as section}
@@ -3717,6 +4698,12 @@
 								</section>
 							</section>
 
+					{:else if currentSection === 'supermarkets'}
+						<SupermarketsPanel authorization={authorizationHeader(authSession!)} />
+					{:else if currentSection === 'money-box'}
+						<MoneyBoxPanel authorization={authorizationHeader(authSession!)} userId={data.session.userId} />
+					{:else if currentSection === 'nutritional-rules'}
+						<NutritionalRulesPanel authorization={authorizationHeader(authSession!)} />
 					{:else}
 						<section id="recipes" class="space-y-4">
 					<div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -3772,6 +4759,13 @@
 						</MetricCard>
 					</section>
 
+					<RecipeFilters
+						filters={recipeFilters}
+						onChange={updateRecipeFilters}
+						onClear={clearRecipeFilters}
+						testIdPrefix="recipe-filter"
+					/>
+
 					<section class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-sm">
 						<div class="flex flex-col gap-3 border-b border-[hsl(var(--border))] p-4 sm:flex-row sm:items-center sm:justify-between">
 							<div class="min-w-0">
@@ -3783,9 +4777,9 @@
 								<span class="inline-flex w-fit shrink-0 items-center gap-1.5 rounded-md border border-[hsl(var(--border))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]">
 									<BookOpen class="size-3.5" aria-hidden="true" />
 								<span data-testid="recipe-count">
-									{loadingCountLabel(!recipesSectionLoading(), data.recipes.length)}
+									{recipeCountLabel()}
 								</span>
-								registradas
+								cargadas
 							</span>
 						</div>
 
@@ -3818,6 +4812,33 @@
 									</Button>
 								</div>
 							</div>
+						{:else if filteredRecipes().length === 0}
+							<div class="grid place-items-center px-8 py-16 text-center">
+								<div class="grid size-12 place-items-center rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
+									<Search class="size-5 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
+								</div>
+								<h3 class="mt-4 text-sm font-semibold text-[hsl(var(--foreground))]">No hay coincidencias</h3>
+								<p class="mt-1 max-w-sm text-sm text-[hsl(var(--muted-foreground))]">
+									Prueba a limpiar filtros o a cargar más recetas para ampliar la búsqueda.
+								</p>
+								<div class="mt-4 flex flex-wrap justify-center gap-2">
+									<Button type="button" variant="secondary" onclick={clearRecipeFilters}>
+										<X class="size-4" aria-hidden="true" />
+										Limpiar filtros
+									</Button>
+									{#if recipesPage < recipesTotalPages}
+										<Button
+											type="button"
+											variant="secondary"
+											onclick={() => loadMoreRecipes(authSession)}
+											disabled={recipesLoadingMore}
+										>
+											<LayoutList class="size-4" aria-hidden="true" />
+											Cargar más
+										</Button>
+									{/if}
+								</div>
+							</div>
 						{:else}
 							<div data-testid="recipe-list">
 								<div class="hidden overflow-x-auto md:block">
@@ -3839,7 +4860,7 @@
 											</tr>
 										</thead>
 										<tbody class="divide-y divide-[hsl(var(--border))]">
-											{#each data.recipes as recipe (recipe.id)}
+											{#each filteredRecipes() as recipe (recipe.id)}
 												<tr class="transition-colors hover:bg-[hsl(var(--secondary)/0.55)]" data-testid={`recipe-card-${recipe.id}`}>
 													<td class="px-4 py-3 align-top">
 														<div class="flex min-w-0 items-start gap-3">
@@ -3924,7 +4945,7 @@
 								</div>
 
 								<div class="divide-y divide-[hsl(var(--border))] md:hidden">
-									{#each data.recipes as recipe (recipe.id)}
+									{#each filteredRecipes() as recipe (recipe.id)}
 										<article class="space-y-4 p-4">
 											<div class="flex min-w-0 items-start gap-3">
 												<span class="grid size-9 shrink-0 place-items-center rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] text-[hsl(var(--muted-foreground))]">
@@ -4018,6 +5039,31 @@
 										</article>
 									{/each}
 								</div>
+								<div class="border-t border-[hsl(var(--border))] px-4 py-4 text-center" bind:this={recipesScrollSentinel}>
+									{#if recipesLoadingMore}
+										<div class="inline-flex items-center gap-2 text-sm text-[hsl(var(--muted-foreground))]">
+											<span
+												class="size-4 animate-spin rounded-full border-2 border-[hsl(var(--muted-foreground))] border-t-transparent"
+												aria-hidden="true"
+											></span>
+											Cargando más recetas
+										</div>
+									{:else if recipesPage < recipesTotalPages}
+										<Button
+											type="button"
+											variant="secondary"
+											size="sm"
+											onclick={() => loadMoreRecipes(authSession)}
+										>
+											<LayoutList class="size-4" aria-hidden="true" />
+											Cargar más
+										</Button>
+									{:else}
+										<p class="text-xs text-[hsl(var(--muted-foreground))]">
+											{data.recipes.length} de {recipesTotalElements} recetas cargadas
+										</p>
+									{/if}
+								</div>
 							</div>
 						{/if}
 					</section>
@@ -4028,7 +5074,7 @@
 			</div>
 
 	{#if modalMode === 'product-create'}
-		<div class="fixed inset-0 z-30 grid place-items-center bg-black/30 p-4 backdrop-blur-sm" role="presentation">
+		<div class="fixed inset-0 z-30 flex items-start justify-center overflow-y-auto bg-black/30 p-3 backdrop-blur-sm sm:p-4" role="presentation">
 			<div
 				class="max-h-[calc(100vh-2rem)] w-full max-w-3xl overflow-y-auto rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-xl"
 				role="dialog"
@@ -4126,6 +5172,11 @@
 									{/if}
 								</label>
 							</div>
+						</section>
+
+						<section class="space-y-3 border-t border-[hsl(var(--border))] pt-5">
+							<div><h3 class="text-sm font-semibold">Supermercados</h3><p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Selecciona dónde está disponible el producto.</p></div>
+							{#if data.supermarkets.length === 0}<p class="text-sm text-[hsl(var(--muted-foreground))]">No hay supermercados configurados.</p>{:else}<div class="grid gap-2 sm:grid-cols-2">{#each data.supermarkets as supermarket (supermarket.id)}<label class="flex items-center gap-2 rounded-md border p-3 text-sm"><input type="checkbox" value={String(supermarket.id)} bind:group={createDraft.supermarketIds} /><span class="min-w-0 truncate">{supermarket.name}</span></label>{/each}</div>{/if}
 						</section>
 
 						<section class="space-y-4 border-t border-[hsl(var(--border))] pt-5">
@@ -4253,7 +5304,7 @@
 	{/if}
 
 	{#if modalMode === 'product-edit' && editingProductId !== null}
-		<div class="fixed inset-0 z-30 grid place-items-center bg-black/30 p-4 backdrop-blur-sm" role="presentation">
+		<div class="fixed inset-0 z-30 flex items-start justify-center overflow-y-auto bg-black/30 p-3 backdrop-blur-sm sm:p-4" role="presentation">
 			<div
 				class="max-h-[calc(100vh-2rem)] w-full max-w-3xl overflow-y-auto rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-xl"
 				role="dialog"
@@ -4361,6 +5412,10 @@
 								<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
 									Sube una nueva foto si quieres reemplazar la miniatura actual.
 								</p>
+							</div>
+							<div class="space-y-3 border-b border-[hsl(var(--border))] pb-5">
+								<div><h3 class="text-sm font-semibold">Supermercados</h3><p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Actualiza los comercios donde está disponible.</p></div>
+								{#if data.supermarkets.length === 0}<p class="text-sm text-[hsl(var(--muted-foreground))]">No hay supermercados configurados.</p>{:else}<div class="grid gap-2 sm:grid-cols-2">{#each data.supermarkets as supermarket (supermarket.id)}<label class="flex items-center gap-2 rounded-md border p-3 text-sm"><input type="checkbox" value={String(supermarket.id)} bind:group={editDraft.supermarketIds} /><span class="min-w-0 truncate">{supermarket.name}</span></label>{/each}</div>{/if}
 							</div>
 							<label class="block min-w-0">
 								<span class={fieldLabelClass}>Cambiar imagen</span>
@@ -4513,7 +5568,7 @@
 	{/if}
 
 	{#if modalMode === 'product-delete' && deleteProduct}
-		<div class="fixed inset-0 z-30 grid place-items-center bg-black/30 p-4 backdrop-blur-sm" role="presentation">
+		<div class="fixed inset-0 z-30 flex items-start justify-center overflow-y-auto bg-black/30 p-3 backdrop-blur-sm sm:p-4" role="presentation">
 			<div
 				class="max-h-[calc(100vh-2rem)] w-full max-w-lg overflow-y-auto rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-xl"
 				role="dialog"
@@ -4559,7 +5614,7 @@
 	{/if}
 
 	{#if modalMode === 'stock' && stockProduct}
-		<div class="fixed inset-0 z-30 grid place-items-center bg-black/30 p-4 backdrop-blur-sm" role="presentation">
+		<div class="fixed inset-0 z-30 flex items-start justify-center overflow-y-auto bg-black/30 p-3 backdrop-blur-sm sm:p-4" role="presentation">
 			<div
 				class="max-h-[calc(100vh-2rem)] w-full max-w-lg overflow-y-auto rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-xl"
 				role="dialog"
@@ -4668,8 +5723,17 @@
 		</div>
 	{/if}
 
+	{#if modalMode === 'stock-add' && adjustingStockEntry}
+		<div class="fixed inset-0 z-30 flex items-start justify-center overflow-y-auto bg-black/30 p-3 backdrop-blur-sm sm:p-4" role="presentation">
+			<div class="mt-[10vh] w-full max-w-md rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-xl" role="dialog" aria-modal="true" aria-labelledby="add-stock-title" data-testid="add-stock-quantity-modal">
+				<div class="flex items-start justify-between gap-4 border-b p-5"><div class="min-w-0"><h2 id="add-stock-title" class="text-lg font-semibold">Añadir cantidad</h2><p class="mt-1 break-words text-sm text-[hsl(var(--muted-foreground))]">Suma unidades a la entrada de {adjustingStockEntry.productName}.</p></div><Button variant="ghost" size="icon" type="button" onclick={closeModal} aria-label="Cerrar modal"><X class="size-4" /></Button></div>
+				<form class="space-y-5 p-5" onsubmit={submitAddStockQuantity}><label class="block"><span class={fieldLabelClass}>Cantidad que se añade</span><input class={inputClass} type="number" min="0.01" step="any" inputmode="decimal" bind:value={stockAdjustmentQuantity} data-testid="stock-add-quantity" required /></label><div class="flex flex-col-reverse gap-2 border-t pt-5 sm:flex-row sm:justify-end"><Button variant="secondary" type="button" onclick={closeModal}>Cancelar</Button><Button type="submit" disabled={!data.backendAvailable}><Plus class="size-4" /> Añadir cantidad</Button></div></form>
+			</div>
+		</div>
+	{/if}
+
 	{#if modalMode === 'stock-delete' && deletingStockEntry}
-		<div class="fixed inset-0 z-30 grid place-items-center bg-black/30 p-4 backdrop-blur-sm" role="presentation">
+		<div class="fixed inset-0 z-30 flex items-start justify-center overflow-y-auto bg-black/30 p-3 backdrop-blur-sm sm:p-4" role="presentation">
 			<div
 				class="max-h-[calc(100vh-2rem)] w-full max-w-lg overflow-y-auto rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-xl"
 				role="dialog"
@@ -4710,7 +5774,7 @@
 	{/if}
 
 	{#if modalMode === 'recipe-create'}
-		<div class="fixed inset-0 z-30 grid place-items-center bg-black/30 p-4 backdrop-blur-sm" role="presentation">
+		<div class="fixed inset-0 z-30 flex items-start justify-center overflow-y-auto bg-black/30 p-3 backdrop-blur-sm sm:p-4" role="presentation">
 			<div
 				class="max-h-[calc(100vh-2rem)] w-full max-w-4xl overflow-y-auto rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-xl"
 				role="dialog"
@@ -4791,12 +5855,23 @@
 									<div class="grid gap-3 md:grid-cols-[minmax(0,1fr)_160px_auto]">
 										<label class="block min-w-0">
 											<span class={fieldLabelClass}>Producto</span>
-											<select class={inputClass} name="ingredientProductId" bind:value={ingredient.productId} data-testid={`create-recipe-product-${index}`}>
-												<option value="">Selecciona un producto</option>
-												{#each data.products as product}
-													<option value={String(product.id)}>{product.name}</option>
-												{/each}
-											</select>
+											<input type="hidden" name="ingredientProductId" value={ingredient.productId} />
+											<Button
+												type="button"
+												variant="secondary"
+												class="w-full justify-between"
+												onclick={() =>
+													openProductPicker({
+														type: 'recipe-create',
+														productIndex: index,
+														selectedProductId: ingredient.productId
+													})
+												}
+												data-testid={`create-recipe-product-${index}`}
+											>
+												<span class="min-w-0 truncate text-left">{productLabel(ingredient.productId)}</span>
+												<Search class="size-4 shrink-0" aria-hidden="true" />
+											</Button>
 											{#if recipeCreateErrors().ingredientProductId?.[index]}
 												<small class={fieldErrorClass}>{recipeCreateErrors().ingredientProductId?.[index]}</small>
 											{/if}
@@ -4841,7 +5916,7 @@
 	{/if}
 
 	{#if modalMode === 'recipe-edit' && editingRecipeId !== null}
-		<div class="fixed inset-0 z-30 grid place-items-center bg-black/30 p-4 backdrop-blur-sm" role="presentation">
+		<div class="fixed inset-0 z-30 flex items-start justify-center overflow-y-auto bg-black/30 p-3 backdrop-blur-sm sm:p-4" role="presentation">
 			<div
 				class="max-h-[calc(100vh-2rem)] w-full max-w-4xl overflow-y-auto rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-xl"
 				role="dialog"
@@ -4924,12 +5999,23 @@
 									<div class="grid gap-3 md:grid-cols-[minmax(0,1fr)_160px_auto]">
 										<label class="block min-w-0">
 											<span class={fieldLabelClass}>Producto</span>
-											<select class={inputClass} name="ingredientProductId" bind:value={ingredient.productId} data-testid={`edit-recipe-product-${index}`}>
-												<option value="">Selecciona un producto</option>
-												{#each data.products as product}
-													<option value={String(product.id)}>{product.name}</option>
-												{/each}
-											</select>
+											<input type="hidden" name="ingredientProductId" value={ingredient.productId} />
+											<Button
+												type="button"
+												variant="secondary"
+												class="w-full justify-between"
+												onclick={() =>
+													openProductPicker({
+														type: 'recipe-edit',
+														productIndex: index,
+														selectedProductId: ingredient.productId
+													})
+												}
+												data-testid={`edit-recipe-product-${index}`}
+											>
+												<span class="min-w-0 truncate text-left">{productLabel(ingredient.productId)}</span>
+												<Search class="size-4 shrink-0" aria-hidden="true" />
+											</Button>
 											{#if recipeUpdateErrors().ingredientProductId?.[index]}
 												<small class={fieldErrorClass}>{recipeUpdateErrors().ingredientProductId?.[index]}</small>
 											{/if}
@@ -4974,7 +6060,7 @@
 	{/if}
 
 	{#if modalMode === 'recipe-delete' && deleteRecipeItem}
-		<div class="fixed inset-0 z-30 grid place-items-center bg-black/30 p-4 backdrop-blur-sm" role="presentation">
+		<div class="fixed inset-0 z-30 flex items-start justify-center overflow-y-auto bg-black/30 p-3 backdrop-blur-sm sm:p-4" role="presentation">
 			<div
 				class="max-h-[calc(100vh-2rem)] w-full max-w-lg overflow-y-auto rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-xl"
 				role="dialog"
@@ -5020,7 +6106,7 @@
 	{/if}
 
 	{#if modalMode === 'recipe-derive' && derivingRecipeId !== null}
-		<div class="fixed inset-0 z-30 grid place-items-center bg-black/30 p-4 backdrop-blur-sm" role="presentation">
+		<div class="fixed inset-0 z-30 flex items-start justify-center overflow-y-auto bg-black/30 p-3 backdrop-blur-sm sm:p-4" role="presentation">
 			<div
 				class="max-h-[calc(100vh-2rem)] w-full max-w-lg overflow-y-auto rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-xl"
 				role="dialog"
@@ -5085,7 +6171,7 @@
 	{/if}
 
 	{#if modalMode === 'day-part'}
-		<div class="fixed inset-0 z-30 grid place-items-center bg-black/30 p-4 backdrop-blur-sm" role="presentation">
+		<div class="fixed inset-0 z-30 flex items-start justify-center overflow-y-auto bg-black/30 p-3 backdrop-blur-sm sm:p-4" role="presentation">
 			<div
 				class="max-h-[calc(100vh-2rem)] w-full max-w-lg overflow-y-auto rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-xl"
 				role="dialog"
@@ -5158,7 +6244,7 @@
 	{/if}
 
 	{#if modalMode === 'week-create'}
-		<div class="fixed inset-0 z-30 grid place-items-center bg-black/30 p-4 backdrop-blur-sm" role="presentation">
+		<div class="fixed inset-0 z-30 flex items-start justify-center overflow-y-auto bg-black/30 p-3 backdrop-blur-sm sm:p-4" role="presentation">
 			<div
 				class="max-h-[calc(100vh-2rem)] w-full max-w-lg overflow-y-auto rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-xl"
 				role="dialog"
@@ -5169,10 +6255,10 @@
 				<div class="flex items-start justify-between gap-4 border-b border-[hsl(var(--border))] p-5">
 					<div class="min-w-0">
 						<h2 id="week-create-title" class="text-lg font-semibold text-[hsl(var(--foreground))]">
-							Crear semana propuesta
+							Crear planificación
 						</h2>
 						<p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">
-							Elige un rango de hasta 8 dias incluidos para empezar a planificar menus diarios.
+							Elige un rango de hasta 16 dias incluidos para empezar a planificar menus diarios.
 						</p>
 					</div>
 					<Button variant="ghost" size="icon" type="button" onclick={closeModal} aria-label="Cerrar modal">
@@ -5186,7 +6272,7 @@
 							<div>
 								<h3 class="text-sm font-semibold text-[hsl(var(--foreground))]">Rango de fechas</h3>
 								<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
-									El backend solo admite semanas que caben dentro de 8 dias incluidos.
+									El backend admite planificaciones de hasta 16 días incluidos.
 								</p>
 							</div>
 							<div class="grid gap-4 md:grid-cols-2">
@@ -5211,7 +6297,7 @@
 									name="endDate"
 									bind:value={creatingWeekMenuDraft.endDate}
 									min={creatingWeekMenuDraft.startDate || undefined}
-									max={creatingWeekMenuDraft.startDate ? dateInputOffset(creatingWeekMenuDraft.startDate, 7) : undefined}
+									max={creatingWeekMenuDraft.startDate ? dateInputOffset(creatingWeekMenuDraft.startDate, 15) : undefined}
 									data-testid="week-end-date"
 								/>
 									{#if weekCreateErrors().endDate}
@@ -5235,7 +6321,7 @@
 	{/if}
 
 	{#if modalMode === 'week-day' && editingWeekDayDate !== null}
-		<div class="fixed inset-0 z-30 grid place-items-center bg-black/30 p-4 backdrop-blur-sm" role="presentation">
+		<div class="fixed inset-0 z-30 flex items-start justify-center overflow-y-auto bg-black/30 p-3 backdrop-blur-sm sm:p-4" role="presentation">
 			<div
 				class="max-h-[calc(100vh-2rem)] w-full max-w-4xl overflow-y-auto rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-xl"
 				role="dialog"
@@ -5249,18 +6335,29 @@
 							{editingWeekDayDate ? 'Editar menu diario' : 'Añadir menu diario'}
 						</h2>
 						<p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">
-							Ordena secciones y productos para un dia concreto de la semana propuesta.
+							Ordena secciones y productos para un día concreto de la planificación.
 						</p>
 						<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
 							Los menus guardados se pueden reabrir y ajustar tantas veces como haga falta.
 						</p>
 					</div>
-					<Button variant="ghost" size="icon" type="button" onclick={closeModal} aria-label="Cerrar modal">
-						<X class="size-4" aria-hidden="true" />
-					</Button>
+					<div class="flex shrink-0 items-center gap-2">
+						<Button
+							type="submit"
+							form="week-day-form"
+							size="sm"
+							disabled={!data.backendAvailable || data.products.length === 0 || data.proposedWeekMenuDayParts.length === 0}
+						>
+							<Save class="size-4" aria-hidden="true" />
+							Guardar
+						</Button>
+						<Button variant="ghost" size="icon" type="button" onclick={closeModal} aria-label="Cerrar modal">
+							<X class="size-4" aria-hidden="true" />
+						</Button>
+					</div>
 				</div>
 
-				<form class="space-y-6 p-5" onsubmit={submitUpsertWeekDay} data-testid="week-day-form">
+				<form id="week-day-form" class="space-y-6 p-5" onsubmit={submitUpsertWeekDay} data-testid="week-day-form">
 					<fieldset class="space-y-6" disabled={!data.backendAvailable}>
 						<section class="space-y-4">
 							<div>
@@ -5380,17 +6477,24 @@
 													<div class="grid gap-3 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-3 lg:grid-cols-[minmax(0,1.3fr)_repeat(3,minmax(0,0.55fr))_auto]">
 														<label class="block min-w-0">
 															<span class={fieldLabelClass}>Producto</span>
-															<select
-																class={inputClass}
-																name="productId"
-																bind:value={product.productId}
+															<input type="hidden" name="productId" value={product.productId} />
+															<Button
+																type="button"
+																variant="secondary"
+																class="w-full justify-between"
+																onclick={() =>
+																	openProductPicker({
+																		type: 'week-day',
+																		sectionIndex,
+																		productIndex,
+																		selectedProductId: product.productId
+																	})
+																}
 																data-testid={`week-product-id-${sectionIndex}-${productIndex}`}
 															>
-																<option value="">Selecciona un producto</option>
-																{#each data.products as availableProduct}
-																	<option value={String(availableProduct.id)}>{availableProduct.name}</option>
-																{/each}
-															</select>
+																<span class="min-w-0 truncate text-left">{productLabel(product.productId)}</span>
+																<Search class="size-4 shrink-0" aria-hidden="true" />
+															</Button>
 															{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.productId}
 																<small class={fieldErrorClass}>
 																	{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.productId}
@@ -5492,8 +6596,20 @@
 		</div>
 	{/if}
 
+	{#if modalMode === 'product-picker' && productPickerTarget && authSession}
+		<ProductPickerDialog
+			title="Seleccionar producto"
+			description="Busca por nombre o usa los filtros avanzados para encontrar el producto exacto."
+			authorization={authorizationHeader(authSession)}
+			products={data.products}
+			selectedProductId={productPickerTarget.selectedProductId}
+			onSelect={selectProductFromPicker}
+			onClose={closeProductPicker}
+		/>
+	{/if}
+
 	{#if modalMode === 'product-view' && detailProduct}
-		<div class="fixed inset-0 z-40 grid place-items-center bg-black/40 p-4 backdrop-blur-sm" role="presentation">
+		<div class="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/40 p-3 backdrop-blur-sm sm:p-4" role="presentation">
 			<div
 				class="max-h-[calc(100vh-2rem)] w-full max-w-3xl overflow-y-auto rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-2xl"
 				role="dialog"
@@ -5602,7 +6718,7 @@
 	{/if}
 
 	{#if modalMode === 'recipe-view' && detailRecipe}
-		<div class="fixed inset-0 z-40 grid place-items-center bg-black/40 p-4 backdrop-blur-sm" role="presentation">
+		<div class="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/40 p-3 backdrop-blur-sm sm:p-4" role="presentation">
 			<div
 				class="max-h-[calc(100vh-2rem)] w-full max-w-4xl overflow-y-auto rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-2xl"
 				role="dialog"
@@ -5714,7 +6830,7 @@
 
 	{#if previewProduct?.photo}
 		{@const previewPhoto = previewProduct.photo}
-		<div class="fixed inset-0 z-40 grid place-items-center bg-black/50 p-4 backdrop-blur-sm" role="presentation">
+		<div class="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/50 p-3 backdrop-blur-sm sm:p-4" role="presentation">
 			<div
 				class="w-full max-w-4xl overflow-hidden rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-2xl"
 				role="dialog"

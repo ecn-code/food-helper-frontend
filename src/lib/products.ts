@@ -13,6 +13,7 @@ export type Product = {
 	defaultPrice: number | null;
 	nutritionalValues: NutritionalValues;
 	photo: string | null;
+	supermarkets: { id: number; name: string }[];
 };
 
 export type ProductFormValues = {
@@ -24,6 +25,7 @@ export type ProductFormValues = {
 	carbohydrates: string;
 	proteins: string;
 	fats: string;
+	supermarketIds: string[];
 };
 
 export type ProductFormErrors = Partial<Record<keyof ProductFormValues, string>>;
@@ -36,7 +38,8 @@ export const emptyProductForm = (): ProductFormValues => ({
 	calories: '',
 	carbohydrates: '',
 	proteins: '',
-	fats: ''
+	fats: '',
+	supermarketIds: []
 });
 
 export const toProductFormValues = (product: Product): ProductFormValues => ({
@@ -47,5 +50,6 @@ export const toProductFormValues = (product: Product): ProductFormValues => ({
 	calories: String(product.nutritionalValues.calories),
 	carbohydrates: String(product.nutritionalValues.carbohydrates),
 	proteins: String(product.nutritionalValues.proteins),
-	fats: String(product.nutritionalValues.fats)
+	fats: String(product.nutritionalValues.fats),
+	supermarketIds: product.supermarkets.map((supermarket) => String(supermarket.id))
 });

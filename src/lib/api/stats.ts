@@ -1,19 +1,19 @@
 import { request } from '$lib/api/backend';
 
 export type ProductStatsMetric = {
-	productId: number;
+	productId: number | null;
 	productName: string;
 	value: number;
 	message: string | null;
 };
 
 export type ProductStatsEarliestExpiration = {
-	productId: number;
+	productId: number | null;
 	productName: string;
-	quantity: number;
-	expirationDate: string;
+	quantity: number | null;
+	expirationDate: string | null;
 	message: string | null;
-} | null;
+};
 
 export type ProductStatsSummary = {
 	productId: number;

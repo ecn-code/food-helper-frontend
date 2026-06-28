@@ -8,6 +8,9 @@ const mockBackendUrl = process.env.MOCK_BACKEND_URL || `http://127.0.0.1:${mockB
 const resolvedBackendBaseUrl = useRealBackend ? publicBackendBaseUrl : mockBackendUrl;
 
 export default defineConfig({
+	// The mock backend keeps one shared in-memory state. Running test files in
+	// parallel lets one file reset the session and data while another is active.
+	workers: useRealBackend ? undefined : 1,
 	use: {
 		baseURL: `http://127.0.0.1:${frontendPort}`
 	},

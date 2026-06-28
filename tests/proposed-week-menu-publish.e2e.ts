@@ -7,7 +7,7 @@ test('publishes a proposed week menu into an established snapshot', async ({ pag
 	await page.getByTestId('login-password').fill('secret-password');
 	await page.getByTestId('login-submit').click();
 
-	await page.getByRole('link', { name: 'Semana propuesta' }).click();
+	await page.getByRole('link', { name: 'Planificación' }).click();
 	await page.getByRole('button', { name: 'Nueva semana' }).click();
 
 	await page.getByTestId('week-start-date').fill('2026-06-15');
@@ -15,7 +15,10 @@ test('publishes a proposed week menu into an established snapshot', async ({ pag
 	await page.getByTestId('week-create-form').getByRole('button', { name: 'Crear semana' }).click();
 
 	await page.getByTestId('week-day-action-2026-06-15').click();
-	await page.getByTestId('week-product-id-0-0').selectOption('1');
+	await page.getByTestId('week-product-id-0-0').click();
+	await expect(page.getByTestId('product-picker-modal')).toBeVisible();
+	await page.getByTestId('product-picker-option-1').click();
+	await expect(page.getByTestId('product-picker-modal')).toHaveCount(0);
 	await page.getByRole('button', { name: 'Guardar menu' }).click();
 
 	await page.getByRole('button', { name: 'Establecer semana' }).click();

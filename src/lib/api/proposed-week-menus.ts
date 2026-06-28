@@ -7,6 +7,21 @@ export type NutritionalValues = {
 	fats: number;
 };
 
+export type NutrientRuleEvaluation = {
+	value: number;
+	minimum: number | null;
+	maximum: number | null;
+	status: 'BELOW_MINIMUM' | 'WITHIN_RANGE' | 'ABOVE_MAXIMUM' | 'NOT_CONFIGURED';
+};
+
+export type NutritionalRulesEvaluation = {
+	plannedDays: number;
+	calories: NutrientRuleEvaluation;
+	carbohydrates: NutrientRuleEvaluation;
+	proteins: NutrientRuleEvaluation;
+	fats: NutrientRuleEvaluation;
+};
+
 export type CreateProposedWeekMenuRequest = {
 	startDate: string;
 	endDate: string;
@@ -74,6 +89,8 @@ export type ProposedWeekMenuResponse = {
 	endDate: string;
 	days: ProposedWeekMenuDayResponse[];
 	nutritionalValues: NutritionalValues;
+	stockSummary?: unknown;
+	nutritionalRules?: NutritionalRulesEvaluation;
 };
 
 function authHeaders(authorization: string) {
@@ -118,7 +135,7 @@ function sanitizeDayPartRequest(values: ProposedWeekMenuDayPartRequest): Propose
 }
 
 export async function listProposedWeekMenuDayParts(authorization: string) {
-	return await request<ProposedWeekMenuDayPartResponse[]>('/api/v1/proposed-week-menu-day-parts', {
+	return await request<ProposedWeekMenuDayPartResponse[]>('/api/v1/planning/day-parts', {
 		headers: authHeaders(authorization)
 	});
 }
@@ -127,7 +144,7 @@ export async function createProposedWeekMenuDayPart(
 	values: ProposedWeekMenuDayPartRequest,
 	authorization: string
 ) {
-	return await request<ProposedWeekMenuDayPartResponse>('/api/v1/proposed-week-menu-day-parts', {
+	return await request<ProposedWeekMenuDayPartResponse>('/api/v1/planning/day-parts', {
 		method: 'POST',
 		headers: authHeaders(authorization),
 		body: JSON.stringify(sanitizeDayPartRequest(values))
@@ -139,7 +156,7 @@ export async function updateProposedWeekMenuDayPart(
 	values: ProposedWeekMenuDayPartRequest,
 	authorization: string
 ) {
-	return await request<ProposedWeekMenuDayPartResponse>(`/api/v1/proposed-week-menu-day-parts/${id}`, {
+	return await request<ProposedWeekMenuDayPartResponse>(`/api/v1/planning/day-parts/${id}`, {
 		method: 'PUT',
 		headers: authHeaders(authorization),
 		body: JSON.stringify(sanitizeDayPartRequest(values))
@@ -150,7 +167,7 @@ export async function createProposedWeekMenu(
 	values: CreateProposedWeekMenuRequest,
 	authorization: string
 ) {
-	return await request<ProposedWeekMenuResponse>('/api/v1/proposed-week-menus', {
+	return await request<ProposedWeekMenuResponse>('/api/v1/planning', {
 		method: 'POST',
 		headers: authHeaders(authorization),
 		body: JSON.stringify(sanitizeCreateRequest(values))
@@ -158,7 +175,7 @@ export async function createProposedWeekMenu(
 }
 
 export async function getProposedWeekMenu(id: number, authorization: string) {
-	return await request<ProposedWeekMenuResponse>(`/api/v1/proposed-week-menus/${id}`, {
+	return await request<ProposedWeekMenuResponse>(`/api/v1/planning/${id}`, {
 		headers: authHeaders(authorization)
 	});
 }
@@ -168,7 +185,7 @@ export async function upsertProposedWeekMenuDay(
 	values: UpsertProposedWeekMenuDayRequest,
 	authorization: string
 ) {
-	return await request<ProposedWeekMenuResponse>(`/api/v1/proposed-week-menus/${id}/days`, {
+	return await request<ProposedWeekMenuResponse>(`/api/v1/planning/${id}/days`, {
 		method: 'PUT',
 		headers: authHeaders(authorization),
 		body: JSON.stringify(sanitizeUpsertDayRequest(values))

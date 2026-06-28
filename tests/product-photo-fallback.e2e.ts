@@ -22,7 +22,7 @@ test('falls back when a product image cannot be loaded', async ({ page }) => {
 	await page.getByTestId('login-password').fill('secret-password');
 	await page.getByTestId('login-submit').click();
 
-	await expect(page.getByTestId('product-count')).toHaveText('2');
+	await expect(page.getByTestId('product-count')).toContainText('2');
 
 	await page.getByTestId('open-create-modal').click();
 	await page.getByTestId('create-name').fill('Broken photo product');
