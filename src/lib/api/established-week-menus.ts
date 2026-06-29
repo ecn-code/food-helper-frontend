@@ -90,6 +90,12 @@ export async function publishProposedWeekMenu(
 	});
 }
 
+export async function listMenus(authorization: string) {
+	return await request<EstablishedWeekMenuResponse[]>('/api/v1/menus', {
+		headers: authHeaders(authorization)
+	});
+}
+
 export async function undoEstablishedWeekMenu(id: number, authorization: string) {
 	await request<void>(`/api/v1/menus/${id}`, {
 		method: 'DELETE',

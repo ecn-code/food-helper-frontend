@@ -45,7 +45,7 @@
 
 	let users = $state<UserResponse[]>([]);
 	let selectedUserId = $state('');
-	let loadingUsers = $state(false);
+	let loadingUsers = $state(true);
 	let loadingHistory = $state(false);
 	let loadingWeights = $state(false);
 	let error = $state('');

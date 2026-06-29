@@ -20,7 +20,8 @@
 		currentUserId,
 		authorization,
 		initialShoppingList,
-		initialUsedStock
+		initialUsedStock,
+		onClosed
 	}: {
 		menuId: number;
 		payerUsername: string;
@@ -28,6 +29,7 @@
 		authorization: string;
 		initialShoppingList: EstablishedWeekMenuShoppingListItemResponse[];
 		initialUsedStock: EstablishedWeekMenuUsedStockResponse[];
+		onClosed?: () => void | Promise<void>;
 	} = $props();
 
 	let stats = $state<MenuStatsResponse | null>(null);
@@ -109,6 +111,7 @@
 			stats = await closeMenu(menuId, numericPersonIds, authorization);
 			closeDialogOpen = false;
 			usedStock = initialUsedStock;
+			await onClosed?.();
 		} catch (cause) {
 			error = cause instanceof ApiError ? cause.message : 'No se pudo cerrar el menú.';
 		} finally {

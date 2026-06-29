@@ -70,3 +70,17 @@ PUBLIC_BACKEND_BASE_URL=http://127.0.0.1:8080 npm run test:e2e:real
 npm run build
 npm run preview
 ```
+
+## Deploy
+
+```sh
+npm run deploy
+```
+
+Default deploy settings:
+
+- `PI_HOST=pi-server`
+- `REMOTE_ROOT=/var/www/foodhelperfront`
+- `REMOTE_BUILD_DIR=/tmp/foodhelperfront-build`
+
+If `PUBLIC_BACKEND_BASE_URL` is not set, the script infers `http://<pi-ip>:8080` from the Raspberry over SSH.
