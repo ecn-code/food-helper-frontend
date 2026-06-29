@@ -13,7 +13,7 @@
 		type MoneyBoxMovement
 	} from '$lib/api/money-box';
 
-	let { authorization, userId }: { authorization: string; userId: number } = $props();
+	let { authorization, userId, reloadToken = 0 }: { authorization: string; userId: number; reloadToken?: number } = $props();
 	let boxes = $state<MoneyBox[]>([]);
 	let selectedId = $state<number | null>(null);
 	let loaded = $state(false);
@@ -26,6 +26,7 @@
 	let deletingMovementId = $state<number | null>(null);
 	let error = $state('');
 	let message = $state('');
+	let initialized = $state(false);
 	let selectedBox = $derived(boxes.find((box) => box.id === selectedId) ?? null);
 
 	async function load() {
@@ -43,6 +44,13 @@
 	}
 
 	onMount(() => void load());
+	$effect(() => {
+		reloadToken;
+		if (initialized) {
+			void load();
+		}
+		initialized = true;
+	});
 
 	async function createBox(event: SubmitEvent) {
 		event.preventDefault();
@@ -93,7 +101,7 @@
 	}
 
 	async function removeBox(box: MoneyBox) {
-		if (box.type !== 'MANUAL' || deleting) return;
+		if (deleting) return;
 		if (!window.confirm(`¿Eliminar la hucha «${box.name}» y todos sus movimientos?`)) return;
 
 		deleting = true;
@@ -239,7 +247,12 @@
 								{selectedBox.type === 'USER' ? `Hucha personal de ${selectedBox.username ?? selectedBox.name}` : 'Hucha compartida'}
 							</p>
 						</div>
-						{#if selectedBox.type === 'MANUAL'}
+						<div class="flex items-center gap-2">
+							{#if selectedBox.type === 'USER'}
+								<UserRound class="size-5 shrink-0 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
+							{:else}
+								<PiggyBank class="size-5 shrink-0 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
+							{/if}
 							<Button
 								type="button"
 								variant="danger"
@@ -250,9 +263,7 @@
 							>
 								<Trash2 class="size-4" aria-hidden="true" /> {deleting ? 'Eliminando…' : 'Eliminar'}
 							</Button>
-						{:else}
-							<PiggyBank class="size-5 shrink-0 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
-						{/if}
+						</div>
 					</div>
 					<p class="mt-3 text-3xl font-semibold tabular-nums" data-testid="money-box-balance">{money(selectedBox.balance)}</p>
 					<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Saldo disponible</p>

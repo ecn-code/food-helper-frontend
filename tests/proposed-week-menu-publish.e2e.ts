@@ -22,6 +22,13 @@ test('publishes a proposed week menu into an established snapshot', async ({ pag
 	await page.getByRole('button', { name: 'Guardar menu' }).click();
 
 	await page.getByRole('button', { name: 'Establecer semana' }).click();
+	await expect(page.getByTestId('week-publish-modal')).toBeVisible();
+	const payerOptions = await page.getByTestId('week-publish-payer').locator('option').evaluateAll((elements) =>
+		elements.map((option) => option.textContent ?? '')
+	);
+	expect(payerOptions.length).toBeGreaterThan(1);
+	expect(payerOptions).toContain('elias');
+	await page.getByTestId('week-publish-form').getByRole('button', { name: 'Establecer semana' }).click();
 
 	await expect(page.getByTestId('success-banner')).toHaveText('Semana establecida correctamente');
 	await expect(page.getByRole('heading', { name: 'Semana establecida' })).toBeVisible();

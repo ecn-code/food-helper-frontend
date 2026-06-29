@@ -46,6 +46,11 @@ export type EstablishedWeekMenuShoppingListItemResponse = {
 	missingUnits: number;
 };
 
+export type ManualStockAllocationRequest = {
+	stockEntryId: number;
+	usedUnits: number;
+};
+
 export type EstablishedWeekMenuResponse = {
 	id: number;
 	planningId: number;
@@ -67,11 +72,28 @@ function authHeaders(authorization: string) {
 	};
 }
 
-export async function publishProposedWeekMenu(id: number, payerUserId: number, authorization: string) {
+export async function publishProposedWeekMenu(
+	id: number,
+	options: { payerUserId: number; stockAllocations?: ManualStockAllocationRequest[] },
+	authorization: string
+) {
 	return await request<EstablishedWeekMenuResponse>(`/api/v1/planning/${id}/menu`, {
 		method: 'POST',
 		headers: authHeaders(authorization),
-		body: JSON.stringify({ payerUserId: Number(payerUserId) })
+		body: JSON.stringify({
+			payerUserId: Number(options.payerUserId),
+			...(options.stockAllocations ? { stockAllocations: options.stockAllocations.map((allocation) => ({
+				stockEntryId: Number(allocation.stockEntryId),
+				usedUnits: Number(allocation.usedUnits)
+			})) } : {})
+		})
+	});
+}
+
+export async function undoEstablishedWeekMenu(id: number, authorization: string) {
+	await request<void>(`/api/v1/menus/${id}`, {
+		method: 'DELETE',
+		headers: authHeaders(authorization)
 	});
 }
 
@@ -93,10 +115,14 @@ export type MenuPeriodStats = {
 };
 export type MenuStatsResponse = { menuId: number; period: MenuPeriodStats; month: MenuPeriodStats };
 
-export async function closeMenu(id: number, authorization: string) {
+export async function closeMenu(id: number, personIds: number[], authorization: string) {
 	return await request<MenuStatsResponse>(`/api/v1/menus/${id}/close`, {
 		method: 'POST',
 		headers: authHeaders(authorization)
+		,
+		body: JSON.stringify({
+			personIds: personIds.map((personId) => Number(personId))
+		})
 	});
 }
 

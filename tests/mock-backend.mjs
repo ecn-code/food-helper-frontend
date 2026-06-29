@@ -19,6 +19,9 @@ let moneyMovements = [];
 let nextMoneyMovementId = 1;
 let manualMoneyBoxes = [];
 let nextManualMoneyBoxId = 1000;
+let deletedUserMoneyBoxIds = new Set();
+let userWeights = [];
+let nextWeightId = 1;
 let nutritionalRules = {
 	calories: { minimum: null, maximum: null },
 	carbohydrates: { minimum: null, maximum: null },
@@ -94,6 +97,9 @@ function resetAuth() {
 	nextMoneyMovementId = 1;
 	manualMoneyBoxes = [];
 	nextManualMoneyBoxId = 1000;
+	deletedUserMoneyBoxIds = new Set();
+	userWeights = [];
+	nextWeightId = 1;
 	proposedWeekMenus = [];
 	establishedWeekMenus = [];
 	nextProposedWeekMenuId = 1;
@@ -109,6 +115,9 @@ function moneyBoxMovements(moneyBoxId) {
 }
 
 function userMoneyBoxResponse(user) {
+	if (deletedUserMoneyBoxIds.has(user.id)) {
+		return null;
+	}
 	const movements = moneyBoxMovements(user.id);
 	return {
 		id: user.id,
@@ -558,6 +567,106 @@ function establishedWeekMenuResponse(menu) {
 	};
 }
 
+function planningMenuResponse(menu) {
+	const established = establishedWeekMenus.find((item) => item.proposedWeekMenuId === menu.id);
+	return {
+		id: menu.id,
+		startDate: menu.startDate,
+		endDate: menu.endDate,
+		plannedDays: menu.days.length,
+		state: established ? (established.stats ? 'CLOSED' : 'ESTABLISHED') : 'DRAFT',
+		menuId: established?.id ?? null
+	};
+}
+
+function userResponse(user) {
+	return {
+		id: user.id,
+		username: user.username
+	};
+}
+
+function userWeightResponse(weight) {
+	return {
+		...weight,
+		recordedAt: weight.recordedAt ?? weight.measuredAt,
+		measuredAt: weight.recordedAt ?? weight.measuredAt
+	};
+}
+
+function userHistoryEntryResponse(menu) {
+	return {
+		menuId: menu.id,
+		startDate: menu.startDate,
+		endDate: menu.endDate,
+		stats: menu.stats?.period ?? menuStatsResponse(menu).period
+	};
+}
+
+function historyRangeResponse(userId, from, to) {
+	const fromDate = new Date(from);
+	const toDate = new Date(to);
+	const menus = establishedWeekMenus
+		.filter((menu) => Array.isArray(menu.personIds) && menu.personIds.includes(userId))
+		.filter((menu) => menu.stats && !Number.isNaN(Date.parse(menu.startDate)))
+		.filter((menu) => {
+			const menuDate = new Date(menu.startDate);
+			return menuDate >= fromDate && menuDate <= toDate;
+		})
+		.sort((left, right) => left.startDate.localeCompare(right.startDate) || left.id - right.id);
+	const entries = menus.map(userHistoryEntryResponse);
+	let maxDay = null;
+	let minDay = null;
+	let averageCalories = 0;
+	let averageCarbohydrates = 0;
+	let averageProteins = 0;
+	let averageFats = 0;
+	let moneySpent = 0;
+	for (const entry of entries) {
+		if (entry.stats.maxDay && (!maxDay || entry.stats.maxDay.calories > maxDay.calories)) {
+			maxDay = entry.stats.maxDay;
+		}
+		if (entry.stats.minDay && (!minDay || entry.stats.minDay.calories < minDay.calories)) {
+			minDay = entry.stats.minDay;
+		}
+		averageCalories += Number(entry.stats.averageCalories ?? 0);
+		averageCarbohydrates += Number(entry.stats.averageCarbohydrates ?? 0);
+		averageProteins += Number(entry.stats.averageProteins ?? 0);
+		averageFats += Number(entry.stats.averageFats ?? 0);
+		moneySpent += Number(entry.stats.moneySpent ?? 0);
+	}
+	const count = entries.length || 1;
+	return {
+		personId: userId,
+		personName: [...users.values()].find((user) => user.id === userId)?.username ?? `user-${userId}`,
+		from,
+		to,
+		totals: {
+			maxDay,
+			minDay,
+			averageCalories: Number((averageCalories / count).toFixed(2)),
+			averageCarbohydrates: Number((averageCarbohydrates / count).toFixed(2)),
+			averageProteins: Number((averageProteins / count).toFixed(2)),
+			averageFats: Number((averageFats / count).toFixed(2)),
+			moneySpent: Number(moneySpent.toFixed(2))
+		},
+		menus: entries
+	};
+}
+
+function parseRangeQuery(url) {
+	const from = url.searchParams.get('from');
+	const to = url.searchParams.get('to');
+	if (!from || !to) return null;
+	if (Number.isNaN(Date.parse(from)) || Number.isNaN(Date.parse(to))) return null;
+	if (new Date(from) > new Date(to)) return null;
+	return { from, to };
+}
+
+function weightRecordedAt(payload) {
+	return String(payload?.recordedAt ?? payload?.measuredAt ?? '');
+}
+
 function menuStatsResponse(menu) {
 	const days = menu.days ?? [];
 	const count = Math.max(days.length, 1);
@@ -691,6 +800,32 @@ function recipeResponse(recipe) {
 		derivedProduct: recipe.derivedProduct,
 		photo: recipe.photo
 	};
+}
+
+function recipeMatchesFilters(recipe, url) {
+	const search = normalizeSearch(url.searchParams.get('search'));
+	if (search) {
+		const ingredientNames = recipe.ingredients
+			.map((ingredient) => ingredientPayload(productById(ingredient.productId), ingredient.grams).productName)
+			.join(' ');
+		const haystack = normalizeSearch(`${recipe.name} ${recipe.description} ${recipe.instructions} ${ingredientNames}`);
+		if (!haystack.includes(search)) return false;
+	}
+
+	const derived = url.searchParams.get('derived') ?? 'all';
+	if (derived === 'with-derived' && !recipe.derivedProduct) return false;
+	if (derived === 'without-derived' && recipe.derivedProduct) return false;
+
+	for (const metric of ['calories', 'carbohydrates', 'proteins', 'fats']) {
+		const min = parseNumericFilter(url.searchParams.get(`${metric}Min`));
+		const max = parseNumericFilter(url.searchParams.get(`${metric}Max`));
+		const value = recipeResponse(recipe).nutritionalValues[metric];
+
+		if (min !== null && value < min) return false;
+		if (max !== null && value > max) return false;
+	}
+
+	return true;
 }
 
 function paginate(items, url) {
@@ -1136,8 +1271,166 @@ const server = http.createServer(async (req, res) => {
 		if (req.method === 'GET') { sendJson(res, 200, nutritionalRules); return; }
 		if (req.method === 'PUT') { nutritionalRules = await parseBody(req); sendJson(res, 200, nutritionalRules); return; }
 	}
+	if (req.method === 'GET' && url.pathname === '/api/v1/users') {
+		sendJson(res, 200, [...users.values()].map(userResponse));
+		return;
+	}
+	const userHistoryMatch = url.pathname.match(/^\/api\/v1\/users\/(\d+)\/menu-history$/);
+	if (userHistoryMatch && req.method === 'GET') {
+		const userId = Number(userHistoryMatch[1]);
+		if (![...users.values()].some((user) => user.id === userId)) {
+			sendJson(res, 404, errorBody(404, 'Not Found', 'User not found', url.pathname));
+			return;
+		}
+		const range = parseRangeQuery(url);
+		if (!range) {
+			sendJson(res, 400, errorBody(400, 'Bad Request', 'from and to must be valid date-time values', url.pathname));
+			return;
+		}
+		sendJson(res, 200, historyRangeResponse(userId, range.from, range.to));
+		return;
+	}
+	const userWeightsMatch = url.pathname.match(/^\/api\/v1\/users\/(\d+)\/weights$/);
+	if (userWeightsMatch && req.method === 'GET') {
+		const userId = Number(userWeightsMatch[1]);
+		if (![...users.values()].some((user) => user.id === userId)) {
+			sendJson(res, 404, errorBody(404, 'Not Found', 'User not found', url.pathname));
+			return;
+		}
+		const range = parseRangeQuery(url);
+		if (!range) {
+			sendJson(res, 400, errorBody(400, 'Bad Request', 'from and to must be valid date-time values', url.pathname));
+			return;
+		}
+		sendJson(
+			res,
+			200,
+			userWeights
+				.filter((weight) => weight.userId === userId)
+				.filter((weight) => {
+					const recordedAt = new Date(weight.recordedAt ?? weight.measuredAt);
+					return recordedAt >= new Date(range.from) && recordedAt <= new Date(range.to);
+				})
+				.sort((left, right) => new Date(left.recordedAt ?? left.measuredAt).getTime() - new Date(right.recordedAt ?? right.measuredAt).getTime() || left.id - right.id)
+				.map(userWeightResponse)
+		);
+		return;
+	}
+	if (userWeightsMatch && req.method === 'POST') {
+		const userId = Number(userWeightsMatch[1]);
+		if (![...users.values()].some((user) => user.id === userId)) {
+			sendJson(res, 404, errorBody(404, 'Not Found', 'User not found', url.pathname));
+			return;
+		}
+		const payload = await parseBody(req);
+		const weight = Number(payload.weight);
+		if (!Number.isFinite(weight) || weight <= 0) {
+			sendJson(res, 400, errorBody(400, 'Bad Request', 'weight must be greater than 0', url.pathname));
+			return;
+		}
+		const recordedAt = weightRecordedAt(payload);
+		if (!recordedAt || Number.isNaN(Date.parse(recordedAt))) {
+			sendJson(res, 400, errorBody(400, 'Bad Request', 'recordedAt must be a valid date', url.pathname));
+			return;
+		}
+		const created = {
+			id: nextWeightId++,
+			userId,
+			weight: Number(weight.toFixed(1)),
+			recordedAt,
+			measuredAt: recordedAt,
+			notes: payload.notes ? String(payload.notes) : null,
+			createdAt: new Date().toISOString(),
+			updatedAt: new Date().toISOString()
+		};
+		userWeights.push(created);
+		sendJson(res, 201, userWeightResponse(created));
+		return;
+	}
+	const weightUserMatch = url.pathname.match(/^\/api\/v1\/users\/(\d+)\/weights\/(\d+)$/);
+	if (weightUserMatch && req.method === 'PUT') {
+		const userId = Number(weightUserMatch[1]);
+		const id = Number(weightUserMatch[2]);
+		const existingIndex = userWeights.findIndex((weight) => weight.id === id && weight.userId === userId);
+		if (existingIndex < 0) {
+			sendJson(res, 404, errorBody(404, 'Not Found', 'Weight not found', url.pathname));
+			return;
+		}
+		const payload = await parseBody(req);
+		const weight = Number(payload.weight);
+		if (!Number.isFinite(weight) || weight <= 0) {
+			sendJson(res, 400, errorBody(400, 'Bad Request', 'weight must be greater than 0', url.pathname));
+			return;
+		}
+		const recordedAt = weightRecordedAt(payload);
+		if (!recordedAt || Number.isNaN(Date.parse(recordedAt))) {
+			sendJson(res, 400, errorBody(400, 'Bad Request', 'recordedAt must be a valid date', url.pathname));
+			return;
+		}
+		userWeights[existingIndex] = {
+			...userWeights[existingIndex],
+			weight: Number(weight.toFixed(1)),
+			recordedAt,
+			measuredAt: recordedAt,
+			notes: payload.notes ? String(payload.notes) : null,
+			updatedAt: new Date().toISOString()
+		};
+		sendJson(res, 200, userWeightResponse(userWeights[existingIndex]));
+		return;
+	}
+	if (weightUserMatch && req.method === 'DELETE') {
+		const userId = Number(weightUserMatch[1]);
+		const id = Number(weightUserMatch[2]);
+		const index = userWeights.findIndex((weight) => weight.id === id && weight.userId === userId);
+		if (index < 0) {
+			sendJson(res, 404, errorBody(404, 'Not Found', 'Weight not found', url.pathname));
+			return;
+		}
+		userWeights.splice(index, 1);
+		res.writeHead(204, { 'access-control-allow-origin': '*' }); res.end(); return;
+	}
+	const weightMatch = url.pathname.match(/^\/api\/v1\/weights\/(\d+)$/);
+	if (weightMatch && req.method === 'PUT') {
+		const id = Number(weightMatch[1]);
+		const existingIndex = userWeights.findIndex((weight) => weight.id === id);
+		if (existingIndex < 0) {
+			sendJson(res, 404, errorBody(404, 'Not Found', 'Weight not found', url.pathname));
+			return;
+		}
+		const payload = await parseBody(req);
+		const weight = Number(payload.weight);
+		if (!Number.isFinite(weight) || weight <= 0) {
+			sendJson(res, 400, errorBody(400, 'Bad Request', 'weight must be greater than 0', url.pathname));
+			return;
+		}
+		const recordedAt = weightRecordedAt(payload);
+		if (!recordedAt || Number.isNaN(Date.parse(recordedAt))) {
+			sendJson(res, 400, errorBody(400, 'Bad Request', 'recordedAt must be a valid date', url.pathname));
+			return;
+		}
+		userWeights[existingIndex] = {
+			...userWeights[existingIndex],
+			weight: Number(weight.toFixed(1)),
+			recordedAt,
+			measuredAt: recordedAt,
+			notes: payload.notes ? String(payload.notes) : null,
+			updatedAt: new Date().toISOString()
+		};
+		sendJson(res, 200, userWeightResponse(userWeights[existingIndex]));
+		return;
+	}
+	if (weightMatch && req.method === 'DELETE') {
+		const id = Number(weightMatch[1]);
+		const index = userWeights.findIndex((weight) => weight.id === id);
+		if (index < 0) {
+			sendJson(res, 404, errorBody(404, 'Not Found', 'Weight not found', url.pathname));
+			return;
+		}
+		userWeights.splice(index, 1);
+		res.writeHead(204, { 'access-control-allow-origin': '*' }); res.end(); return;
+	}
 	if (url.pathname === '/api/v1/money-boxes' && req.method === 'GET') {
-		const userBoxes = [...users.values()].map(userMoneyBoxResponse);
+		const userBoxes = [...users.values()].map(userMoneyBoxResponse).filter(Boolean);
 		sendJson(res, 200, [...userBoxes, ...manualMoneyBoxes.map(manualMoneyBoxResponse)]);
 		return;
 	}
@@ -1156,7 +1449,7 @@ const server = http.createServer(async (req, res) => {
 	const unifiedMoneyBoxMatch = url.pathname.match(/^\/api\/v1\/money-boxes\/(\d+)$/);
 	if (unifiedMoneyBoxMatch && req.method === 'GET') {
 		const id = Number(unifiedMoneyBoxMatch[1]);
-		const user = [...users.values()].find((item) => item.id === id);
+		const user = [...users.values()].find((item) => item.id === id && !deletedUserMoneyBoxIds.has(item.id));
 		const manualBox = manualMoneyBoxes.find((item) => item.id === id);
 		if (!user && !manualBox) { sendJson(res, 404, errorBody(404, 'Not Found', 'Money box not found', url.pathname)); return; }
 		sendJson(res, 200, user ? userMoneyBoxResponse(user) : manualMoneyBoxResponse(manualBox));
@@ -1164,9 +1457,14 @@ const server = http.createServer(async (req, res) => {
 	}
 	if (unifiedMoneyBoxMatch && req.method === 'DELETE') {
 		const id = Number(unifiedMoneyBoxMatch[1]);
+		const user = [...users.values()].find((item) => item.id === id);
 		const index = manualMoneyBoxes.findIndex((item) => item.id === id);
-		if (index < 0) { sendJson(res, 404, errorBody(404, 'Not Found', 'Manual money box not found', url.pathname)); return; }
-		manualMoneyBoxes.splice(index, 1);
+		if (!user && index < 0) { sendJson(res, 404, errorBody(404, 'Not Found', 'Money box not found', url.pathname)); return; }
+		if (user) {
+			deletedUserMoneyBoxIds.add(id);
+		} else {
+			manualMoneyBoxes.splice(index, 1);
+		}
 		moneyMovements = moneyMovements.filter((item) => item.moneyBoxId !== id);
 		res.writeHead(204, { 'access-control-allow-origin': '*' }); res.end(); return;
 	}
@@ -1213,7 +1511,8 @@ const server = http.createServer(async (req, res) => {
 	}
 
 	if (req.method === 'GET' && url.pathname === '/api/v1/recipes') {
-		sendJson(res, 200, paginate(recipes.map(recipeResponse), url));
+		const filtered = recipes.filter((recipe) => recipeMatchesFilters(recipe, url)).map(recipeResponse);
+		sendJson(res, 200, paginate(filtered, url));
 		return;
 	}
 
@@ -1359,6 +1658,14 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
+	if (req.method === 'GET' && url.pathname === '/api/v1/planning') {
+		const planning = proposedWeekMenus
+			.map(planningMenuResponse)
+			.sort((left, right) => right.startDate.localeCompare(left.startDate) || right.id - left.id);
+		sendJson(res, 200, planning);
+		return;
+	}
+
 	if (req.method === 'GET' && (url.pathname === '/api/v1/proposed-week-menu-day-parts' || url.pathname === '/api/v1/planning/day-parts')) {
 		sendJson(
 			res,
@@ -1499,12 +1806,33 @@ const server = http.createServer(async (req, res) => {
 
 		const payload = await parseBody(req);
 		const payerUserId = Number(payload.payerUserId ?? 1);
+		if (![...users.values()].some((user) => user.id === payerUserId)) {
+			sendJson(res, 400, errorBody(400, 'Bad Request', 'payerUserId must reference a valid user', url.pathname));
+			return;
+		}
+		if (payload.stockAllocations !== undefined && !Array.isArray(payload.stockAllocations)) {
+			sendJson(res, 400, errorBody(400, 'Bad Request', 'stockAllocations must be an array', url.pathname));
+			return;
+		}
+		for (const allocation of payload.stockAllocations ?? []) {
+			const stockEntryId = Number(allocation?.stockEntryId);
+			const usedUnits = Number(allocation?.usedUnits);
+			if (!stockEntryById(stockEntryId)) {
+				sendJson(res, 400, errorBody(400, 'Bad Request', 'stockAllocations must reference valid stock entries', url.pathname));
+				return;
+			}
+			if (!Number.isFinite(usedUnits) || usedUnits <= 0) {
+				sendJson(res, 400, errorBody(400, 'Bad Request', 'stockAllocations.usedUnits must be greater than 0', url.pathname));
+				return;
+			}
+		}
 		const coverage = calculateMenuCoverage(menu, stockEntries.map((entry) => ({ ...entry })));
 		const established = {
 			id: nextEstablishedWeekMenuId++,
 			proposedWeekMenuId: menu.id,
 			payerUserId,
 			payerUsername: 'elias',
+			personIds: payload.personIds ?? [payerUserId],
 			startDate: menu.startDate,
 			endDate: menu.endDate,
 			days: coverage.days,
@@ -1562,7 +1890,42 @@ const server = http.createServer(async (req, res) => {
 	if (closeMenuMatch && req.method === 'POST') {
 		const menu = establishedWeekMenuById(Number(closeMenuMatch[1]));
 		if (!menu) { sendJson(res, 404, errorBody(404, 'Not Found', 'Menu not found', url.pathname)); return; }
-		menu.stats = menuStatsResponse(menu); sendJson(res, 200, menu.stats); return;
+		const payload = await parseBody(req).catch(() => null);
+		const personIds = Array.isArray(payload?.personIds) ? payload.personIds.map(Number).filter((value) => Number.isFinite(value) && value > 0) : [];
+		if (personIds.length === 0) {
+			sendJson(res, 400, errorBody(400, 'Bad Request', 'personIds must contain at least one person', url.pathname));
+			return;
+		}
+		menu.personIds = personIds;
+		menu.stats = menuStatsResponse(menu);
+		sendJson(res, 200, menu.stats); return;
+	}
+	const undoMenuMatch = url.pathname.match(/^\/api\/v1\/menus\/(\d+)$/);
+	if (undoMenuMatch && req.method === 'DELETE') {
+		const id = Number(undoMenuMatch[1]);
+		const index = establishedWeekMenus.findIndex((menu) => menu.id === id);
+		if (index < 0) { sendJson(res, 404, errorBody(404, 'Not Found', 'Menu not found', url.pathname)); return; }
+		const menu = establishedWeekMenus[index];
+		for (const used of menu.usedStock ?? []) {
+			const existing = stockEntries.find((entry) => entry.id === used.stockEntryId);
+			if (existing) {
+				existing.quantity = Number((existing.quantity + used.usedUnits).toFixed(2));
+				continue;
+			}
+			stockEntries.push({
+				id: used.stockEntryId,
+				productId: used.productId,
+				productName: used.productName,
+				quantity: used.usedUnits,
+				price: used.price,
+				expirationDate: used.expirationDate,
+				entryDate: used.entryDate
+			});
+			nextStockId = Math.max(nextStockId, used.stockEntryId + 1);
+		}
+		moneyMovements = moneyMovements.filter((movement) => movement.menuId !== id);
+		establishedWeekMenus.splice(index, 1);
+		res.writeHead(204, { 'access-control-allow-origin': '*' }); res.end(); return;
 	}
 	const menuStatsMatch = url.pathname.match(/^\/api\/v1\/menus\/(\d+)\/stats$/);
 	if (menuStatsMatch && req.method === 'GET') {

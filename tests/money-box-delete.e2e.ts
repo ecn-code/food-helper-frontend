@@ -2,13 +2,11 @@ import { expect, test } from '@playwright/test';
 
 const mockBackendUrl = process.env.MOCK_BACKEND_URL || 'http://127.0.0.1:4010';
 
-test.skip(process.env.E2E_REAL_BACKEND === '1', 'El backend real todavía no expone los endpoints DELETE de huchas.');
-
 test.beforeEach(async ({ request }) => {
 	await request.post(`${mockBackendUrl}/__reset`);
 });
 
-test('elimina movimientos manuales y huchas compartidas', async ({ page }) => {
+test('elimina movimientos y huchas personales y compartidas', async ({ page }) => {
 	await page.goto('/');
 	await page.getByTestId('login-username').fill('elias');
 	await page.getByTestId('login-password').fill('secret-password');
@@ -16,6 +14,13 @@ test('elimina movimientos manuales y huchas compartidas', async ({ page }) => {
 
 	await page.getByRole('link', { name: 'Huchas' }).click();
 	await expect(page.getByTestId('money-box-panel')).toBeVisible();
+	await expect(page.getByTestId('money-box-delete')).toBeVisible();
+
+	page.once('dialog', (dialog) => dialog.accept());
+	await page.getByTestId('money-box-delete').click();
+	await expect(page.getByRole('status')).toHaveText('Hucha eliminada.');
+	await expect(page.getByText('Todavía no hay huchas.')).toBeVisible();
+	await expect(page.getByTestId('money-box-delete')).toHaveCount(0);
 
 	await page.getByTestId('money-box-name').fill('Vacaciones');
 	await page.getByRole('button', { name: 'Crear hucha' }).click();

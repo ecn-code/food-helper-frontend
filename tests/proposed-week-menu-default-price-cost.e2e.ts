@@ -71,7 +71,7 @@ test('uses the product default price when a proposed week has no stock', async (
 	expect(dayResponse.ok()).toBeTruthy();
 
 	await page.evaluate((weekId) => {
-		localStorage.setItem('foodhelper_proposed_week_menu_id', String(weekId));
+		localStorage.setItem('foodhelper_selected_planning_menu_id', String(weekId));
 	}, week.id);
 
 	await page.goto('/#week');

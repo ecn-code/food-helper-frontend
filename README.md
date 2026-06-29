@@ -4,6 +4,8 @@ Frontend estatico en SvelteKit para gestionar el catalogo y la planificacion de 
 
 ## Alcance actual
 
+La lista siguiente describe lo que funciona en el frontend con el mock y las rutas actuales del proyecto. No debe interpretarse como validación final contra el backend real hasta que pasen los E2E en modo real.
+
 - Login con JWT contra el backend
 - Listar productos
 - Crear productos
@@ -18,6 +20,7 @@ Frontend estatico en SvelteKit para gestionar el catalogo y la planificacion de 
 - Configurar reglas nutricionales diarias
 - Crear planificaciones de hasta 16 dias y convertirlas en menus
 - Filtrar listas de compra, cerrar menus y consultar sus estadisticas
+- Consultar personas, historial y pesos
 - Tests de integracion end-to-end con Playwright en navegador headless
 
 ## Backend

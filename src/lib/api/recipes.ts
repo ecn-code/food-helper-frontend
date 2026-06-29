@@ -69,6 +69,16 @@ export type PaginatedResponse<T> = {
 export type ListRecipesParams = {
 	page?: number;
 	size?: number;
+	search?: string;
+	derived?: 'all' | 'with-derived' | 'without-derived';
+	caloriesMin?: number | string;
+	caloriesMax?: number | string;
+	carbohydratesMin?: number | string;
+	carbohydratesMax?: number | string;
+	proteinsMin?: number | string;
+	proteinsMax?: number | string;
+	fatsMin?: number | string;
+	fatsMax?: number | string;
 };
 
 const DEFAULT_PAGE_SIZE = 20;
@@ -117,6 +127,14 @@ function buildPageQuery(params: ListRecipesParams = {}) {
 	const searchParams = new URLSearchParams();
 	searchParams.set('page', String(normalizePage(params.page, 0)));
 	searchParams.set('size', String(normalizePageSize(params.size)));
+	if (params.search?.trim()) searchParams.set('search', params.search.trim());
+	if (params.derived && params.derived !== 'all') searchParams.set('derived', params.derived);
+	for (const key of ['caloriesMin', 'caloriesMax', 'carbohydratesMin', 'carbohydratesMax', 'proteinsMin', 'proteinsMax', 'fatsMin', 'fatsMax'] as const) {
+		const value = params[key];
+		if (value !== undefined && value !== null && String(value).trim() !== '') {
+			searchParams.set(key, String(value));
+		}
+	}
 	return searchParams.toString();
 }
 

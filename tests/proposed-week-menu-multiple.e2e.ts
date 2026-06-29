@@ -21,18 +21,27 @@ test('keeps multiple proposed weeks selectable', async ({ page }) => {
 	await page.getByTestId('week-create-form').getByRole('button', { name: 'Crear semana' }).click();
 	await expect(page.getByTestId('week-date-range')).toContainText('22/06/2026');
 
-	const selector = page.getByTestId('proposed-week-menu-selector');
+	// Reloading exercises selection from GET /api/v1/planning instead of the in-memory active menu.
+	await page.reload();
+	await expect(page.getByTestId('week-date-range')).toContainText('22/06/2026');
+
+	const selector = page.getByTestId('planning-menu-selector');
 	await expect(selector).toBeVisible();
-	await expect(selector.locator('option')).toHaveCount(3);
-	const menus = await page.evaluate(() =>
-		JSON.parse(localStorage.getItem('foodhelper_proposed_week_menus') ?? '[]') as { id: number; startDate: string }[]
+	const options = await selector.locator('option').evaluateAll((elements) =>
+		elements.map((option) => ({
+			value: (option as HTMLOptionElement).value,
+			text: option.textContent ?? ''
+		}))
 	);
-	expect(menus).toHaveLength(2);
-	const firstMenuId = String(menus.find((menu) => menu.startDate === '2026-06-15')?.id);
-	const secondMenuId = String(menus.find((menu) => menu.startDate === '2026-06-22')?.id);
+	expect(options.length).toBeGreaterThanOrEqual(3);
+	const firstMenuId = options.find((option) => option.text.includes('15/06/2026'))?.value ?? '';
+	const secondMenuId = options.find((option) => option.text.includes('22/06/2026'))?.value ?? '';
+	expect(firstMenuId).not.toBe('');
+	expect(secondMenuId).not.toBe('');
 
 	await selector.selectOption(firstMenuId);
 	await expect(page.getByTestId('week-date-range')).toContainText('15/06/2026');
+	await expect.poll(() => page.evaluate(() => localStorage.getItem('foodhelper_selected_planning_menu_id'))).toBe(firstMenuId);
 
 	await selector.selectOption(secondMenuId);
 	await expect(page.getByTestId('week-date-range')).toContainText('22/06/2026');

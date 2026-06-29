@@ -23,6 +23,7 @@
 		Trash2,
 		UserPlus,
 		UserRound,
+		TrendingUp,
 		Wheat,
 		Wifi,
 		WifiOff,
@@ -72,7 +73,8 @@
 	} from '$lib/api/proposed-week-menus';
 	import {
 		getEstablishedWeekMenu as getEstablishedWeekMenuRequest,
-		publishProposedWeekMenu as publishProposedWeekMenuRequest
+		publishProposedWeekMenu as publishProposedWeekMenuRequest,
+		undoEstablishedWeekMenu as undoEstablishedWeekMenuRequest
 	} from '$lib/api/established-week-menus';
 	import Button from '$lib/components/ui/Button.svelte';
 	import MetricCard from '$lib/components/ui/MetricCard.svelte';
@@ -144,7 +146,10 @@
 	import MenuCompletionPanel from '$lib/components/planning/MenuCompletionPanel.svelte';
 	import DailyNutritionalEvaluation from '$lib/components/planning/DailyNutritionalEvaluation.svelte';
 	import NutritionalEvaluationPanel from '$lib/components/planning/NutritionalEvaluationPanel.svelte';
+	import PeoplePanel from '$lib/components/people/PeoplePanel.svelte';
 	import { listSupermarkets, type Supermarket } from '$lib/api/supermarkets';
+	import { listPlanning, type PlanningMenuResponse } from '$lib/api/planning';
+	import { listUsers, type UserResponse } from '$lib/api/users';
 	import {
 		emptyProductFilters,
 		hasActiveProductFilters,
@@ -152,7 +157,6 @@
 	} from '$lib/product-filters';
 	import {
 		emptyRecipeFilters,
-		filterRecipes,
 		hasActiveRecipeFilters,
 		type RecipeFilters as RecipeFiltersState
 	} from '$lib/recipe-filters';
@@ -272,10 +276,25 @@
 		| 'recipe-derive'
 		| 'week-create'
 		| 'week-day'
+		| 'week-publish'
 		| 'day-part'
 		| null;
 	type AuthMode = 'login' | 'register';
-	type SectionMode = 'products' | 'recipes' | 'week' | 'day-parts' | 'supermarkets' | 'money-box' | 'nutritional-rules';
+	type SectionMode =
+		| 'products'
+		| 'recipes'
+		| 'week'
+		| 'people-weights'
+		| 'people-history'
+		| 'people-trend'
+		| 'day-parts'
+		| 'supermarkets'
+		| 'money-box'
+		| 'nutritional-rules';
+	// The planning section now comes from the backend planning catalog, not localStorage.
+	type PlanningMenu = PlanningMenuResponse & {
+		label: string;
+	};
 	type PhotoPreview = {
 		fileName: string;
 		contentType: string;
@@ -306,7 +325,6 @@
 		backendBaseUrl: string;
 		backendAvailable: boolean;
 		backendError: string | null;
-		authError: string | null;
 		session: PublicAuthSession | null;
 		products: Product[];
 		recipes: Recipe[];
@@ -317,6 +335,8 @@
 		productStats: ProductStatsResponse | null;
 		recipeStats: RecipeStatsResponse | null;
 		supermarkets: Supermarket[];
+		users: UserResponse[];
+		planningMenus: PlanningMenu[];
 		productsLoaded: boolean;
 		recipesLoaded: boolean;
 		stockEntriesLoaded: boolean;
@@ -326,6 +346,8 @@
 		productStatsLoaded: boolean;
 		recipeStatsLoaded: boolean;
 		supermarketsLoaded: boolean;
+		usersLoaded: boolean;
+		planningMenusLoaded: boolean;
 		createDefaults: ProductFormValues;
 		createRecipeDefaults: RecipeFormValues;
 		createRecipeDerivedProductDefaults: RecipeDerivedProductFormValues;
@@ -352,7 +374,6 @@
 		backendBaseUrl: apiBaseUrl(),
 		backendAvailable: true,
 		backendError: null,
-		authError: null,
 		session: null,
 		products: [],
 		recipes: [],
@@ -363,6 +384,8 @@
 		productStats: null,
 		recipeStats: null,
 		supermarkets: [],
+		users: [],
+		planningMenus: [],
 		productsLoaded: false,
 		recipesLoaded: false,
 		stockEntriesLoaded: false,
@@ -372,6 +395,8 @@
 		productStatsLoaded: false,
 		recipeStatsLoaded: false,
 		supermarketsLoaded: false,
+		usersLoaded: false,
+		planningMenusLoaded: false,
 		createDefaults: emptyProductForm(),
 		createRecipeDefaults: emptyRecipeForm(),
 		createRecipeDerivedProductDefaults: emptyRecipeDerivedProductForm()
@@ -393,6 +418,8 @@
 	let activeProposedWeekMenuId = $state<number | null>(null);
 	let activeEstablishedWeekMenuId = $state<number | null>(null);
 	let knownProposedWeekMenus = $state<KnownProposedWeekMenu[]>([]);
+	let planningMenus = $state<PlanningMenu[]>([]);
+	let selectedPlanningMenuId = $state<number | null>(null);
 	let createPhotoPreview = $state<PhotoPreview | null>(null);
 	let editPhotoPreview = $state<PhotoPreview | null>(null);
 	let brokenProductPhotoUrls = $state<Record<SignedPhoto, true>>({});
@@ -412,6 +439,9 @@
 	let editingRecipeId = $state<number | null>(null);
 	let derivingRecipeId = $state<number | null>(null);
 	let creatingWeekMenuDraft = $state<ProposedWeekMenuCreateFormValues>(emptyProposedWeekMenuCreateForm());
+	let publishPayerUserId = $state('');
+	let publishAllocationMode = $state<'auto' | 'manual'>('auto');
+	let publishManualAllocations = $state<Record<number, string>>({});
 	let dayPartDraft = $state<ProposedWeekMenuDayPartFormValues>(emptyProposedWeekMenuDayPartForm());
 	let editingDayPartId = $state<number | null>(null);
 	let editingWeekDayDate = $state<string | null>(null);
@@ -438,8 +468,11 @@
 	let recipesScrollSentinel = $state<HTMLElement | null>(null);
 	let productPickerTarget = $state<ProductPickerTarget | null>(null);
 	let productPickerPreviousModalMode = $state<ModalMode>(null);
+	let sessionExpiredDialogOpen = $state(false);
+	let sessionExpiredDialogMessage = $state<string | null>(null);
 	let hydrated = $state(false);
 	let visibleProductsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+	let recipesRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 	let loginSuccessTimer: ReturnType<typeof setTimeout> | null = null;
 	let visibleProductsRequestToken = 0;
 	let productsRequestToken = 0;
@@ -463,6 +496,7 @@
 	let recipesRequestToken = 0;
 	let productsIntersectionObserver: IntersectionObserver | null = null;
 	let recipesIntersectionObserver: IntersectionObserver | null = null;
+	let refreshCatalogToken = $state(0);
 
 	function loginErrors(): AuthFormErrors {
 		return form?.type === 'login' && 'fieldErrors' in form
@@ -475,7 +509,17 @@
 	}
 
 	function normalizeSection(value: string | null | undefined): SectionMode {
-		return value === 'recipes' || value === 'week' || value === 'day-parts' || value === 'supermarkets' || value === 'money-box' || value === 'nutritional-rules' ? value : 'products';
+		return value === 'recipes' ||
+			value === 'week' ||
+			value === 'people-weights' ||
+			value === 'people-history' ||
+			value === 'people-trend' ||
+			value === 'day-parts' ||
+			value === 'supermarkets' ||
+			value === 'money-box' ||
+			value === 'nutritional-rules'
+			? value
+			: 'products';
 	}
 
 	function activeWeekMenuKind() {
@@ -500,6 +544,9 @@
 	function sectionLabel(section: SectionMode) {
 		if (section === 'recipes') return 'Recetas';
 		if (section === 'week') return activeWeekMenuKind() === 'established' ? 'Semana establecida' : 'Planificación';
+		if (section === 'people-weights') return 'Pesos';
+		if (section === 'people-history') return 'Historial';
+		if (section === 'people-trend') return 'Evolución';
 		if (section === 'day-parts') return 'Partes del dia';
 		if (section === 'supermarkets') return 'Supermercados';
 		if (section === 'money-box') return 'Huchas';
@@ -514,6 +561,9 @@
 			if (menu) return weekDateRangeLabel(menu.startDate, menu.endDate);
 			return activeWeekMenuKind() === 'established' ? 'Cargando semana establecida' : 'Sin semana activa';
 		}
+		if (section === 'people-weights') return 'Mediciones de peso';
+		if (section === 'people-history') return 'Historial de menús filtrable';
+		if (section === 'people-trend') return 'Calorías y peso alineados';
 		if (section === 'day-parts') {
 			return `${loadingCountLabel(data.proposedWeekMenuDayPartsLoaded, data.proposedWeekMenuDayParts.length)} partes configuradas`;
 		}
@@ -599,7 +649,7 @@
 	}
 
 	function filteredRecipes() {
-		return filterRecipes(data.recipes, recipeFilters);
+		return data.recipes;
 	}
 
 	function recipeCountLabel() {
@@ -643,10 +693,12 @@
 
 	function clearRecipeFilters() {
 		recipeFilters = emptyRecipeFilters();
+		scheduleRecipeRefresh(true);
 	}
 
 	function updateRecipeFilters(next: RecipeFiltersState) {
 		recipeFilters = next;
+		scheduleRecipeRefresh();
 	}
 
 	function openProductPicker(target: ProductPickerTarget) {
@@ -746,6 +798,8 @@
 		productStatsError = null;
 		data.recipeStats = null;
 		data.supermarkets = [];
+		data.users = [];
+		data.planningMenus = [];
 		data.productsLoaded = false;
 		data.recipesLoaded = false;
 		data.stockEntriesLoaded = false;
@@ -755,12 +809,15 @@
 		data.productStatsLoaded = false;
 		data.recipeStatsLoaded = false;
 		data.supermarketsLoaded = false;
+		data.usersLoaded = false;
+		data.planningMenusLoaded = false;
 		productFilters = emptyProductFilters();
 		recipeFilters = emptyRecipeFilters();
 		productPickerTarget = null;
 		brokenProductPhotoUrls = {};
 		activeProposedWeekMenuId = null;
 		activeEstablishedWeekMenuId = null;
+		selectedPlanningMenuId = null;
 		creatingWeekMenuDraft = emptyProposedWeekMenuCreateForm();
 		dayPartDraft = emptyProposedWeekMenuDayPartForm();
 		editingDayPartId = null;
@@ -769,7 +826,7 @@
 		if (typeof window !== 'undefined') {
 			window.localStorage.removeItem('foodhelper_proposed_week_menu_id');
 			window.localStorage.removeItem('foodhelper_established_week_menu_id');
-			window.localStorage.removeItem('foodhelper_proposed_week_menus');
+			window.localStorage.removeItem('foodhelper_selected_planning_menu_id');
 		}
 	}
 
@@ -869,6 +926,31 @@
 			visibleProductsRefreshTimer = null;
 		}
 		visibleProductsRequestToken += 1;
+	}
+
+	function cancelRecipesRefresh() {
+		if (recipesRefreshTimer !== null) {
+			clearTimeout(recipesRefreshTimer);
+			recipesRefreshTimer = null;
+		}
+		recipesRequestToken += 1;
+	}
+
+	function scheduleRecipeRefresh(immediate = false) {
+		cancelRecipesRefresh();
+		if (!authSession) return;
+		if (!hasActiveRecipeFilters(recipeFilters)) {
+			void loadRecipes(authSession, true);
+			return;
+		}
+		if (immediate) {
+			void loadRecipes(authSession, true);
+			return;
+		}
+		recipesRefreshTimer = setTimeout(() => {
+			recipesRefreshTimer = null;
+			void loadRecipes(authSession, true);
+		}, 180);
 	}
 
 	async function loadVisibleProducts(session = authSession) {
@@ -978,7 +1060,20 @@
 		recipesLoadingMore = true;
 
 		try {
-			const response = await listRecipesPage(authorization, { page: pageToLoad, size: RECIPE_PAGE_SIZE });
+			const response = await listRecipesPage(authorization, {
+				page: pageToLoad,
+				size: RECIPE_PAGE_SIZE,
+				search: recipeFilters.search.trim() || undefined,
+				derived: recipeFilters.derived,
+				caloriesMin: recipeFilters.metrics.calories.min || undefined,
+				caloriesMax: recipeFilters.metrics.calories.max || undefined,
+				carbohydratesMin: recipeFilters.metrics.carbohydrates.min || undefined,
+				carbohydratesMax: recipeFilters.metrics.carbohydrates.max || undefined,
+				proteinsMin: recipeFilters.metrics.proteins.min || undefined,
+				proteinsMax: recipeFilters.metrics.proteins.max || undefined,
+				fatsMin: recipeFilters.metrics.fats.min || undefined,
+				fatsMax: recipeFilters.metrics.fats.max || undefined
+			});
 			if (requestToken !== recipesRequestToken) return;
 
 			const nextRecipes = response.items.map(toRecipeModel);
@@ -1071,6 +1166,28 @@
 		data.supermarketsLoaded = true;
 	}
 
+	async function loadUsers(session = authSession) {
+		if (!session) return;
+		data.users = await listUsers(authorizationHeader(session));
+		data.usersLoaded = true;
+	}
+
+	function planningMenuLabel(menu: PlanningMenuResponse) {
+		const prefix = menu.state === 'DRAFT' ? 'Propuesta' : menu.state === 'CLOSED' ? 'Cerrado' : 'Establecido';
+		return `${prefix} #${menu.id} · ${weekDateRangeLabel(menu.startDate, menu.endDate)}`;
+	}
+
+	async function loadPlanningMenus(session = authSession) {
+		if (!session) return;
+		const planning = await listPlanning(authorizationHeader(session));
+		planningMenus = planning.map((menu) => ({ ...menu, label: planningMenuLabel(menu) }));
+		data.planningMenus = planning.map((menu) => ({ ...menu, label: planningMenuLabel(menu) }));
+		data.planningMenusLoaded = true;
+		if (selectedPlanningMenuId && !planningMenus.some((menu) => menu.id === selectedPlanningMenuId)) {
+			selectedPlanningMenuId = planningMenus[0]?.id ?? null;
+		}
+	}
+
 	async function loadProposedWeekMenu(session = authSession, menuId = activeProposedWeekMenuId) {
 		if (!session) return;
 
@@ -1087,10 +1204,7 @@
 			activeProposedWeekMenuId = data.proposedWeekMenu.id;
 			activeEstablishedWeekMenuId = null;
 			rememberProposedWeekMenu(data.proposedWeekMenu);
-			if (typeof window !== 'undefined') {
-				window.localStorage.setItem('foodhelper_proposed_week_menu_id', String(activeProposedWeekMenuId));
-				window.localStorage.removeItem('foodhelper_established_week_menu_id');
-			}
+			selectedPlanningMenuId = data.proposedWeekMenu.id;
 		} catch (error) {
 			if (error instanceof ApiError && error.status === 404) {
 				forgetProposedWeekMenu(menuId);
@@ -1122,10 +1236,7 @@
 			data.establishedWeekMenuLoaded = true;
 			activeEstablishedWeekMenuId = data.establishedWeekMenu.id;
 			activeProposedWeekMenuId = null;
-			if (typeof window !== 'undefined') {
-				window.localStorage.setItem('foodhelper_established_week_menu_id', String(activeEstablishedWeekMenuId));
-				window.localStorage.removeItem('foodhelper_proposed_week_menu_id');
-			}
+			selectedPlanningMenuId = data.establishedWeekMenu.proposedWeekMenuId;
 		} catch (error) {
 			if (error instanceof ApiError && error.status === 404) {
 				clearActiveWeekMenu();
@@ -1169,7 +1280,9 @@
 			tasks.push(loadProductStats(session));
 		}
 
-		tasks.push(loadSupermarketsForProducts(session));
+		if (force || !data.supermarketsLoaded) {
+			tasks.push(loadSupermarketsForProducts(session));
+		}
 
 		await Promise.all(tasks);
 	}
@@ -1199,7 +1312,26 @@
 			return;
 		}
 
-		const kind = activeWeekMenuKind();
+		if (force || !data.planningMenusLoaded) {
+			await loadPlanningMenus(session);
+		}
+
+		let kind = activeWeekMenuKind();
+		if (!kind && planningMenus.length > 0) {
+			const selectedMenu =
+				planningMenus.find((menu) => menu.id === selectedPlanningMenuId) ?? planningMenus[0];
+			selectedPlanningMenuId = selectedMenu.id;
+			if (selectedMenu.state === 'DRAFT') {
+				activeProposedWeekMenuId = selectedMenu.id;
+				kind = 'proposed';
+			} else if (selectedMenu.menuId) {
+				activeEstablishedWeekMenuId = selectedMenu.menuId;
+				kind = 'established';
+			}
+			if (typeof window !== 'undefined') {
+				window.localStorage.setItem('foodhelper_selected_planning_menu_id', String(selectedMenu.id));
+			}
+		}
 		const tasks: Promise<void>[] = [];
 
 		if (kind === 'proposed') {
@@ -1224,7 +1356,24 @@
 			}
 		}
 
+		if (kind === 'proposed') {
+			if (force || !data.usersLoaded) {
+				tasks.push(loadUsers(session));
+			}
+		}
+
 		await Promise.all(tasks);
+	}
+
+	async function refreshPeopleView(session = authSession, force = false) {
+		if (!session) {
+			resetCatalogState();
+			return;
+		}
+
+		if (force || !data.usersLoaded) {
+			await loadUsers(session);
+		}
 	}
 
 	async function refreshDayPartsView(session = authSession, force = false) {
@@ -1254,6 +1403,11 @@
 			return;
 		}
 
+		if (currentSection === 'people-weights' || currentSection === 'people-history' || currentSection === 'people-trend') {
+			await refreshPeopleView(session, force);
+			return;
+		}
+
 		if (currentSection === 'supermarkets' || currentSection === 'money-box' || currentSection === 'nutritional-rules') {
 			return;
 		}
@@ -1275,29 +1429,12 @@
 			const storedSession = readAuthSession();
 			authSession = storedSession;
 			data.session = storedSession ? publicAuthSession(storedSession) : null;
-			data.authError = null;
 			data.backendError = null;
-			knownProposedWeekMenus = readKnownProposedWeekMenus();
-
-				const storedProposedWeekMenuId =
-					typeof window !== 'undefined'
-						? Number(window.localStorage.getItem('foodhelper_proposed_week_menu_id') ?? '')
-						: Number.NaN;
-				const storedEstablishedWeekMenuId =
-					typeof window !== 'undefined'
-						? Number(window.localStorage.getItem('foodhelper_established_week_menu_id') ?? '')
-						: Number.NaN;
-				activeProposedWeekMenuId =
-					Number.isNaN(storedProposedWeekMenuId) || storedProposedWeekMenuId <= 0
-						? null
-						: storedProposedWeekMenuId;
-				activeEstablishedWeekMenuId =
-					Number.isNaN(storedEstablishedWeekMenuId) || storedEstablishedWeekMenuId <= 0
-						? null
-						: storedEstablishedWeekMenuId;
-				if (activeEstablishedWeekMenuId) {
-					activeProposedWeekMenuId = null;
-				}
+			const storedSelectedPlanningMenuId =
+				typeof window !== 'undefined'
+					? Number(window.localStorage.getItem('foodhelper_selected_planning_menu_id') ?? '')
+					: Number.NaN;
+			selectedPlanningMenuId = Number.isNaN(storedSelectedPlanningMenuId) || storedSelectedPlanningMenuId <= 0 ? null : storedSelectedPlanningMenuId;
 
 			try {
 				await checkHealth();
@@ -1455,6 +1592,18 @@
 	function openCreateWeekMenuModal() {
 		creatingWeekMenuDraft = emptyProposedWeekMenuCreateForm();
 		modalMode = 'week-create';
+	}
+
+	function openPublishWeekMenuModal() {
+		publishPayerUserId = String(authSession?.userId ?? '');
+		publishAllocationMode = 'auto';
+		publishManualAllocations = {};
+		if (authSession && !data.usersLoaded) {
+			void loadUsers(authSession).catch(() => {
+				// The select can still open; the backend error banner handles failures elsewhere.
+			});
+		}
+		modalMode = 'week-publish';
 	}
 
 	function resetDayPartForm() {
@@ -1622,6 +1771,9 @@
 		editingWeekDayDate = null;
 		creatingWeekMenuDraft = emptyProposedWeekMenuCreateForm();
 		weekDayDraft = emptyProposedWeekMenuDayForm();
+		publishPayerUserId = '';
+		publishAllocationMode = 'auto';
+		publishManualAllocations = {};
 	}
 
 	function productPhotoUrl(photo: string) {
@@ -1856,16 +2008,16 @@
 		data.establishedWeekMenuLoaded = false;
 		activeProposedWeekMenuId = menu?.id ?? null;
 		activeEstablishedWeekMenuId = null;
+		selectedPlanningMenuId = menu?.id ?? null;
 		if (menu) {
 			rememberProposedWeekMenu(menu);
 		}
 		if (typeof window !== 'undefined') {
-			if (activeProposedWeekMenuId) {
-				window.localStorage.setItem('foodhelper_proposed_week_menu_id', String(activeProposedWeekMenuId));
+			if (selectedPlanningMenuId) {
+				window.localStorage.setItem('foodhelper_selected_planning_menu_id', String(selectedPlanningMenuId));
 			} else {
-				window.localStorage.removeItem('foodhelper_proposed_week_menu_id');
+				window.localStorage.removeItem('foodhelper_selected_planning_menu_id');
 			}
-			window.localStorage.removeItem('foodhelper_established_week_menu_id');
 		}
 	}
 
@@ -1874,13 +2026,13 @@
 
 		activeProposedWeekMenuId = menuId;
 		activeEstablishedWeekMenuId = null;
+		selectedPlanningMenuId = menuId;
 		data.proposedWeekMenu = null;
 		data.establishedWeekMenu = null;
 		data.proposedWeekMenuLoaded = false;
 		data.establishedWeekMenuLoaded = false;
 		if (typeof window !== 'undefined') {
-			window.localStorage.setItem('foodhelper_proposed_week_menu_id', String(menuId));
-			window.localStorage.removeItem('foodhelper_established_week_menu_id');
+			window.localStorage.setItem('foodhelper_selected_planning_menu_id', String(menuId));
 		}
 
 		try {
@@ -1913,13 +2065,13 @@
 		data.proposedWeekMenuLoaded = false;
 		activeEstablishedWeekMenuId = menu?.id ?? null;
 		activeProposedWeekMenuId = null;
+		selectedPlanningMenuId = menu?.proposedWeekMenuId ?? null;
 		if (typeof window !== 'undefined') {
-			if (activeEstablishedWeekMenuId) {
-				window.localStorage.setItem('foodhelper_established_week_menu_id', String(activeEstablishedWeekMenuId));
+			if (selectedPlanningMenuId) {
+				window.localStorage.setItem('foodhelper_selected_planning_menu_id', String(selectedPlanningMenuId));
 			} else {
-				window.localStorage.removeItem('foodhelper_established_week_menu_id');
+				window.localStorage.removeItem('foodhelper_selected_planning_menu_id');
 			}
-			window.localStorage.removeItem('foodhelper_proposed_week_menu_id');
 		}
 	}
 
@@ -1930,12 +2082,40 @@
 		data.establishedWeekMenuLoaded = false;
 		activeProposedWeekMenuId = null;
 		activeEstablishedWeekMenuId = null;
+		selectedPlanningMenuId = null;
 		if (typeof window !== 'undefined') {
-			window.localStorage.removeItem('foodhelper_proposed_week_menu_id');
-			window.localStorage.removeItem('foodhelper_established_week_menu_id');
+			window.localStorage.removeItem('foodhelper_selected_planning_menu_id');
 		}
 		editingWeekDayDate = null;
 		weekDayDraft = emptyProposedWeekMenuDayForm();
+	}
+
+	async function selectPlanningMenu(menuId: number) {
+		const menu = planningMenus.find((item) => item.id === menuId) ?? null;
+		if (!authSession || !menu || menuId === selectedPlanningMenuId) return;
+
+		selectedPlanningMenuId = menuId;
+		if (typeof window !== 'undefined') {
+			window.localStorage.setItem('foodhelper_selected_planning_menu_id', String(menuId));
+		}
+
+		try {
+			if (menu.state === 'DRAFT') {
+				activeEstablishedWeekMenuId = null;
+				await loadProposedWeekMenu(authSession, menu.id);
+			} else if (menu.menuId) {
+				activeProposedWeekMenuId = null;
+				await loadEstablishedWeekMenu(authSession, menu.menuId);
+			} else {
+				throw new Error('La planificación establecida no incluye un identificador de menú.');
+			}
+			setSection('week');
+		} catch (error) {
+			if (handleExpiredSession(error)) {
+				return;
+			}
+			data.backendError = error instanceof ApiError ? error.message : 'No se pudo cargar la planificación.';
+		}
 	}
 
 	function createWeekMenuRequestValues(values: ProposedWeekMenuCreateFormValues) {
@@ -2217,18 +2397,38 @@
 		};
 	}
 
-	function clearSession(message: string | null = 'La sesion ha caducado. Vuelve a iniciar sesion.') {
+	function clearSession() {
 		clearAuthSession();
 		authSession = null;
 		data.session = null;
 		data.backendError = null;
 		resetCatalogState();
-		data.authError = message;
+	}
+
+	function openSessionExpiredDialog(message = 'La sesion ha caducado. Vuelve a iniciar sesion.') {
+		if (sessionExpiredDialogOpen) return;
+		sessionExpiredDialogMessage = message;
+		sessionExpiredDialogOpen = true;
+	}
+
+	function closeSessionExpiredDialog() {
+		sessionExpiredDialogOpen = false;
+		sessionExpiredDialogMessage = null;
+	}
+
+	function confirmSessionExpired() {
+		closeSessionExpiredDialog();
+		authMode = 'login';
+		clearSession();
 	}
 
 	function handleExpiredSession(error: unknown) {
-		if (error instanceof ApiError && error.status === 401) {
-			clearSession();
+		if (
+			error instanceof ApiError &&
+			error.status === 401 &&
+			error.message.includes('Missing or invalid Bearer token')
+		) {
+			openSessionExpiredDialog();
 			return true;
 		}
 
@@ -2239,7 +2439,6 @@
 		authSession = session;
 		saveAuthSession(session);
 		data.session = publicAuthSession(session);
-		data.authError = null;
 		try {
 			await refreshCurrentView(session);
 		} catch (error) {
@@ -2366,7 +2565,7 @@
 		authSession = null;
 		data.session = null;
 		resetCatalogState();
-		data.authError = null;
+		closeSessionExpiredDialog();
 		form = {
 			type: 'logout',
 			success: 'Sesion cerrada'
@@ -2993,14 +3192,35 @@
 		}
 	}
 
-	async function submitPublishWeekMenu() {
+	async function submitPublishWeekMenu(event: SubmitEvent) {
+		event.preventDefault();
 		if (!authSession || !activeProposedWeekMenuId) return;
+
+		const payerUserId = Number(publishPayerUserId);
+		if (!Number.isFinite(payerUserId) || payerUserId <= 0) {
+			form = { type: 'week-publish', error: 'Selecciona un pagador válido.', id: activeProposedWeekMenuId };
+			return;
+		}
+
+		const stockAllocations = publishAllocationMode === 'manual'
+			? Object.entries(publishManualAllocations)
+					.map(([stockEntryId, usedUnits]) => ({ stockEntryId: Number(stockEntryId), usedUnits: Number(usedUnits) }))
+					.filter((allocation) => Number.isFinite(allocation.stockEntryId) && allocation.stockEntryId > 0 && Number.isFinite(allocation.usedUnits) && allocation.usedUnits > 0)
+			: undefined;
+
+		if (publishAllocationMode === 'manual' && (!stockAllocations || stockAllocations.length === 0)) {
+			form = { type: 'week-publish', error: 'Añade al menos una asignación manual.', id: activeProposedWeekMenuId };
+			return;
+		}
 
 		try {
 			const menu = toEstablishedWeekMenuModel(
 				await publishProposedWeekMenuRequest(
 					activeProposedWeekMenuId,
-					authSession.userId,
+					{
+						payerUserId,
+						...(stockAllocations ? { stockAllocations } : {})
+					},
 					authorizationHeader(authSession)
 				)
 			);
@@ -3011,7 +3231,10 @@
 				success: 'Semana establecida correctamente',
 				id: menu.id
 			};
+			modalMode = null;
 			currentSection = 'week';
+			await refreshWeekView(authSession, true);
+			refreshCatalogToken += 1;
 		} catch (error) {
 			if (handleExpiredSession(error)) {
 				return;
@@ -3026,6 +3249,31 @@
 				return;
 			}
 			throw error;
+		}
+	}
+
+	async function undoActiveEstablishedWeekMenu() {
+		if (!authSession || !activeEstablishedWeekMenuId) return;
+		if (!window.confirm('¿Deshacer este menú establecido? Se restaurará el stock consumido y la hucha del pagador.')) return;
+		try {
+			await undoEstablishedWeekMenuRequest(activeEstablishedWeekMenuId, authorizationHeader(authSession));
+			clearActiveWeekMenu();
+			form = {
+				type: 'week-publish',
+				success: 'Menú deshecho correctamente',
+				id: activeEstablishedWeekMenuId
+			};
+			await refreshWeekView(authSession, true);
+			refreshCatalogToken += 1;
+		} catch (error) {
+			if (handleExpiredSession(error)) {
+				return;
+			}
+			form = {
+				type: 'week-publish',
+				error: error instanceof ApiError ? error.message : 'No se pudo deshacer el menú.',
+				id: activeEstablishedWeekMenuId
+			};
 		}
 	}
 </script>
@@ -3114,10 +3362,13 @@
 							event.preventDefault();
 							setSection('week');
 						}}
-					>
-						<CalendarClock class="size-4 shrink-0" aria-hidden="true" />
-						<span class="truncate">Planificación</span>
-					</a>
+						>
+							<CalendarClock class="size-4 shrink-0" aria-hidden="true" />
+							<span class="truncate">Planificación</span>
+						</a>
+					<a class={`flex h-9 items-center gap-2 rounded-md px-2.5 text-sm font-medium ${currentSection === 'people-weights' ? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))] transition-colors hover:bg-[hsl(var(--secondary))] hover:text-[hsl(var(--foreground))]'}`} href="#people-weights" onclick={(event) => { event.preventDefault(); setSection('people-weights'); }}><CalendarClock class="size-4 shrink-0" aria-hidden="true" /><span class="truncate">Pesos</span></a>
+					<a class={`flex h-9 items-center gap-2 rounded-md px-2.5 text-sm font-medium ${currentSection === 'people-history' ? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))] transition-colors hover:bg-[hsl(var(--secondary))] hover:text-[hsl(var(--foreground))]'}`} href="#people-history" onclick={(event) => { event.preventDefault(); setSection('people-history'); }}><UserRound class="size-4 shrink-0" aria-hidden="true" /><span class="truncate">Historial</span></a>
+					<a class={`flex h-9 items-center gap-2 rounded-md px-2.5 text-sm font-medium ${currentSection === 'people-trend' ? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))] transition-colors hover:bg-[hsl(var(--secondary))] hover:text-[hsl(var(--foreground))]'}`} href="#people-trend" onclick={(event) => { event.preventDefault(); setSection('people-trend'); }}><TrendingUp class="size-4 shrink-0" aria-hidden="true" /><span class="truncate">Evolución</span></a>
 				{:else}
 				<a
 					class="flex h-9 items-center gap-2 rounded-md bg-[hsl(var(--secondary))] px-2.5 text-sm font-medium text-[hsl(var(--foreground))]"
@@ -3368,16 +3619,6 @@
 								</p>
 							{/if}
 
-							{#if data.authError}
-								<p
-									class="mt-4 flex items-start gap-2 rounded-lg border border-[hsl(var(--destructive)/0.2)] bg-[hsl(var(--destructive)/0.06)] px-3 py-2.5 text-sm text-[hsl(var(--destructive))]"
-									data-testid="auth-error-banner"
-								>
-									<CircleAlert class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-									<span class="min-w-0 break-words">{data.authError}</span>
-								</p>
-							{/if}
-
 							{#if data.backendError}
 								<p
 									class="mt-4 flex items-start gap-2 rounded-lg border border-[hsl(var(--destructive)/0.2)] bg-[hsl(var(--destructive)/0.06)] px-3 py-2.5 text-sm text-[hsl(var(--destructive))]"
@@ -3439,6 +3680,42 @@
 				>
 					<CalendarClock class="size-4" aria-hidden="true" />
 					<span class="truncate">Semana</span>
+				</button>
+				<button
+					type="button"
+					class={`inline-flex min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+						currentSection === 'people-weights'
+							? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]'
+							: 'text-[hsl(var(--muted-foreground))]'
+					}`}
+					onclick={() => setSection('people-weights')}
+				>
+					<CalendarClock class="size-4" aria-hidden="true" />
+					<span class="truncate">Pesos</span>
+				</button>
+				<button
+					type="button"
+					class={`inline-flex min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+						currentSection === 'people-history'
+							? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]'
+							: 'text-[hsl(var(--muted-foreground))]'
+					}`}
+					onclick={() => setSection('people-history')}
+				>
+					<UserRound class="size-4" aria-hidden="true" />
+					<span class="truncate">Historial</span>
+				</button>
+				<button
+					type="button"
+					class={`inline-flex min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+						currentSection === 'people-trend'
+							? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]'
+							: 'text-[hsl(var(--muted-foreground))]'
+					}`}
+					onclick={() => setSection('people-trend')}
+				>
+					<TrendingUp class="size-4" aria-hidden="true" />
+					<span class="truncate">Evolución</span>
 				</button>
 				<button type="button" class={`inline-flex min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium ${currentSection === 'supermarkets' ? 'bg-[hsl(var(--secondary))]' : 'text-[hsl(var(--muted-foreground))]'}`} onclick={() => setSection('supermarkets')}><Store class="size-4" /><span class="truncate">Supermercados</span></button>
 				<button type="button" class={`inline-flex min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium ${currentSection === 'money-box' ? 'bg-[hsl(var(--secondary))]' : 'text-[hsl(var(--muted-foreground))]'}`} onclick={() => setSection('money-box')}><PiggyBank class="size-4" /><span class="truncate">Huchas</span></button>
@@ -4175,38 +4452,44 @@
 									Nueva semana
 								</Button>
 								{#if activeWeekMenuKind() === 'proposed' && activeProposedWeekMenuId}
-									<Button type="button" variant="secondary" onclick={submitPublishWeekMenu} disabled={!data.backendAvailable}>
+									<Button type="button" variant="secondary" onclick={openPublishWeekMenuModal} disabled={!data.backendAvailable}>
 										<CircleCheck class="size-4" aria-hidden="true" />
 										Establecer semana
+									</Button>
+								{/if}
+								{#if activeWeekMenuKind() === 'established' && activeEstablishedWeekMenuId}
+									<Button type="button" variant="secondary" onclick={() => void undoActiveEstablishedWeekMenu()} disabled={!data.backendAvailable}>
+										<X class="size-4" aria-hidden="true" />
+										Deshacer menú
 									</Button>
 								{/if}
 							</div>
 							</div>
 
-							{#if knownProposedWeekMenus.length > 0}
+							{#if planningMenus.length > 0}
 								<section class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4 shadow-sm">
 									<div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(260px,360px)] lg:items-end">
 										<div class="min-w-0">
 											<h3 class="flex items-center gap-2 text-sm font-semibold text-[hsl(var(--foreground))]">
 												<LayoutList class="size-4 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
-												Semanas propuestas
+												Planificaciones
 											</h3>
 											<p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">
-												{knownProposedWeekMenus.length} propuestas guardadas en este navegador.
+												{planningMenus.length} planificaciones cargadas desde el backend.
 											</p>
 										</div>
 										<label class="block min-w-0">
-											<span class={fieldLabelClass}>Propuesta activa</span>
+											<span class={fieldLabelClass}>Planificación activa</span>
 											<select
 												class={inputClass}
-												value={activeProposedWeekMenuId ?? ''}
-												onchange={handleProposedWeekMenuSelection}
+												value={selectedPlanningMenuId ?? ''}
+												onchange={(event) => void selectPlanningMenu(Number((event.currentTarget as HTMLSelectElement).value))}
 												disabled={!data.backendAvailable}
-												data-testid="proposed-week-menu-selector"
+												data-testid="planning-menu-selector"
 											>
-												<option value="" disabled>Selecciona una propuesta</option>
-												{#each knownProposedWeekMenus as menu (menu.id)}
-													<option value={menu.id}>{knownProposedWeekMenuLabel(menu)}</option>
+												<option value="" disabled>Selecciona una planificación</option>
+												{#each planningMenus as menu (menu.id)}
+													<option value={menu.id}>{menu.label}</option>
 												{/each}
 											</select>
 										</label>
@@ -4265,8 +4548,10 @@
 								<MenuCompletionPanel
 									menuId={data.establishedWeekMenu.id}
 									payerUsername={data.establishedWeekMenu.payerUsername}
+									currentUserId={authSession!.userId}
 									authorization={authorizationHeader(authSession!)}
 									initialShoppingList={data.establishedWeekMenu.shoppingList}
+									initialUsedStock={data.establishedWeekMenu.usedStock}
 								/>
 							{/if}
 
@@ -4574,6 +4859,18 @@
 						{/if}
 					</section>
 
+					{:else if currentSection === 'people-weights'}
+						<section id="people-weights" class="space-y-4">
+							<PeoplePanel authorization={authorizationHeader(authSession!)} currentUserId={authSession!.userId} mode="weights" />
+						</section>
+					{:else if currentSection === 'people-history'}
+						<section id="people-history" class="space-y-4">
+							<PeoplePanel authorization={authorizationHeader(authSession!)} currentUserId={authSession!.userId} mode="history" />
+						</section>
+					{:else if currentSection === 'people-trend'}
+						<section id="people-trend" class="space-y-4">
+							<PeoplePanel authorization={authorizationHeader(authSession!)} currentUserId={authSession!.userId} mode="trend" />
+						</section>
 					{:else if currentSection === 'day-parts'}
 						<section id="day-parts" class="space-y-4">
 							<div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -4701,7 +4998,7 @@
 					{:else if currentSection === 'supermarkets'}
 						<SupermarketsPanel authorization={authorizationHeader(authSession!)} />
 					{:else if currentSection === 'money-box'}
-						<MoneyBoxPanel authorization={authorizationHeader(authSession!)} userId={data.session.userId} />
+						<MoneyBoxPanel authorization={authorizationHeader(authSession!)} userId={data.session.userId} reloadToken={refreshCatalogToken} />
 					{:else if currentSection === 'nutritional-rules'}
 						<NutritionalRulesPanel authorization={authorizationHeader(authSession!)} />
 					{:else}
@@ -5072,6 +5369,40 @@
 			{/if}
 				</main>
 			</div>
+
+	{#if sessionExpiredDialogOpen}
+		<div
+			class="fixed inset-0 z-50 flex items-center justify-center bg-[hsl(var(--background)/0.72)] px-4 backdrop-blur-sm"
+			role="presentation"
+		>
+			<div
+				class="w-full max-w-md rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-6 shadow-2xl"
+				role="dialog"
+				aria-modal="true"
+				aria-labelledby="session-expired-title"
+				data-testid="session-expired-dialog"
+			>
+				<div class="flex items-start gap-3">
+					<span class="grid size-10 shrink-0 place-items-center rounded-full bg-[hsl(var(--destructive)/0.1)] text-[hsl(var(--destructive))]">
+						<CircleAlert class="size-5" aria-hidden="true" />
+					</span>
+					<div class="min-w-0">
+						<h2 id="session-expired-title" class="text-lg font-semibold text-[hsl(var(--foreground))]">
+							Sesion caducada
+						</h2>
+						<p class="mt-2 text-sm leading-6 text-[hsl(var(--muted-foreground))]">
+							{sessionExpiredDialogMessage}
+						</p>
+					</div>
+				</div>
+				<div class="mt-6 flex justify-end">
+					<Button type="button" onclick={confirmSessionExpired} data-testid="session-expired-confirm">
+						Aceptar
+					</Button>
+				</div>
+			</div>
+		</div>
+	{/if}
 
 	{#if modalMode === 'product-create'}
 		<div class="fixed inset-0 z-30 flex items-start justify-center overflow-y-auto bg-black/30 p-3 backdrop-blur-sm sm:p-4" role="presentation">
@@ -6589,6 +6920,111 @@
 						>
 							<Save class="size-4" aria-hidden="true" />
 							Guardar menu
+						</Button>
+					</div>
+				</form>
+			</div>
+		</div>
+	{/if}
+
+	{#if modalMode === 'week-publish' && authSession && activeProposedWeekMenuId}
+		<div class="fixed inset-0 z-30 flex items-start justify-center overflow-y-auto bg-black/30 p-3 backdrop-blur-sm sm:p-4" role="presentation">
+			<div class="max-h-[calc(100vh-2rem)] w-full max-w-4xl overflow-y-auto rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-xl" role="dialog" aria-modal="true" aria-labelledby="week-publish-title" data-testid="week-publish-modal">
+				<div class="flex items-start justify-between gap-4 border-b border-[hsl(var(--border))] p-5">
+					<div class="min-w-0">
+						<h2 id="week-publish-title" class="text-lg font-semibold text-[hsl(var(--foreground))]">Establecer semana</h2>
+						<p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">Elige pagador y modo de asignación del stock.</p>
+					</div>
+					<Button variant="ghost" size="icon" type="button" onclick={closeModal} aria-label="Cerrar modal">
+						<X class="size-4" aria-hidden="true" />
+					</Button>
+				</div>
+				<form class="space-y-6 p-5" onsubmit={submitPublishWeekMenu} data-testid="week-publish-form">
+					<fieldset class="space-y-6" disabled={!data.backendAvailable}>
+						<section class="grid gap-4 md:grid-cols-2">
+							<label class="block min-w-0">
+								<span class={fieldLabelClass}>Pagador</span>
+								<select class={inputClass} bind:value={publishPayerUserId} data-testid="week-publish-payer">
+									<option value="" disabled>Selecciona un pagador</option>
+									{#each data.users as user}
+										<option value={String(user.id)}>{user.username}</option>
+									{/each}
+								</select>
+							</label>
+							<div class="space-y-2">
+								<span class={fieldLabelClass}>Asignación</span>
+								<div class="flex gap-2">
+									<Button type="button" variant={publishAllocationMode === 'auto' ? 'primary' : 'secondary'} onclick={() => (publishAllocationMode = 'auto')}>Automática</Button>
+									<Button type="button" variant={publishAllocationMode === 'manual' ? 'primary' : 'secondary'} onclick={() => (publishAllocationMode = 'manual')}>Manual</Button>
+								</div>
+							</div>
+						</section>
+						{#if publishAllocationMode === 'manual'}
+							<section class="space-y-3 rounded-lg border p-4">
+								<div>
+									<h3 class="text-sm font-semibold">Asignación manual por entrada de stock</h3>
+									<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Solo se enviarán las entradas con unidades mayores que cero.</p>
+								</div>
+								<div class="hidden overflow-x-auto md:block">
+									<table class="w-full text-sm">
+										<thead class="bg-[hsl(var(--secondary))] text-xs text-[hsl(var(--muted-foreground))]">
+											<tr>
+												<th class="px-3 py-2 text-left font-medium">Stock</th>
+												<th class="px-3 py-2 text-right font-medium">Disponible</th>
+												<th class="px-3 py-2 text-right font-medium">Usar</th>
+											</tr>
+										</thead>
+										<tbody class="divide-y">
+											{#each data.stockEntries as stockEntry}
+												<tr>
+													<td class="px-3 py-2">{stockEntry.productName}</td>
+													<td class="px-3 py-2 text-right tabular-nums">{formatNumber(stockEntry.quantity)}</td>
+													<td class="px-3 py-2 text-right">
+														<input
+															class="h-9 w-28 rounded-md border px-2 text-right text-sm tabular-nums"
+															type="number"
+															min="0"
+															step="0.01"
+															value={publishManualAllocations[stockEntry.id] ?? ''}
+															oninput={(event) => {
+																const next = (event.currentTarget as HTMLInputElement).value;
+																publishManualAllocations = { ...publishManualAllocations, [stockEntry.id]: next };
+															}}
+														/>
+													</td>
+												</tr>
+											{/each}
+										</tbody>
+									</table>
+								</div>
+								<div class="space-y-2 md:hidden">
+									{#each data.stockEntries as stockEntry}
+										<div class="rounded-md border p-3">
+											<p class="text-sm font-medium">{stockEntry.productName}</p>
+											<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Disponible: {formatNumber(stockEntry.quantity)}</p>
+											<input
+												class="mt-2 h-9 w-full rounded-md border px-2 text-sm tabular-nums"
+												type="number"
+												min="0"
+												step="0.01"
+												placeholder="Unidades a usar"
+												value={publishManualAllocations[stockEntry.id] ?? ''}
+												oninput={(event) => {
+													const next = (event.currentTarget as HTMLInputElement).value;
+													publishManualAllocations = { ...publishManualAllocations, [stockEntry.id]: next };
+												}}
+											/>
+										</div>
+									{/each}
+								</div>
+							</section>
+						{/if}
+					</fieldset>
+					<div class="flex flex-col-reverse gap-2 border-t border-[hsl(var(--border))] pt-5 sm:flex-row sm:justify-end">
+						<Button variant="secondary" type="button" onclick={closeModal}>Cancelar</Button>
+						<Button type="submit" disabled={!data.backendAvailable}>
+							<CircleCheck class="size-4" aria-hidden="true" />
+							Establecer semana
 						</Button>
 					</div>
 				</form>
