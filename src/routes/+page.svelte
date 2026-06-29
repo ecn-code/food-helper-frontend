@@ -296,6 +296,7 @@
 		| 'supermarkets'
 		| 'money-box'
 		| 'nutritional-rules';
+	type StockViewMode = 'block' | 'list';
 	// The planning section now comes from the backend planning catalog, not localStorage.
 	type PlanningMenu = PlanningMenuResponse & {
 		label: string;
@@ -446,6 +447,8 @@
 	let stockAdjustmentQuantity = $state('');
 	let stockProductFilter = $state('');
 	let stockExpiresBefore = $state('');
+	let stockStatsOpen = $state(false);
+	let stockViewMode = $state<StockViewMode>('block');
 	let deleteRecipeItem = $state<Recipe | null>(null);
 	let editingProductId = $state<number | null>(null);
 	let editingRecipeId = $state<number | null>(null);
@@ -509,6 +512,8 @@
 	let productsIntersectionObserver: IntersectionObserver | null = null;
 	let recipesIntersectionObserver: IntersectionObserver | null = null;
 	let refreshCatalogToken = $state(0);
+	const stockStatsStorageKey = 'foodhelper_stock_stats_open';
+	const stockViewModeStorageKey = 'foodhelper_stock_view_mode';
 
 	function loginErrors(): AuthFormErrors {
 		return form?.type === 'login' && 'fieldErrors' in form
@@ -1659,6 +1664,17 @@
 					: Number.NaN;
 			selectedClosedMenuId =
 				Number.isNaN(storedSelectedClosedMenuId) || storedSelectedClosedMenuId <= 0 ? null : storedSelectedClosedMenuId;
+			const prefersCompactStockList =
+				typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches;
+			const storedStockStatsOpen = typeof window !== 'undefined' ? window.localStorage.getItem(stockStatsStorageKey) : null;
+			stockStatsOpen = storedStockStatsOpen === null ? !prefersCompactStockList : storedStockStatsOpen === '1';
+			const storedStockViewMode = typeof window !== 'undefined' ? window.localStorage.getItem(stockViewModeStorageKey) : null;
+			stockViewMode =
+				storedStockViewMode === 'list' || storedStockViewMode === 'block'
+					? storedStockViewMode
+					: prefersCompactStockList
+						? 'list'
+						: 'block';
 
 			try {
 				await checkHealth();
@@ -2609,6 +2625,24 @@
 
 	function stockSectionLoading() {
 		return !data.stockEntriesLoaded;
+	}
+
+	function setStockStatsOpen(next: boolean) {
+		stockStatsOpen = next;
+		if (typeof window !== 'undefined') {
+			window.localStorage.setItem(stockStatsStorageKey, next ? '1' : '0');
+		}
+	}
+
+	function toggleStockStatsOpen() {
+		setStockStatsOpen(!stockStatsOpen);
+	}
+
+	function setStockViewMode(next: StockViewMode) {
+		stockViewMode = next;
+		if (typeof window !== 'undefined') {
+			window.localStorage.setItem(stockViewModeStorageKey, next);
+		}
 	}
 
 	function loadingCountLabel(loaded: boolean, count: number) {
@@ -4569,37 +4603,87 @@
 								Gestiona lotes, caducidades y cantidades desde una vista dedicada.
 							</p>
 						</div>
-						<div class="flex flex-wrap gap-2 sm:shrink-0">
-							<Button type="button" onclick={() => openStockModal()} disabled={!data.backendAvailable}>
-								<Plus class="size-4" aria-hidden="true" />
-								Añadir stock
-							</Button>
-						</div>
 					</div>
 
-					<section class="grid gap-3 md:grid-cols-2 xl:grid-cols-3" aria-label="Metricas del stock">
-						<MetricCard
-							label="Stock total"
-							value={totalStockQuantityLabel()}
-							hint={data.productStats ? 'Suma de todas las entradas' : 'Cargando estadisticas'}
-						>
-							<Package class="size-4" aria-hidden="true" />
-						</MetricCard>
-						<MetricCard
-							label="Entradas"
-							value={loadingCountLabel(!stockSectionLoading(), stockEntriesCount())}
-							hint="Lotes registrados en el sistema"
-						>
-							<Package class="size-4" aria-hidden="true" />
-						</MetricCard>
-						<MetricCard
-							label="Antes caduca"
-							value={earliestExpirationLabel()}
-							hint={earliestExpirationHint()}
-							tone="accent"
-						>
-							<CalendarClock class="size-4" aria-hidden="true" />
-						</MetricCard>
+					<section class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4 shadow-sm">
+						<div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+							<div class="min-w-0">
+								<h3 class="text-base font-semibold text-[hsl(var(--foreground))]">Resumen y acceso rápido</h3>
+								<p class="mt-1 max-w-2xl text-sm text-[hsl(var(--muted-foreground))]">
+									Los stats quedan plegados en móvil y las preferencias se guardan en este navegador.
+								</p>
+							</div>
+							<div class="flex flex-wrap gap-2 lg:justify-end">
+								<Button
+									type="button"
+									variant="secondary"
+									size="sm"
+									onclick={toggleStockStatsOpen}
+									aria-pressed={stockStatsOpen}
+									data-testid="stock-stats-toggle"
+								>
+									<Eye class="size-4" aria-hidden="true" />
+									{stockStatsOpen ? 'Ocultar stats' : 'Ver stats'}
+								</Button>
+								<div class="inline-flex rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-1 shadow-sm">
+									<Button
+										type="button"
+										size="sm"
+										variant={stockViewMode === 'list' ? 'primary' : 'ghost'}
+										class={stockViewMode === 'list' ? '' : 'text-[hsl(var(--muted-foreground))]'}
+										onclick={() => setStockViewMode('list')}
+										aria-pressed={stockViewMode === 'list'}
+										data-testid="stock-view-list"
+									>
+										<LayoutList class="size-4" aria-hidden="true" />
+										Lista
+									</Button>
+									<Button
+										type="button"
+										size="sm"
+										variant={stockViewMode === 'block' ? 'primary' : 'ghost'}
+										class={stockViewMode === 'block' ? '' : 'text-[hsl(var(--muted-foreground))]'}
+										onclick={() => setStockViewMode('block')}
+										aria-pressed={stockViewMode === 'block'}
+										data-testid="stock-view-block"
+									>
+										<SlidersHorizontal class="size-4" aria-hidden="true" />
+										Bloque
+									</Button>
+								</div>
+								<Button type="button" onclick={() => openStockModal()} disabled={!data.backendAvailable}>
+									<Plus class="size-4" aria-hidden="true" />
+									Añadir stock
+								</Button>
+							</div>
+						</div>
+
+						{#if stockStatsOpen}
+							<section class="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3" aria-label="Metricas del stock" data-testid="stock-stats-panel">
+								<MetricCard
+									label="Stock total"
+									value={totalStockQuantityLabel()}
+									hint={data.productStats ? 'Suma de todas las entradas' : 'Cargando estadisticas'}
+								>
+									<Package class="size-4" aria-hidden="true" />
+								</MetricCard>
+								<MetricCard
+									label="Entradas"
+									value={loadingCountLabel(!stockSectionLoading(), stockEntriesCount())}
+									hint="Lotes registrados en el sistema"
+								>
+									<Package class="size-4" aria-hidden="true" />
+								</MetricCard>
+								<MetricCard
+									label="Antes caduca"
+									value={earliestExpirationLabel()}
+									hint={earliestExpirationHint()}
+									tone="accent"
+								>
+									<CalendarClock class="size-4" aria-hidden="true" />
+								</MetricCard>
+							</section>
+						{/if}
 					</section>
 
 					<section class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-sm">
@@ -4612,9 +4696,7 @@
 							</div>
 							<span class="inline-flex w-fit shrink-0 items-center gap-1.5 rounded-md border border-[hsl(var(--border))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]">
 								<Package class="size-3.5" aria-hidden="true" />
-								<span data-testid="stock-count">
-									{loadingCountLabel(!stockSectionLoading(), filteredStockEntries().length)}
-								</span>
+								<span data-testid="stock-count">{loadingCountLabel(!stockSectionLoading(), filteredStockEntries().length)}</span>
 								entradas
 							</span>
 						</div>
@@ -4640,10 +4722,7 @@
 						{#if stockSectionLoading()}
 							<div class="grid place-items-center px-8 py-16 text-center">
 								<div class="grid size-12 place-items-center rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
-									<div
-										class="size-5 animate-spin rounded-full border-2 border-[hsl(var(--muted-foreground))] border-t-transparent"
-										aria-hidden="true"
-									></div>
+									<div class="size-5 animate-spin rounded-full border-2 border-[hsl(var(--muted-foreground))] border-t-transparent" aria-hidden="true"></div>
 								</div>
 								<h3 class="mt-4 text-sm font-semibold text-[hsl(var(--foreground))]">Cargando stock</h3>
 								<p class="mt-1 max-w-sm text-sm text-[hsl(var(--muted-foreground))]">
@@ -4667,148 +4746,189 @@
 								<p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">Cambia los filtros para volver a ver el inventario.</p>
 							</div>
 						{:else}
-							<div class="hidden overflow-x-auto md:block">
-								<table class="w-full table-fixed text-sm">
-									<colgroup>
-										<col class="w-[30%]" />
-										<col class="w-[12%]" />
-										<col class="w-[12%]" />
-										<col class="w-[16%]" />
-										<col class="w-[16%]" />
-										<col class="w-[14%]" />
-									</colgroup>
-									<thead class="bg-[hsl(var(--secondary))] text-xs text-[hsl(var(--muted-foreground))]">
-										<tr class="border-b border-[hsl(var(--border))]">
-											<th class="px-4 py-2.5 text-left font-medium">Producto</th>
-											<th class="px-3 py-2.5 text-right font-medium">Cantidad</th>
-											<th class="px-3 py-2.5 text-right font-medium">Precio</th>
-											<th class="px-3 py-2.5 text-right font-medium">Caducidad</th>
-											<th class="px-3 py-2.5 text-right font-medium">Entrada</th>
-											<th class="px-4 py-2.5 text-right font-medium">Accion</th>
-										</tr>
-									</thead>
-									<tbody class="divide-y divide-[hsl(var(--border))]">
-										{#each filteredStockEntries() as stockEntry (stockEntry.id)}
-											<tr class="transition-colors hover:bg-[hsl(var(--secondary)/0.55)]">
-												<td class="px-4 py-3 align-top">
-													<div class="min-w-0">
-														<p class="truncate font-medium text-[hsl(var(--foreground))]">{stockEntry.productName}</p>
-														<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Producto #{stockEntry.productId}</p>
-													</div>
-												</td>
-												<td class="px-3 py-3 text-right align-top font-medium tabular-nums">
-													{formatNumber(stockEntry.quantity)}
-												</td>
-												<td class="px-3 py-3 text-right align-top tabular-nums">
-													{formatCurrency(stockEntry.price)}
-												</td>
-												<td class="px-3 py-3 text-right align-top tabular-nums">
-													{formatDate(stockEntry.expirationDate)}
-												</td>
-												<td class="px-3 py-3 text-right align-top tabular-nums">
-													{formatDate(stockEntry.entryDate)}
-												</td>
-												<td class="px-4 py-3 align-top">
-													<div class="flex justify-end gap-1">
-														<Button variant="ghost" size="icon" type="button" aria-label="Añadir cantidad" title="Añadir cantidad" onclick={() => openAddStockQuantityModal(stockEntry)}>
-															<Plus class="size-4" aria-hidden="true" />
-														</Button>
-														<Button
-															variant="ghost"
-															size="icon"
-															type="button"
-															aria-label="Editar stock"
-															title="Editar stock"
-															onclick={() => openEditStockModal(stockEntry)}
-															data-testid={`stock-edit-button-${stockEntry.id}`}
-														>
-															<Pencil class="size-4" aria-hidden="true" />
-														</Button>
-														<Button
-															variant="ghost"
-															size="icon"
-															type="button"
-															aria-label="Borrar stock"
-															title="Borrar stock"
-															class="text-[hsl(var(--destructive))] hover:bg-[hsl(var(--destructive)/0.08)] hover:text-[hsl(var(--destructive))]"
-															onclick={() => openDeleteStockModal(stockEntry)}
-															data-testid={`stock-delete-button-${stockEntry.id}`}
-														>
-															<Trash2 class="size-4" aria-hidden="true" />
-														</Button>
-													</div>
-												</td>
+							{@const stockEntries = filteredStockEntries()}
+							{#if stockViewMode === 'list'}
+								<div class="hidden overflow-x-auto md:block">
+									<table class="w-full table-fixed text-sm">
+										<colgroup>
+											<col class="w-[32%]" />
+											<col class="w-[12%]" />
+											<col class="w-[12%]" />
+											<col class="w-[16%]" />
+											<col class="w-[16%]" />
+											<col class="w-[12%]" />
+										</colgroup>
+										<thead class="bg-[hsl(var(--secondary))] text-xs text-[hsl(var(--muted-foreground))]">
+											<tr class="border-b border-[hsl(var(--border))]">
+												<th class="px-4 py-2.5 text-left font-medium">Producto</th>
+												<th class="px-3 py-2.5 text-right font-medium">Cant.</th>
+												<th class="px-3 py-2.5 text-right font-medium">Precio</th>
+												<th class="px-3 py-2.5 text-right font-medium">Caducidad</th>
+												<th class="px-3 py-2.5 text-right font-medium">Entrada</th>
+												<th class="px-4 py-2.5 text-right font-medium">Accion</th>
 											</tr>
-										{/each}
-									</tbody>
-								</table>
-							</div>
+										</thead>
+										<tbody class="divide-y divide-[hsl(var(--border))]">
+											{#each stockEntries as stockEntry (stockEntry.id)}
+												<tr class="transition-colors hover:bg-[hsl(var(--secondary)/0.55)]">
+													<td class="px-4 py-3 align-top">
+														<div class="min-w-0">
+															<p class="truncate font-medium text-[hsl(var(--foreground))]">{stockEntry.productName}</p>
+															<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Producto #{stockEntry.productId}</p>
+														</div>
+													</td>
+													<td class="px-3 py-3 text-right align-top font-medium tabular-nums">{formatNumber(stockEntry.quantity)}</td>
+													<td class="px-3 py-3 text-right align-top tabular-nums">{formatCurrency(stockEntry.price)}</td>
+													<td class="px-3 py-3 text-right align-top tabular-nums">{formatDate(stockEntry.expirationDate)}</td>
+													<td class="px-3 py-3 text-right align-top tabular-nums">{formatDate(stockEntry.entryDate)}</td>
+													<td class="px-4 py-3 align-top">
+														<div class="flex justify-end gap-1">
+															<Button variant="ghost" size="icon" type="button" aria-label="Añadir cantidad" title="Añadir cantidad" onclick={() => openAddStockQuantityModal(stockEntry)}>
+																<Plus class="size-4" aria-hidden="true" />
+															</Button>
+															<Button
+																variant="ghost"
+																size="icon"
+																type="button"
+																aria-label="Editar stock"
+																title="Editar stock"
+																onclick={() => openEditStockModal(stockEntry)}
+																data-testid={`stock-edit-button-${stockEntry.id}`}
+															>
+																<Pencil class="size-4" aria-hidden="true" />
+															</Button>
+															<Button
+																variant="ghost"
+																size="icon"
+																type="button"
+																aria-label="Borrar stock"
+																title="Borrar stock"
+																class="text-[hsl(var(--destructive))] hover:bg-[hsl(var(--destructive)/0.08)] hover:text-[hsl(var(--destructive))]"
+																onclick={() => openDeleteStockModal(stockEntry)}
+																data-testid={`stock-delete-button-${stockEntry.id}`}
+															>
+																<Trash2 class="size-4" aria-hidden="true" />
+															</Button>
+														</div>
+													</td>
+												</tr>
+											{/each}
+										</tbody>
+									</table>
+								</div>
 
-							<div class="divide-y divide-[hsl(var(--border))] md:hidden">
-								{#each filteredStockEntries() as stockEntry (stockEntry.id)}
-									<article class="space-y-4 p-4">
-										<div class="flex items-start justify-between gap-3">
-											<div class="min-w-0">
-												<h3 class="truncate text-sm font-semibold text-[hsl(var(--foreground))]">{stockEntry.productName}</h3>
-												<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Producto #{stockEntry.productId}</p>
+								<div class="divide-y divide-[hsl(var(--border))] md:hidden">
+									{#each stockEntries as stockEntry (stockEntry.id)}
+										<article class="space-y-4 p-4">
+											<div class="flex items-start justify-between gap-3">
+												<div class="min-w-0">
+													<h3 class="truncate text-sm font-semibold text-[hsl(var(--foreground))]">{stockEntry.productName}</h3>
+													<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Producto #{stockEntry.productId}</p>
+												</div>
+												<div class="shrink-0 text-right">
+													<p class="text-sm font-semibold tabular-nums text-[hsl(var(--foreground))]">{formatNumber(stockEntry.quantity)}</p>
+													<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">uds</p>
+												</div>
 											</div>
-											<div class="shrink-0 text-right">
-												<p class="text-sm font-semibold tabular-nums text-[hsl(var(--foreground))]">
-													{formatNumber(stockEntry.quantity)}
-												</p>
-												<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">uds</p>
+											<div class="grid grid-cols-3 gap-2 text-xs text-[hsl(var(--muted-foreground))]">
+												<span class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.2)] px-2 py-1">Precio {formatCurrency(stockEntry.price)}</span>
+												<span class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.2)] px-2 py-1">Caduca {formatDate(stockEntry.expirationDate)}</span>
+												<span class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.2)] px-2 py-1">Entra {formatDate(stockEntry.entryDate)}</span>
 											</div>
-										</div>
-
-										<dl class="grid grid-cols-2 gap-2 text-sm">
-											<div class="rounded-md border border-[hsl(var(--border))] p-2.5">
-												<dt class="text-xs text-[hsl(var(--muted-foreground))]">Precio</dt>
-												<dd class="mt-1 font-medium tabular-nums">{formatCurrency(stockEntry.price)}</dd>
+											<div class="flex justify-end gap-1">
+												<Button variant="ghost" size="icon" type="button" aria-label="Añadir cantidad" title="Añadir cantidad" onclick={() => openAddStockQuantityModal(stockEntry)}>
+													<Plus class="size-4" aria-hidden="true" />
+												</Button>
+												<Button
+													variant="ghost"
+													size="icon"
+													type="button"
+													aria-label="Editar stock"
+													title="Editar stock"
+													onclick={() => openEditStockModal(stockEntry)}
+													data-testid={`stock-edit-card-button-${stockEntry.id}`}
+												>
+													<Pencil class="size-4" aria-hidden="true" />
+												</Button>
+												<Button
+													variant="ghost"
+													size="icon"
+													type="button"
+													aria-label="Borrar stock"
+													title="Borrar stock"
+													class="text-[hsl(var(--destructive))] hover:bg-[hsl(var(--destructive)/0.08)] hover:text-[hsl(var(--destructive))]"
+													onclick={() => openDeleteStockModal(stockEntry)}
+													data-testid={`stock-delete-card-button-${stockEntry.id}`}
+												>
+													<Trash2 class="size-4" aria-hidden="true" />
+												</Button>
 											</div>
-											<div class="rounded-md border border-[hsl(var(--border))] p-2.5">
-												<dt class="text-xs text-[hsl(var(--muted-foreground))]">Caducidad</dt>
-												<dd class="mt-1 font-medium tabular-nums">{formatDate(stockEntry.expirationDate)}</dd>
+										</article>
+									{/each}
+								</div>
+							{:else}
+								<div class="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3" data-testid="stock-block-list">
+									{#each stockEntries as stockEntry (stockEntry.id)}
+										<article class="space-y-4 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4 shadow-sm">
+											<div class="flex items-start justify-between gap-3">
+												<div class="min-w-0">
+													<h3 class="truncate text-sm font-semibold text-[hsl(var(--foreground))]">{stockEntry.productName}</h3>
+													<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Producto #{stockEntry.productId}</p>
+												</div>
+												<div class="shrink-0 text-right">
+													<p class="text-lg font-semibold tabular-nums text-[hsl(var(--foreground))]">{formatNumber(stockEntry.quantity)}</p>
+													<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">uds</p>
+												</div>
 											</div>
-											<div class="rounded-md border border-[hsl(var(--border))] p-2.5">
-												<dt class="text-xs text-[hsl(var(--muted-foreground))]">Entrada</dt>
-												<dd class="mt-1 font-medium tabular-nums">{formatDate(stockEntry.entryDate)}</dd>
+											<dl class="grid grid-cols-2 gap-2 text-sm">
+												<div class="rounded-md border border-[hsl(var(--border))] p-2.5">
+													<dt class="text-xs text-[hsl(var(--muted-foreground))]">Precio</dt>
+													<dd class="mt-1 font-medium tabular-nums">{formatCurrency(stockEntry.price)}</dd>
+												</div>
+												<div class="rounded-md border border-[hsl(var(--border))] p-2.5">
+													<dt class="text-xs text-[hsl(var(--muted-foreground))]">Caducidad</dt>
+													<dd class="mt-1 font-medium tabular-nums">{formatDate(stockEntry.expirationDate)}</dd>
+												</div>
+												<div class="rounded-md border border-[hsl(var(--border))] p-2.5">
+													<dt class="text-xs text-[hsl(var(--muted-foreground))]">Entrada</dt>
+													<dd class="mt-1 font-medium tabular-nums">{formatDate(stockEntry.entryDate)}</dd>
+												</div>
+												<div class="rounded-md border border-[hsl(var(--border))] p-2.5">
+													<dt class="text-xs text-[hsl(var(--muted-foreground))]">Cantidad</dt>
+													<dd class="mt-1 font-medium tabular-nums">{formatNumber(stockEntry.quantity)}</dd>
+												</div>
+											</dl>
+											<div class="grid grid-cols-3 gap-2">
+												<Button variant="secondary" size="sm" type="button" onclick={() => openAddStockQuantityModal(stockEntry)}>
+													<Plus class="size-4" aria-hidden="true" />
+													Añadir
+												</Button>
+												<Button
+													variant="secondary"
+													size="sm"
+													type="button"
+													onclick={() => openEditStockModal(stockEntry)}
+													data-testid={`stock-edit-card-button-${stockEntry.id}`}
+												>
+													<Pencil class="size-4" aria-hidden="true" />
+													Editar
+												</Button>
+												<Button
+													variant="ghost"
+													size="sm"
+													type="button"
+													class="text-[hsl(var(--destructive))] hover:bg-[hsl(var(--destructive)/0.08)] hover:text-[hsl(var(--destructive))]"
+													onclick={() => openDeleteStockModal(stockEntry)}
+													data-testid={`stock-delete-card-button-${stockEntry.id}`}
+												>
+													<Trash2 class="size-4" aria-hidden="true" />
+													Borrar
+												</Button>
 											</div>
-											<div class="rounded-md border border-[hsl(var(--border))] p-2.5">
-												<dt class="text-xs text-[hsl(var(--muted-foreground))]">Cantidad</dt>
-												<dd class="mt-1 font-medium tabular-nums">{formatNumber(stockEntry.quantity)}</dd>
-											</div>
-										</dl>
-
-										<div class="grid grid-cols-3 gap-2">
-											<Button variant="secondary" size="sm" type="button" onclick={() => openAddStockQuantityModal(stockEntry)}>
-												<Plus class="size-4" aria-hidden="true" />
-												Añadir
-											</Button>
-											<Button
-												variant="secondary"
-												size="sm"
-												type="button"
-												onclick={() => openEditStockModal(stockEntry)}
-												data-testid={`stock-edit-card-button-${stockEntry.id}`}
-											>
-												<Pencil class="size-4" aria-hidden="true" />
-												Editar
-											</Button>
-											<Button
-												variant="ghost"
-												size="sm"
-												type="button"
-												class="text-[hsl(var(--destructive))] hover:bg-[hsl(var(--destructive)/0.08)] hover:text-[hsl(var(--destructive))]"
-												onclick={() => openDeleteStockModal(stockEntry)}
-												data-testid={`stock-delete-card-button-${stockEntry.id}`}
-											>
-												<Trash2 class="size-4" aria-hidden="true" />
-												Borrar
-											</Button>
-										</div>
-									</article>
-								{/each}
-							</div>
+										</article>
+									{/each}
+								</div>
+							{/if}
 						{/if}
 					</section>
 				</section>
