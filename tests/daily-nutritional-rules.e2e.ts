@@ -26,7 +26,8 @@ test('muestra la evaluación de las reglas en cada menú diario', async ({ page,
 	await page.getByRole('spinbutton', { name: 'Máximo de Proteínas semanal' }).fill('1');
 	await page.getByRole('spinbutton', { name: 'Mínimo de Grasas semanal' }).fill('0');
 	await page.getByRole('spinbutton', { name: 'Máximo de Grasas semanal' }).fill('1');
-	await page.getByRole('button', { name: 'Guardar reglas' }).click();
+	await expect(page.getByRole('button', { name: 'Guardar reglas' })).toHaveCount(2);
+	await page.getByRole('button', { name: 'Guardar reglas' }).first().click();
 	await expect(page.getByRole('status')).toHaveText('Reglas nutricionales guardadas.');
 
 	await page.getByRole('link', { name: 'Planificación' }).click();

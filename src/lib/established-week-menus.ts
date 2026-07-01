@@ -2,7 +2,8 @@ import type {
 	EstablishedWeekMenuResponse,
 	EstablishedWeekMenuShoppingListItemResponse,
 	EstablishedWeekMenuStockSummaryResponse,
-	EstablishedWeekMenuUsedStockResponse
+	EstablishedWeekMenuUsedStockResponse,
+	EstablishedWeekMenuWeekStockItemResponse
 } from '$lib/api/established-week-menus';
 import type { ProposedWeekMenuDay, ProposedWeekMenuSection, ProposedWeekMenuProduct } from '$lib/proposed-week-menus';
 import { toProposedWeekMenuDayModel } from '$lib/proposed-week-menus';
@@ -14,6 +15,7 @@ export type EstablishedWeekMenuSection = ProposedWeekMenuSection;
 export type EstablishedWeekMenuProduct = ProposedWeekMenuProduct;
 
 export type EstablishedWeekMenuUsedStock = EstablishedWeekMenuUsedStockResponse;
+export type EstablishedWeekMenuWeekStockItem = EstablishedWeekMenuWeekStockItemResponse;
 export type EstablishedWeekMenuShoppingListItem = EstablishedWeekMenuShoppingListItemResponse;
 export type EstablishedWeekMenuStockSummary = EstablishedWeekMenuStockSummaryResponse;
 
@@ -28,6 +30,7 @@ export type EstablishedWeekMenu = {
 	nutritionalValues: NutritionalValues;
 	stockSummary: EstablishedWeekMenuStockSummary;
 	usedStock: EstablishedWeekMenuUsedStock[];
+	weekStock: EstablishedWeekMenuWeekStockItem[];
 	shoppingList: EstablishedWeekMenuShoppingListItem[];
 	nutritionalRules?: NutritionalRulesEvaluation;
 };
@@ -44,6 +47,7 @@ export function toEstablishedWeekMenuModel(menu: EstablishedWeekMenuResponse): E
 		nutritionalValues: menu.nutritionalValues,
 		stockSummary: menu.stockSummary,
 		usedStock: menu.usedStock,
+		weekStock: menu.weekStock,
 		shoppingList: menu.shoppingList,
 		nutritionalRules: menu.nutritionalRules
 	};

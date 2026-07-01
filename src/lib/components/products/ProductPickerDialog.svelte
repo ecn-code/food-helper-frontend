@@ -160,6 +160,7 @@
 				onChange={updateFilters}
 				onClear={clearFilters}
 				testIdPrefix="product-picker-filter"
+				focusOnMount={true}
 			/>
 
 			<div class="mt-4 flex items-center justify-between gap-3 text-sm">

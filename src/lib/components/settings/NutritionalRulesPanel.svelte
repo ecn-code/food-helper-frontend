@@ -121,17 +121,26 @@
 </script>
 
 <section class="space-y-5" data-testid="nutritional-rules-panel">
-	<div>
-		<h2 class="text-2xl font-semibold tracking-tight">Reglas nutricionales</h2>
-		<p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">
-			Define límites diarios y semanales para cada nutriente.
-		</p>
+	<div class="flex items-start justify-between gap-4">
+		<div class="min-w-0">
+			<h2 class="text-2xl font-semibold tracking-tight">Reglas nutricionales</h2>
+			<p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">
+				Define límites diarios y semanales para cada nutriente.
+			</p>
+		</div>
+
+		{#if loaded}
+			<Button type="submit" form="nutritional-rules-form" disabled={saving} class="shrink-0">
+				<Save class="size-4" />
+				Guardar reglas
+			</Button>
+		{/if}
 	</div>
 
 	{#if !loaded}
 		<p class="text-sm text-[hsl(var(--muted-foreground))]">Cargando reglas…</p>
 	{:else}
-		<form class="space-y-5" onsubmit={submit}>
+		<form id="nutritional-rules-form" class="space-y-5" onsubmit={submit}>
 			{#each scopes as scope}
 				<section class="overflow-hidden rounded-lg border bg-[hsl(var(--card))]">
 					<div class="border-b bg-[hsl(var(--muted))] px-4 py-3">
@@ -189,10 +198,12 @@
 				<p class="text-sm text-[hsl(var(--primary))]" role="status">{message}</p>
 			{/if}
 
-			<Button type="submit" disabled={saving}>
-				<Save class="size-4" />
-				Guardar reglas
-			</Button>
+			<div class="flex justify-end">
+				<Button type="submit" disabled={saving}>
+					<Save class="size-4" />
+					Guardar reglas
+				</Button>
+			</div>
 		</form>
 	{/if}
 </section>

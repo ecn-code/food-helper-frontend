@@ -40,6 +40,12 @@ export type EstablishedWeekMenuUsedStockResponse = {
 	entryDate: string;
 };
 
+export type EstablishedWeekMenuWeekStockItemResponse = {
+	productId: number;
+	productName: string;
+	quantity: number;
+};
+
 export type EstablishedWeekMenuShoppingListItemResponse = {
 	productId: number;
 	productName: string;
@@ -62,6 +68,7 @@ export type EstablishedWeekMenuResponse = {
 	nutritionalValues: NutritionalValues;
 	stockSummary: EstablishedWeekMenuStockSummaryResponse;
 	usedStock: EstablishedWeekMenuUsedStockResponse[];
+	weekStock: EstablishedWeekMenuWeekStockItemResponse[];
 	shoppingList: EstablishedWeekMenuShoppingListItemResponse[];
 	nutritionalRules?: NutritionalRulesEvaluation;
 };
@@ -143,9 +150,38 @@ export async function getMenuStats(id: number, authorization: string) {
 	});
 }
 
+export async function listMenuUsedStock(id: number, authorization: string) {
+	return await request<EstablishedWeekMenuUsedStockResponse[]>(`/api/v1/menus/${id}/used-stock`, {
+		headers: authHeaders(authorization)
+	});
+}
+
 export async function listMenuShoppingList(id: number, authorization: string, supermarketId?: number) {
 	const query = supermarketId ? `?supermarketId=${encodeURIComponent(supermarketId)}` : '';
 	return await request<EstablishedWeekMenuShoppingListItemResponse[]>(`/api/v1/menus/${id}/shopping-list${query}`, {
 		headers: authHeaders(authorization)
+	});
+}
+
+export async function listMenuWeekStock(id: number, authorization: string) {
+	return await request<EstablishedWeekMenuWeekStockItemResponse[]>(`/api/v1/menus/${id}/week-stock`, {
+		headers: authHeaders(authorization)
+	});
+}
+
+export async function updateMenuWeekStock(
+	id: number,
+	weekStock: EstablishedWeekMenuWeekStockItemResponse[],
+	authorization: string
+) {
+	return await request<EstablishedWeekMenuResponse>(`/api/v1/menus/${id}/week-stock`, {
+		method: 'PUT',
+		headers: authHeaders(authorization),
+		body: JSON.stringify({
+			weekStock: weekStock.map((item) => ({
+				productId: Number(item.productId),
+				quantity: Number(item.quantity)
+			}))
+		})
 	});
 }

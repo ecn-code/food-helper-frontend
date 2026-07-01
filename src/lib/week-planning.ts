@@ -156,15 +156,17 @@ export function buildWeekPlanningSummary(
 	for (const day of days) {
 		for (const section of day.sections) {
 			for (const product of section.products) {
+				const productId = product.productId;
+				if (productId === null) continue;
 				const requiredUnits = product.units ?? 1;
-				const current = requirementsByProduct.get(product.productId) ?? {
-					productId: product.productId,
+				const current = requirementsByProduct.get(productId) ?? {
+					productId,
 					productName: product.productName,
 					requiredUnits: 0
 				};
 
 				current.requiredUnits += Number.isFinite(requiredUnits) ? requiredUnits : 0;
-				requirementsByProduct.set(product.productId, current);
+				requirementsByProduct.set(productId, current);
 			}
 		}
 	}

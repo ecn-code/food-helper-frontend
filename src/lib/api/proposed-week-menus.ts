@@ -33,9 +33,14 @@ export type CreateProposedWeekMenuRequest = {
 };
 
 export type ProposedWeekMenuProductRequest = {
-	productId: number;
+	productId: number | null;
+	productName?: string | null;
 	units?: number | null;
 	grams?: number | null;
+	calories?: number | null;
+	carbohydrates?: number | null;
+	proteins?: number | null;
+	fats?: number | null;
 	sortOrder: number;
 };
 
@@ -50,10 +55,10 @@ export type UpsertProposedWeekMenuDayRequest = {
 };
 
 export type ProposedWeekMenuProductResponse = {
-	productId: number;
+	productId: number | null;
 	productName: string;
-	units: number;
-	grams: number;
+	units: number | null;
+	grams: number | null;
 	sortOrder: number;
 	nutritionalValues: NutritionalValues;
 };
@@ -122,10 +127,19 @@ function sanitizeUpsertDayRequest(values: UpsertProposedWeekMenuDayRequest): Ups
 		sections: values.sections.map((section) => ({
 			dayPartId: Number(section.dayPartId),
 			products: section.products.map((product) => ({
-				productId: Number(product.productId),
+				productId: product.productId === null ? null : Number(product.productId),
 				sortOrder: Number(product.sortOrder),
+				...(product.productName === undefined || product.productName === null || String(product.productName).trim() === ''
+					? {}
+					: { productName: String(product.productName).trim() }),
 				...(product.units === undefined || product.units === null ? {} : { units: sanitizeNumber(product.units) }),
-				...(product.grams === undefined || product.grams === null ? {} : { grams: sanitizeNumber(product.grams) })
+				...(product.grams === undefined || product.grams === null ? {} : { grams: sanitizeNumber(product.grams) }),
+				...(product.calories === undefined || product.calories === null ? {} : { calories: sanitizeNumber(product.calories) }),
+				...(product.carbohydrates === undefined || product.carbohydrates === null
+					? {}
+					: { carbohydrates: sanitizeNumber(product.carbohydrates) }),
+				...(product.proteins === undefined || product.proteins === null ? {} : { proteins: sanitizeNumber(product.proteins) }),
+				...(product.fats === undefined || product.fats === null ? {} : { fats: sanitizeNumber(product.fats) })
 			}))
 		}))
 	};
@@ -181,6 +195,13 @@ export async function createProposedWeekMenu(
 
 export async function getProposedWeekMenu(id: number, authorization: string) {
 	return await request<ProposedWeekMenuResponse>(`/api/v1/planning/${id}`, {
+		headers: authHeaders(authorization)
+	});
+}
+
+export async function deleteProposedWeekMenu(id: number, authorization: string) {
+	return await request<void>(`/api/v1/planning/${id}`, {
+		method: 'DELETE',
 		headers: authHeaders(authorization)
 	});
 }

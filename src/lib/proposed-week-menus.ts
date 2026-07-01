@@ -20,9 +20,15 @@ export type ProposedWeekMenuDayPartFormValues = {
 };
 
 export type ProposedWeekMenuDayProductFormValues = {
+	type: 'catalog' | 'manual';
 	productId: string;
+	productName: string;
 	units: string;
 	grams: string;
+	calories: string;
+	carbohydrates: string;
+	proteins: string;
+	fats: string;
 	sortOrder: string;
 };
 
@@ -40,7 +46,7 @@ export type ProposedWeekMenuCreateFormErrors = Partial<Record<'startDate' | 'end
 export type ProposedWeekMenuDayPartFormErrors = Partial<Record<'name' | 'description' | 'sortOrder', string>>;
 
 export type ProposedWeekMenuDayProductFormErrors = Partial<
-	Record<'productId' | 'units' | 'grams' | 'sortOrder', string>
+	Record<'type' | 'productId' | 'productName' | 'units' | 'grams' | 'calories' | 'carbohydrates' | 'proteins' | 'fats' | 'sortOrder', string>
 >;
 
 export type ProposedWeekMenuSectionFormErrors = Partial<Record<'dayPartId' | 'products', string>> & {
@@ -78,10 +84,10 @@ export type ProposedWeekMenuDayPart = {
 };
 
 export type ProposedWeekMenuProduct = {
-	productId: number;
+	productId: number | null;
 	productName: string;
-	units: number;
-	grams: number;
+	units: number | null;
+	grams: number | null;
 	sortOrder: number;
 	nutritionalValues: NutritionalValues;
 };
@@ -123,9 +129,15 @@ export function emptyProposedWeekMenuDayPartForm(): ProposedWeekMenuDayPartFormV
 
 export function emptyProposedWeekMenuDayProductForm(): ProposedWeekMenuDayProductFormValues {
 	return {
+		type: 'catalog',
 		productId: '',
+		productName: '',
 		units: '',
 		grams: '',
+		calories: '',
+		carbohydrates: '',
+		proteins: '',
+		fats: '',
 		sortOrder: '10'
 	};
 }
@@ -133,7 +145,7 @@ export function emptyProposedWeekMenuDayProductForm(): ProposedWeekMenuDayProduc
 export function emptyProposedWeekMenuSectionForm(): ProposedWeekMenuSectionFormValues {
 	return {
 		dayPartId: '',
-		products: [emptyProposedWeekMenuDayProductForm()]
+		products: []
 	};
 }
 
@@ -191,7 +203,9 @@ export function toProposedWeekMenuProductModel(
 	};
 }
 
-export function toProposedWeekMenuDayFormValues(day: ProposedWeekMenuDay | null | undefined) {
+export function toProposedWeekMenuDayFormValues(
+	day: ProposedWeekMenuDay | null | undefined
+): ProposedWeekMenuDayFormValues {
 	if (!day) return emptyProposedWeekMenuDayForm();
 
 	return {
@@ -199,8 +213,14 @@ export function toProposedWeekMenuDayFormValues(day: ProposedWeekMenuDay | null 
 		sections: sortBySortOrder(day.sections).map((section) => ({
 			dayPartId: String(section.dayPartId),
 			products: sortBySortOrder(section.products).map((product) => ({
-				productId: String(product.productId),
+				type: (product.productId === null ? 'manual' : 'catalog') as 'manual' | 'catalog',
+				productId: product.productId === null ? '' : String(product.productId),
+				productName: product.productName,
 				units: String(product.units ?? ''),
+				calories: String(product.nutritionalValues.calories ?? ''),
+				carbohydrates: String(product.nutritionalValues.carbohydrates ?? ''),
+				proteins: String(product.nutritionalValues.proteins ?? ''),
+				fats: String(product.nutritionalValues.fats ?? ''),
 				grams: String(product.grams ?? ''),
 				sortOrder: String(product.sortOrder)
 			}))

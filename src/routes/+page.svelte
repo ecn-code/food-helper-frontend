@@ -4,11 +4,13 @@
 		BookOpen,
 		CircleAlert,
 		CircleCheck,
+		Clock,
 		CalendarClock,
 		Database,
 		Droplets,
 		Drumstick,
 		Eye,
+		File as FileIcon,
 		Flame,
 		LayoutList,
 		Leaf,
@@ -65,6 +67,7 @@
 	} from '$lib/api/stock';
 	import {
 		createProposedWeekMenuDayPart as createProposedWeekMenuDayPartRequest,
+		deleteProposedWeekMenu as deleteProposedWeekMenuRequest,
 		createProposedWeekMenu as createProposedWeekMenuRequest,
 		getProposedWeekMenu as getProposedWeekMenuRequest,
 		listProposedWeekMenuDayParts as listProposedWeekMenuDayPartsRequest,
@@ -149,6 +152,7 @@
 	import DailyNutritionalEvaluation from '$lib/components/planning/DailyNutritionalEvaluation.svelte';
 	import NutritionalEvaluationPanel from '$lib/components/planning/NutritionalEvaluationPanel.svelte';
 	import PeoplePanel from '$lib/components/people/PeoplePanel.svelte';
+	import MenuWeekPanel from '$lib/components/menus/MenuWeekPanel.svelte';
 	import MenuMealsTable from '$lib/components/menus/MenuMealsTable.svelte';
 	import { listSupermarkets, type Supermarket } from '$lib/api/supermarkets';
 	import { listPlanning, type PlanningMenuResponse } from '$lib/api/planning';
@@ -243,6 +247,12 @@
 		error?: string;
 		id?: number;
 	};
+	type WeekMenuDeleteActionState = {
+		type: 'week-delete';
+		success?: string;
+		error?: string;
+		id?: number;
+	};
 	type DayPartActionState = {
 		type: 'day-part-create' | 'day-part-update';
 		success?: string;
@@ -261,6 +271,7 @@
 		| WeekMenuCreateActionState
 		| WeekMenuDayActionState
 		| WeekMenuPublishActionState
+		| WeekMenuDeleteActionState
 		| DayPartActionState;
 
 	type ModalMode =
@@ -280,6 +291,7 @@
 		| 'week-stock'
 		| 'week-day'
 		| 'week-publish'
+		| 'week-delete'
 		| 'day-part'
 		| null;
 	type AuthMode = 'login' | 'register';
@@ -291,7 +303,7 @@
 		| 'menus'
 		| 'closed-menus'
 		| 'people-weights'
-		| 'people-history'
+		| 'menus-history'
 		| 'people-trend'
 		| 'day-parts'
 		| 'supermarkets'
@@ -493,8 +505,13 @@
 	let visibleProductsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 	const planningSummary = $derived(weekPlanningSummary());
 	const planningDayList = $derived(weekDays());
+	const publishWeekMenuConflict = $derived(findWeekPublishConflict());
+	const activeEstablishedMenu = $derived(
+		data.establishedWeekMenu ?? menus.find((menu) => planningStateByMenuId(menu.id) === 'ESTABLISHED') ?? null
+	);
 	let recipesRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 	let loginSuccessTimer: ReturnType<typeof setTimeout> | null = null;
+	let sessionNow = $state(Date.now());
 	let visibleProductsRequestToken = 0;
 	let productsRequestToken = 0;
 	let sessionExpiredListener: ((event: Event) => void) | null = null;
@@ -504,6 +521,30 @@
 	let menusLoadedAt = $state(0);
 	let proposedWeekMenuDayPartsLoadedAt = $state(0);
 	const WEEK_MENU_CACHE_TTL_MS = 60_000;
+
+	function formatSessionTimeRemaining(expiresAt: string, nowMs: number) {
+		const expiresAtMs = new Date(expiresAt).getTime();
+		if (Number.isNaN(expiresAtMs)) return null;
+
+		const remainingMs = Math.max(0, expiresAtMs - nowMs);
+		const totalMinutes = Math.ceil(remainingMs / 60_000);
+		const hours = Math.floor(totalMinutes / 60);
+		const minutes = totalMinutes % 60;
+
+		if (hours <= 0) {
+			return `${Math.max(1, totalMinutes)} min`;
+		}
+
+		if (minutes === 0) {
+			return `${hours} h`;
+		}
+
+		return `${hours} h ${String(minutes).padStart(2, '0')} min`;
+	}
+
+	const sessionTimeRemaining = $derived(
+		data.session ? formatSessionTimeRemaining(data.session.expiresAt, sessionNow) : null
+	);
 
 	function clearLoginSuccessTimer() {
 		if (loginSuccessTimer !== null) {
@@ -549,13 +590,16 @@
 			value === 'menus' ||
 			value === 'closed-menus' ||
 			value === 'people-weights' ||
+			value === 'menus-history' ||
 			value === 'people-history' ||
 			value === 'people-trend' ||
 			value === 'day-parts' ||
 			value === 'supermarkets' ||
 			value === 'money-box' ||
 			value === 'nutritional-rules'
-			? value
+			? value === 'people-history'
+				? 'menus-history'
+				: value
 			: 'products';
 	}
 
@@ -583,9 +627,9 @@
 		if (section === 'stock') return 'Stock';
 		if (section === 'planning') return 'Planificación';
 		if (section === 'menus') return 'Menú';
-		if (section === 'closed-menus') return 'Historial de menús';
+		if (section === 'closed-menus') return 'Menús cerrados';
 		if (section === 'people-weights') return 'Pesos';
-		if (section === 'people-history') return 'Historial';
+		if (section === 'menus-history') return 'Historial';
 		if (section === 'people-trend') return 'Evolución';
 		if (section === 'day-parts') return 'Partes del dia';
 		if (section === 'supermarkets') return 'Supermercados';
@@ -786,7 +830,16 @@
 								...section,
 								products: section.products.map((product, productIndex) =>
 									productIndex === target.productIndex
-										? { ...product, productId: selectedProductId }
+										? {
+												...product,
+												type: 'catalog',
+												productId: selectedProductId,
+												productName: '',
+												calories: '',
+												carbohydrates: '',
+												proteins: '',
+												fats: ''
+											}
 										: product
 								)
 						  }
@@ -1273,6 +1326,13 @@
 		if (selectedMenuId && !inProgressMenus().some((menu) => menu.id === selectedMenuId)) {
 			selectedMenuId = inProgressMenus()[0]?.id ?? null;
 		}
+		if (
+			selectedMenuId &&
+			inProgressMenus().some((menu) => menu.id === selectedMenuId) &&
+			(!data.establishedWeekMenuLoaded || activeEstablishedWeekMenuId !== selectedMenuId)
+		) {
+			await loadEstablishedWeekMenu(session, selectedMenuId, 'selected');
+		}
 	}
 
 	async function selectMenu(menuId: number) {
@@ -1618,7 +1678,7 @@
 			return;
 		}
 
-		if (currentSection === 'people-weights' || currentSection === 'people-history' || currentSection === 'people-trend') {
+		if (currentSection === 'people-weights' || currentSection === 'menus-history' || currentSection === 'people-trend') {
 			await refreshPeopleView(session, force);
 			return;
 		}
@@ -1632,14 +1692,26 @@
 
 	onMount(() => {
 		hydrated = true;
-		currentSection = normalizeSection(window.location.hash.slice(1));
+		sessionNow = Date.now();
+		const sessionTimer = window.setInterval(() => {
+			sessionNow = Date.now();
+		}, 1000);
+		const initialHash = window.location.hash.slice(1);
+		currentSection = normalizeSection(initialHash);
+		if (initialHash === 'people-history') {
+			window.history.replaceState(null, '', '#menus-history');
+		}
 		sessionExpiredListener = (event: Event) => {
 			const detail = (event as CustomEvent<{ message?: string }>).detail;
 			openSessionExpiredDialog(detail?.message);
 		};
 
 		const syncSection = () => {
-			currentSection = normalizeSection(window.location.hash.slice(1));
+			const nextHash = window.location.hash.slice(1);
+			currentSection = normalizeSection(nextHash);
+			if (nextHash === 'people-history') {
+				window.history.replaceState(null, '', '#menus-history');
+			}
 			void refreshCurrentView();
 		};
 
@@ -1745,6 +1817,7 @@
 				window.removeEventListener('foodhelper-session-expired', sessionExpiredListener);
 				sessionExpiredListener = null;
 			}
+			window.clearInterval(sessionTimer);
 			window.removeEventListener('hashchange', syncSection);
 		};
 	});
@@ -1873,6 +1946,10 @@
 		modalMode = 'week-publish';
 	}
 
+	function openDeleteWeekMenuModal() {
+		modalMode = 'week-delete';
+	}
+
 	function openWeekStockDialog() {
 		modalMode = 'week-stock';
 	}
@@ -1912,6 +1989,16 @@
 		};
 	}
 
+	function createManualDayProductDraft(
+		existingProducts: ProposedWeekMenuDayProductFormValues[] = []
+	): ProposedWeekMenuDayProductFormValues {
+		return {
+			...emptyProposedWeekMenuDayProductForm(),
+			type: 'manual' as const,
+			sortOrder: nextProposedWeekMenuProductSortOrder(existingProducts)
+		};
+	}
+
 	function openWeekDayModal(date: string) {
 		const day = data.proposedWeekMenu?.days.find((item) => item.date === date) ?? null;
 		editingWeekDayDate = date;
@@ -1942,6 +2029,7 @@
 	}
 
 	function addWeekDayProduct(sectionIndex: number) {
+		const productIndex = weekDayDraft.sections[sectionIndex]?.products.length ?? 0;
 		weekDayDraft = {
 			...weekDayDraft,
 			sections: weekDayDraft.sections.map((section, currentIndex) =>
@@ -1953,11 +2041,31 @@
 					: section
 			)
 		};
+		openProductPicker({
+			type: 'week-day',
+			sectionIndex,
+			productIndex,
+			selectedProductId: ''
+		});
+	}
+
+	function addWeekDayManualProduct(sectionIndex: number) {
+		weekDayDraft = {
+			...weekDayDraft,
+			sections: weekDayDraft.sections.map((section, currentIndex) =>
+				currentIndex === sectionIndex
+					? {
+							...section,
+							products: [...section.products, createManualDayProductDraft(section.products)]
+						}
+					: section
+			)
+		};
 	}
 
 	function removeWeekDayProduct(sectionIndex: number, productIndex: number) {
 		const section = weekDayDraft.sections[sectionIndex];
-		if (!section || section.products.length <= 1) return;
+		if (!section || section.products.length === 0) return;
 
 		weekDayDraft = {
 			...weekDayDraft,
@@ -2186,6 +2294,40 @@
 		return `${formatShortDate(startDate)} al ${formatShortDate(endDate)}`;
 	}
 
+	function weekRangesOverlap(leftStartDate: string, leftEndDate: string, rightStartDate: string, rightEndDate: string) {
+		return leftStartDate <= rightEndDate && rightStartDate <= leftEndDate;
+	}
+
+	function findWeekPublishConflict() {
+		const proposedWeekMenu = data.proposedWeekMenu;
+		if (!proposedWeekMenu) return null;
+
+		const activeMenuId = activeProposedWeekMenuId;
+		const planningConflict = planningMenus.find(
+			(menu) =>
+				menu.id !== activeMenuId &&
+				weekRangesOverlap(proposedWeekMenu.startDate, proposedWeekMenu.endDate, menu.startDate, menu.endDate)
+		);
+		if (planningConflict) {
+			return {
+				label: planningMenuLabel(planningConflict)
+			};
+		}
+
+		const establishedConflict = data.menus.find(
+			(menu) =>
+				menu.proposedWeekMenuId !== activeMenuId &&
+				weekRangesOverlap(proposedWeekMenu.startDate, proposedWeekMenu.endDate, menu.startDate, menu.endDate)
+		);
+		if (establishedConflict) {
+			return {
+				label: `#${establishedConflict.id} · ${weekDateRangeLabel(establishedConflict.startDate, establishedConflict.endDate)}`
+			};
+		}
+
+		return null;
+	}
+
 	function knownProposedWeekMenuLabel(menu: KnownProposedWeekMenu) {
 		return `#${menu.id} · ${weekDateRangeLabel(menu.startDate, menu.endDate)}`;
 	}
@@ -2372,6 +2514,13 @@
 		}
 	}
 
+	async function handleEstablishedMenuUpdated(menu: EstablishedWeekMenu) {
+		setActiveEstablishedWeekMenu(menu);
+		if (authSession) {
+			await refreshMenusView(authSession, true);
+		}
+	}
+
 	function clearActiveWeekMenu() {
 		data.proposedWeekMenu = null;
 		data.establishedWeekMenu = null;
@@ -2451,9 +2600,19 @@
 			sections: values.sections.map((section) => ({
 				dayPartId: Number(section.dayPartId),
 				products: section.products.map((product) => ({
-					productId: Number(product.productId),
+					productId:
+						product.type === 'manual' || product.productId.trim() === '' ? null : Number(product.productId),
+					productName: product.type === 'manual' ? product.productName.trim() : undefined,
 					units: product.units ? Number(product.units) : undefined,
 					grams: product.grams ? Number(product.grams) : undefined,
+					calories: product.type === 'manual' && product.calories.trim() !== '' ? Number(product.calories) : undefined,
+					carbohydrates:
+						product.type === 'manual' && product.carbohydrates.trim() !== ''
+							? Number(product.carbohydrates)
+							: undefined,
+					proteins:
+						product.type === 'manual' && product.proteins.trim() !== '' ? Number(product.proteins) : undefined,
+					fats: product.type === 'manual' && product.fats.trim() !== '' ? Number(product.fats) : undefined,
 					sortOrder: Number(product.sortOrder)
 				}))
 			}))
@@ -2533,7 +2692,26 @@
 				const currentProductErrors: ProposedWeekMenuDayProductFormErrors = {};
 				const sortOrder = Number(product.sortOrder);
 
-				if (!product.productId || Number.isNaN(Number(product.productId)) || Number(product.productId) <= 0) {
+				if (product.type === 'manual') {
+					if (!product.productName.trim()) {
+						currentProductErrors.productName = 'El nombre es obligatorio';
+					}
+
+					for (const field of ['calories', 'carbohydrates', 'proteins', 'fats'] as const) {
+						const value = product[field].trim();
+						if (!value) {
+							currentProductErrors[field] = 'Este valor es obligatorio';
+							continue;
+						}
+
+						const numericValue = Number(value);
+						if (Number.isNaN(numericValue)) {
+							currentProductErrors[field] = 'Introduce un numero valido';
+						} else if (numericValue < 0) {
+							currentProductErrors[field] = 'El valor no puede ser negativo';
+						}
+					}
+				} else if (!product.productId || Number.isNaN(Number(product.productId)) || Number(product.productId) <= 0) {
 					currentProductErrors.productId = 'Selecciona un producto valido';
 				}
 
@@ -3565,6 +3743,16 @@
 		event.preventDefault();
 		if (!authSession || !activeProposedWeekMenuId) return;
 
+		const conflict = findWeekPublishConflict();
+		if (conflict) {
+			form = {
+				type: 'week-publish',
+				error: `Ya existe una planificación que se solapa con este rango: ${conflict.label}.`,
+				id: activeProposedWeekMenuId
+			};
+			return;
+		}
+
 		const payerUserId = Number(publishPayerUserId);
 		if (!Number.isFinite(payerUserId) || payerUserId <= 0) {
 			form = { type: 'week-publish', error: 'Selecciona un pagador válido.', id: activeProposedWeekMenuId };
@@ -3613,10 +3801,53 @@
 			}
 
 			if (error instanceof ApiError) {
+				const overlapConflict = error.status === 400 ? findWeekPublishConflict() : null;
 				form = {
 					type: 'week-publish',
-					error: error.message,
+					error:
+						overlapConflict
+							? `Ya existe una planificación que se solapa con este rango: ${overlapConflict.label}.`
+							: error.message,
 					id: activeProposedWeekMenuId
+				};
+				return;
+			}
+			throw error;
+		}
+	}
+
+	async function submitDeleteWeekMenu(event: SubmitEvent) {
+		event.preventDefault();
+		if (!authSession || !activeProposedWeekMenuId) return;
+
+		const menuId = activeProposedWeekMenuId;
+
+		try {
+			await deleteProposedWeekMenuRequest(menuId, authorizationHeader(authSession));
+			const deletedMenu = data.proposedWeekMenu;
+			clearActiveWeekMenu();
+			invalidateWeekMenuCaches();
+			modalMode = null;
+			form = {
+				type: 'week-delete',
+				success: 'Planificación eliminada correctamente',
+				id: menuId
+			};
+			if (deletedMenu) {
+				forgetProposedWeekMenu(deletedMenu.id);
+			}
+			await refreshPlanningView(authSession, true);
+			setSection('planning');
+		} catch (error) {
+			if (handleExpiredSession(error)) {
+				return;
+			}
+
+			if (error instanceof ApiError) {
+				form = {
+					type: 'week-delete',
+					error: error.message,
+					id: menuId
 				};
 				return;
 			}
@@ -3810,6 +4041,8 @@
 						<CircleCheck class="size-4 shrink-0" aria-hidden="true" />
 						<span class="truncate">Menú</span>
 					</a>
+					<div class="mx-2 my-1 border-t border-[hsl(var(--border))]" aria-hidden="true"></div>
+					<a class={`flex h-9 items-center gap-2 rounded-md px-2.5 text-sm font-medium ${currentSection === 'people-weights' ? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))] transition-colors hover:bg-[hsl(var(--secondary))] hover:text-[hsl(var(--foreground))]'}`} href="#people-weights" onclick={(event) => { event.preventDefault(); setSection('people-weights'); }}><CalendarClock class="size-4 shrink-0" aria-hidden="true" /><span class="truncate">Pesos</span></a>
 					<a
 						class={`flex h-9 items-center gap-2 rounded-md px-2.5 text-sm font-medium ${
 							currentSection === 'closed-menus'
@@ -3822,11 +4055,10 @@
 							setSection('closed-menus');
 						}}
 					>
-						<CircleCheck class="size-4 shrink-0" aria-hidden="true" />
-						<span class="truncate">Historial</span>
+						<Clock class="size-4 shrink-0" aria-hidden="true" />
+						<span class="truncate">Menús cerrados</span>
 					</a>
-					<a class={`flex h-9 items-center gap-2 rounded-md px-2.5 text-sm font-medium ${currentSection === 'people-weights' ? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))] transition-colors hover:bg-[hsl(var(--secondary))] hover:text-[hsl(var(--foreground))]'}`} href="#people-weights" onclick={(event) => { event.preventDefault(); setSection('people-weights'); }}><CalendarClock class="size-4 shrink-0" aria-hidden="true" /><span class="truncate">Pesos</span></a>
-					<a class={`flex h-9 items-center gap-2 rounded-md px-2.5 text-sm font-medium ${currentSection === 'people-history' ? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))] transition-colors hover:bg-[hsl(var(--secondary))] hover:text-[hsl(var(--foreground))]'}`} href="#people-history" onclick={(event) => { event.preventDefault(); setSection('people-history'); }}><UserRound class="size-4 shrink-0" aria-hidden="true" /><span class="truncate">Historial</span></a>
+					<a class={`flex h-9 items-center gap-2 rounded-md px-2.5 text-sm font-medium ${currentSection === 'menus-history' ? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))] transition-colors hover:bg-[hsl(var(--secondary))] hover:text-[hsl(var(--foreground))]'}`} href="#menus-history" onclick={(event) => { event.preventDefault(); setSection('menus-history'); }}><FileIcon class="size-4 shrink-0" aria-hidden="true" /><span class="truncate">Historial</span></a>
 					<a class={`flex h-9 items-center gap-2 rounded-md px-2.5 text-sm font-medium ${currentSection === 'people-trend' ? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))] transition-colors hover:bg-[hsl(var(--secondary))] hover:text-[hsl(var(--foreground))]'}`} href="#people-trend" onclick={(event) => { event.preventDefault(); setSection('people-trend'); }}><TrendingUp class="size-4 shrink-0" aria-hidden="true" /><span class="truncate">Evolución</span></a>
 				{:else}
 				<a
@@ -3847,7 +4079,9 @@
 							<UserRound class="mt-0.5 size-4 shrink-0 text-[hsl(var(--primary))]" aria-hidden="true" />
 							<div class="min-w-0 flex-1">
 								<p class="truncate text-sm font-medium">{data.session.username}</p>
-								<p class="mt-1 text-xs leading-5 text-[hsl(var(--muted-foreground))]">Sesion activa</p>
+								<p class="mt-1 text-xs leading-5 text-[hsl(var(--muted-foreground))]">
+									Sesion activa{sessionTimeRemaining ? ` (${sessionTimeRemaining})` : ''}
+								</p>
 							</div>
 							<ChevronDown class="size-4 shrink-0 text-[hsl(var(--muted-foreground))] transition-transform group-open:rotate-180" aria-hidden="true" />
 						</summary>
@@ -4147,18 +4381,7 @@
 					<CircleCheck class="size-4" aria-hidden="true" />
 					<span class="truncate">Menú</span>
 				</button>
-				<button
-					type="button"
-					class={`inline-flex min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-						currentSection === 'closed-menus'
-							? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]'
-							: 'text-[hsl(var(--muted-foreground))]'
-					}`}
-					onclick={() => setSection('closed-menus')}
-				>
-					<CircleCheck class="size-4" aria-hidden="true" />
-					<span class="truncate">Historial</span>
-				</button>
+				<div class="col-span-full mx-2 my-1 border-t border-[hsl(var(--border))]" aria-hidden="true"></div>
 				<button
 					type="button"
 					class={`inline-flex min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
@@ -4174,13 +4397,25 @@
 				<button
 					type="button"
 					class={`inline-flex min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-						currentSection === 'people-history'
+						currentSection === 'closed-menus'
 							? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]'
 							: 'text-[hsl(var(--muted-foreground))]'
 					}`}
-					onclick={() => setSection('people-history')}
+					onclick={() => setSection('closed-menus')}
 				>
-					<UserRound class="size-4" aria-hidden="true" />
+					<Clock class="size-4" aria-hidden="true" />
+					<span class="truncate">Menús cerrados</span>
+				</button>
+				<button
+					type="button"
+					class={`inline-flex min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+						currentSection === 'menus-history'
+							? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]'
+							: 'text-[hsl(var(--muted-foreground))]'
+					}`}
+					onclick={() => setSection('menus-history')}
+				>
+					<FileIcon class="size-4" aria-hidden="true" />
 					<span class="truncate">Historial</span>
 				</button>
 				<button
@@ -5090,6 +5325,12 @@
 										Establecer semana
 									</Button>
 								{/if}
+								{#if activeMenu}
+									<Button type="button" variant="danger" onclick={openDeleteWeekMenuModal} disabled={!data.backendAvailable}>
+										<Trash2 class="size-4" aria-hidden="true" />
+										Borrar planificación
+									</Button>
+								{/if}
 							</div>
 						</div>
 
@@ -5272,13 +5513,13 @@
 						{/if}
 					</section>
 
-				{:else if currentSection === 'menus'}
+					{:else if currentSection === 'menus'}
 					<section id="menus" class="space-y-4">
 						<div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
 							<div class="min-w-0">
 								<h2 class="text-2xl font-semibold tracking-tight text-[hsl(var(--foreground))]">Menú</h2>
 								<p class="mt-1 max-w-2xl text-sm leading-6 text-[hsl(var(--muted-foreground))]">
-									Consulta las comidas planificadas por período de menú o por un rango de fechas.
+									Consulta las comidas planificadas, el stock del menú y la lista de la compra durante la semana.
 								</p>
 							</div>
 							<div class="flex flex-wrap gap-2 sm:shrink-0">
@@ -5288,6 +5529,14 @@
 								</Button>
 							</div>
 						</div>
+
+						{#if activeEstablishedMenu && planningStateByMenuId(activeEstablishedMenu.id) === 'ESTABLISHED'}
+							<MenuWeekPanel
+								menu={activeEstablishedMenu}
+								authorization={authorizationHeader(authSession!)}
+								onUpdated={handleEstablishedMenuUpdated}
+							/>
+						{/if}
 
 						<MenuMealsTable
 							menus={data.menus}
@@ -5307,7 +5556,7 @@
 						<div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
 							<div class="min-w-0">
 								<div class="flex flex-wrap items-center gap-2">
-									<h2 class="text-2xl font-semibold tracking-tight text-[hsl(var(--foreground))]">Historial de menús</h2>
+									<h2 class="text-2xl font-semibold tracking-tight text-[hsl(var(--foreground))]">Menús cerrados</h2>
 									{#if activeMenu}
 										<span class="inline-flex w-fit items-center gap-1.5 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]" data-testid="menu-date-range">
 											<CalendarClock class="size-3.5" aria-hidden="true" />
@@ -5363,7 +5612,7 @@
 								<div class="grid size-12 place-items-center rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
 									<div class="size-5 animate-spin rounded-full border-2 border-[hsl(var(--muted-foreground))] border-t-transparent" aria-hidden="true"></div>
 								</div>
-								<h3 class="mt-4 text-sm font-semibold text-[hsl(var(--foreground))]">Cargando historial</h3>
+								<h3 class="mt-4 text-sm font-semibold text-[hsl(var(--foreground))]">Cargando menús cerrados</h3>
 								<p class="mt-1 max-w-sm text-sm text-[hsl(var(--muted-foreground))]">
 									Estamos consultando el snapshot cerrado seleccionado y sus estadísticas.
 								</p>
@@ -5418,8 +5667,8 @@
 						<section id="people-weights" class="space-y-4">
 							<PeoplePanel authorization={authorizationHeader(authSession!)} currentUserId={authSession!.userId} mode="weights" />
 						</section>
-					{:else if currentSection === 'people-history'}
-						<section id="people-history" class="space-y-4">
+					{:else if currentSection === 'menus-history'}
+						<section id="menus-history" class="space-y-4">
 							<PeoplePanel authorization={authorizationHeader(authSession!)} currentUserId={authSession!.userId} mode="history" />
 						</section>
 					{:else if currentSection === 'people-trend'}
@@ -7294,7 +7543,7 @@
 							type="submit"
 							form="week-day-form"
 							size="sm"
-							disabled={!data.backendAvailable || data.products.length === 0 || data.proposedWeekMenuDayParts.length === 0}
+							disabled={!data.backendAvailable || data.proposedWeekMenuDayParts.length === 0}
 						>
 							<Save class="size-4" aria-hidden="true" />
 							Guardar
@@ -7389,13 +7638,19 @@
 												<div>
 													<h5 class="text-sm font-medium text-[hsl(var(--foreground))]">Productos</h5>
 													<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
-														Las unidades y los gramos son opcionales. Si los dejas vacios, el backend aplicara sus valores por defecto.
+														Los productos del catálogo se añaden con el selector, y los manuales aparecen ya listos para rellenar.
 													</p>
 												</div>
-												<Button type="button" variant="secondary" size="sm" onclick={() => addWeekDayProduct(sectionIndex)}>
-													<Plus class="size-4" aria-hidden="true" />
-													Añadir producto
-												</Button>
+												<div class="flex flex-wrap gap-2">
+													<Button type="button" variant="secondary" size="sm" onclick={() => addWeekDayProduct(sectionIndex)}>
+														<Plus class="size-4" aria-hidden="true" />
+														Catálogo
+													</Button>
+													<Button type="button" variant="secondary" size="sm" onclick={() => addWeekDayManualProduct(sectionIndex)}>
+														<Plus class="size-4" aria-hidden="true" />
+														Manual
+													</Button>
+												</div>
 											</div>
 
 											{#if weekDayErrors().sectionErrors?.[sectionIndex]?.products}
@@ -7406,67 +7661,206 @@
 
 											<div class="space-y-3">
 												{#each section.products as product, productIndex}
-													<div class="grid gap-3 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-3 lg:grid-cols-[minmax(0,1.3fr)_repeat(3,minmax(0,0.55fr))_auto]">
-														<label class="block min-w-0">
-															<span class={fieldLabelClass}>Producto</span>
-															<input type="hidden" name="productId" value={product.productId} />
-															<Button
-																type="button"
-																variant="secondary"
-																class="w-full justify-between"
-																onclick={() =>
-																	openProductPicker({
-																		type: 'week-day',
-																		sectionIndex,
-																		productIndex,
-																		selectedProductId: product.productId
-																	})
-																}
-																data-testid={`week-product-id-${sectionIndex}-${productIndex}`}
-															>
-																<span class="min-w-0 truncate text-left">{productLabel(product.productId)}</span>
-																<Search class="size-4 shrink-0" aria-hidden="true" />
-															</Button>
-															{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.productId}
-																<small class={fieldErrorClass}>
-																	{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.productId}
-																</small>
-															{/if}
-														</label>
+													<div
+														class={`grid gap-4 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4 ${
+															product.type === 'catalog'
+																? 'lg:grid-cols-[minmax(0,1.3fr)_repeat(4,minmax(0,0.55fr))_auto]'
+																: 'lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.35fr)_minmax(0,1.35fr)_repeat(4,minmax(0,0.58fr))_minmax(0,0.6fr)_auto]'
+														}`}
+													>
+														<div class="block min-w-0">
+															<span class={fieldLabelClass}>Tipo</span>
+															<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.22)] px-3 py-2 text-sm text-[hsl(var(--foreground))]">
+																{product.type === 'manual' ? 'Manual' : 'Catálogo'}
+															</div>
+														</div>
 
-														<label class="block min-w-0">
-															<span class={fieldLabelClass}>Unidades</span>
-															<input
-																class={inputClass}
-																name="units"
-																inputmode="decimal"
-																step="any"
-																bind:value={product.units}
-																data-testid={`week-product-units-${sectionIndex}-${productIndex}`}
-															/>
-															{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.units}
-																<small class={fieldErrorClass}>
-																	{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.units}
-																</small>
-															{/if}
-														</label>
+														{#if product.type === 'catalog'}
+															<label class="block min-w-0">
+																<span class={fieldLabelClass}>Producto</span>
+																<input type="hidden" name="productId" value={product.productId} />
+																<Button
+																	type="button"
+																	variant="secondary"
+																	class="w-full justify-between"
+																	onclick={() =>
+																		openProductPicker({
+																			type: 'week-day',
+																			sectionIndex,
+																			productIndex,
+																			selectedProductId: product.productId
+																		})
+																	}
+																	data-testid={`week-product-id-${sectionIndex}-${productIndex}`}
+																>
+																	<span class="min-w-0 truncate text-left">{productLabel(product.productId)}</span>
+																	<Search class="size-4 shrink-0" aria-hidden="true" />
+																</Button>
+																{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.productId}
+																	<small class={fieldErrorClass}>
+																		{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.productId}
+																	</small>
+																{/if}
+															</label>
+														{:else}
+															<label class="block min-w-0">
+																<span class={fieldLabelClass}>Nombre</span>
+																<input
+																	class={inputClass}
+																	name="productName"
+																	bind:value={product.productName}
+																	placeholder="Producto puntual"
+																	data-testid={`week-product-name-${sectionIndex}-${productIndex}`}
+																/>
+																{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.productName}
+																	<small class={fieldErrorClass}>
+																		{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.productName}
+																	</small>
+																{/if}
+															</label>
+														{/if}
 
-														<label class="block min-w-0">
-															<span class={fieldLabelClass}>Gramos</span>
-															<input
-																class={inputClass}
-																name="grams"
-																inputmode="decimal"
-																step="any"
-																bind:value={product.grams}
-																data-testid={`week-product-grams-${sectionIndex}-${productIndex}`}
-															/>
-															{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.grams}
-																<small class={fieldErrorClass}>
-																	{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.grams}
-																</small>
-															{/if}
-														</label>
+														{#if product.type === 'catalog'}
+															<label class="block min-w-0">
+																<span class={fieldLabelClass}>Unidades</span>
+																<input
+																	class={inputClass}
+																	name="units"
+																	inputmode="decimal"
+																	step="any"
+																	bind:value={product.units}
+																	data-testid={`week-product-units-${sectionIndex}-${productIndex}`}
+																/>
+																{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.units}
+																	<small class={fieldErrorClass}>
+																		{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.units}
+																	</small>
+																{/if}
+															</label>
+
+															<label class="block min-w-0">
+																<span class={fieldLabelClass}>Gramos</span>
+																<input
+																	class={inputClass}
+																	name="grams"
+																	inputmode="decimal"
+																	step="any"
+																	bind:value={product.grams}
+																	data-testid={`week-product-grams-${sectionIndex}-${productIndex}`}
+																/>
+																{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.grams}
+																	<small class={fieldErrorClass}>
+																		{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.grams}
+																	</small>
+																{/if}
+															</label>
+														{/if}
+
+														{#if product.type === 'manual'}
+															<div class="space-y-2 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.18)] p-3">
+																<p class="text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted-foreground))]">
+																	Cantidad
+																</p>
+																<div class="grid gap-3 sm:grid-cols-2">
+																	<label class="block min-w-0">
+																		<span class={fieldLabelClass}>Unidades</span>
+																		<input
+																			class={inputClass}
+																			name="units"
+																			inputmode="decimal"
+																			step="any"
+																			bind:value={product.units}
+																			data-testid={`week-product-units-${sectionIndex}-${productIndex}`}
+																		/>
+																		{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.units}
+																			<small class={fieldErrorClass}>
+																				{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.units}
+																			</small>
+																		{/if}
+																	</label>
+																	<label class="block min-w-0">
+																		<span class={fieldLabelClass}>Gramos</span>
+																		<input
+																			class={inputClass}
+																			name="grams"
+																			inputmode="decimal"
+																			step="any"
+																			bind:value={product.grams}
+																			data-testid={`week-product-grams-${sectionIndex}-${productIndex}`}
+																		/>
+																		{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.grams}
+																			<small class={fieldErrorClass}>
+																				{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.grams}
+																			</small>
+																		{/if}
+																	</label>
+																</div>
+															</div>
+															<label class="block min-w-0">
+																<span class={fieldLabelClass}>Calorias</span>
+																<input
+																	class={inputClass}
+																	name="calories"
+																	inputmode="decimal"
+																	step="any"
+																	bind:value={product.calories}
+																	data-testid={`week-product-calories-${sectionIndex}-${productIndex}`}
+																/>
+																{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.calories}
+																	<small class={fieldErrorClass}>
+																		{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.calories}
+																	</small>
+																{/if}
+															</label>
+															<label class="block min-w-0">
+																<span class={fieldLabelClass}>Carbos</span>
+																<input
+																	class={inputClass}
+																	name="carbohydrates"
+																	inputmode="decimal"
+																	step="any"
+																	bind:value={product.carbohydrates}
+																	data-testid={`week-product-carbohydrates-${sectionIndex}-${productIndex}`}
+																/>
+																{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.carbohydrates}
+																	<small class={fieldErrorClass}>
+																		{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.carbohydrates}
+																	</small>
+																{/if}
+															</label>
+															<label class="block min-w-0">
+																<span class={fieldLabelClass}>Proteinas</span>
+																<input
+																	class={inputClass}
+																	name="proteins"
+																	inputmode="decimal"
+																	step="any"
+																	bind:value={product.proteins}
+																	data-testid={`week-product-proteins-${sectionIndex}-${productIndex}`}
+																/>
+																{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.proteins}
+																	<small class={fieldErrorClass}>
+																		{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.proteins}
+																	</small>
+																{/if}
+															</label>
+															<label class="block min-w-0">
+																<span class={fieldLabelClass}>Grasas</span>
+																<input
+																	class={inputClass}
+																	name="fats"
+																	inputmode="decimal"
+																	step="any"
+																	bind:value={product.fats}
+																	data-testid={`week-product-fats-${sectionIndex}-${productIndex}`}
+																/>
+																{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.fats}
+																	<small class={fieldErrorClass}>
+																		{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.fats}
+																	</small>
+																{/if}
+															</label>
+														{/if}
 
 														<label class="block min-w-0">
 															<span class={fieldLabelClass}>Orden</span>
@@ -7484,7 +7878,7 @@
 															{/if}
 														</label>
 
-														<div class="flex items-end">
+														<div class="flex items-start pt-6">
 															<Button
 																type="button"
 																variant="ghost"
@@ -7542,6 +7936,18 @@
 				</div>
 				<form class="space-y-6 p-5" onsubmit={submitPublishWeekMenu} data-testid="week-publish-form">
 					<fieldset class="space-y-6" disabled={!data.backendAvailable}>
+						{#if publishWeekMenuConflict}
+							<p
+								class="flex items-start gap-2 rounded-lg border border-[hsl(var(--destructive)/0.2)] bg-[hsl(var(--destructive)/0.06)] px-3 py-2.5 text-sm text-[hsl(var(--destructive))]"
+								role="alert"
+								data-testid="week-publish-overlap-warning"
+							>
+								<CircleAlert class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+								<span class="min-w-0 break-words">
+									Ya existe una planificación que se solapa con este rango: {publishWeekMenuConflict.label}.
+								</span>
+							</p>
+						{/if}
 						<section class="grid gap-4 md:grid-cols-2">
 							<label class="block min-w-0">
 								<span class={fieldLabelClass}>Pagador</span>
@@ -7593,9 +7999,49 @@
 					</fieldset>
 					<div class="flex flex-col-reverse gap-2 border-t border-[hsl(var(--border))] pt-5 sm:flex-row sm:justify-end">
 						<Button variant="secondary" type="button" onclick={closeModal}>Cancelar</Button>
-						<Button type="submit" disabled={!data.backendAvailable}>
+						<Button type="submit" disabled={!data.backendAvailable || Boolean(publishWeekMenuConflict)}>
 							<CircleCheck class="size-4" aria-hidden="true" />
 							Establecer semana
+						</Button>
+					</div>
+				</form>
+			</div>
+		</div>
+	{/if}
+
+	{#if modalMode === 'week-delete' && authSession && data.proposedWeekMenu && activeProposedWeekMenuId}
+		{@const activeMenu = data.proposedWeekMenu}
+		<div class="fixed inset-0 z-30 flex items-start justify-center overflow-y-auto bg-black/30 p-3 backdrop-blur-sm sm:p-4" role="presentation">
+			<div class="max-h-[calc(100vh-2rem)] w-full max-w-lg overflow-y-auto rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-xl" role="dialog" aria-modal="true" aria-labelledby="week-delete-title" data-testid="week-delete-modal">
+				<div class="flex items-start justify-between gap-4 border-b border-[hsl(var(--border))] p-5">
+					<div class="min-w-0">
+						<h2 id="week-delete-title" class="text-lg font-semibold text-[hsl(var(--foreground))]">Borrar planificación</h2>
+						<p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">
+							Esta acción eliminará por completo la planificación activa y sus días guardados.
+						</p>
+					</div>
+					<Button variant="ghost" size="icon" type="button" onclick={closeModal} aria-label="Cerrar modal">
+						<X class="size-4" aria-hidden="true" />
+					</Button>
+				</div>
+
+				<form class="space-y-6 p-5" onsubmit={submitDeleteWeekMenu} data-testid="week-delete-form">
+					<fieldset class="space-y-5" disabled={!data.backendAvailable}>
+						<div class="rounded-lg border border-[hsl(var(--destructive)/0.2)] bg-[hsl(var(--destructive)/0.06)] p-4">
+							<p class="text-sm font-medium text-[hsl(var(--foreground))]">
+								Se borrará <strong>{weekDateRangeLabel(activeMenu.startDate, activeMenu.endDate)}</strong>.
+							</p>
+							<p class="mt-2 text-sm leading-6 text-[hsl(var(--muted-foreground))]">
+								Los menús diarios, el stock asociado y la selección guardada para esta planificación dejarán de estar disponibles.
+							</p>
+						</div>
+					</fieldset>
+
+					<div class="flex flex-col-reverse gap-2 border-t border-[hsl(var(--border))] pt-5 sm:flex-row sm:justify-end">
+						<Button variant="secondary" type="button" onclick={closeModal}>Cancelar</Button>
+						<Button type="submit" variant="danger" disabled={!data.backendAvailable}>
+							<Trash2 class="size-4" aria-hidden="true" />
+							Borrar planificación
 						</Button>
 					</div>
 				</form>

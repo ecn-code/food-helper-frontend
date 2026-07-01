@@ -56,6 +56,109 @@ test('cierra un menú con varias personas y rechaza el cierre sin selección', a
 	await expect(page.getByTestId('menu-completion-panel')).toContainText('Cerrado');
 });
 
+test('permite ajustar el stock temporal del menu y reducir la lista de la compra', async ({ page }) => {
+	const backendBaseUrl =
+		process.env.E2E_REAL_BACKEND === '1'
+			? process.env.PUBLIC_BACKEND_BASE_URL || 'http://127.0.0.1:8080'
+			: process.env.MOCK_BACKEND_URL ||
+				`http://127.0.0.1:${process.env.MOCK_BACKEND_PORT || 4010}`;
+
+	await page.goto('/');
+	await page.getByTestId('login-username').fill('elias');
+	await page.getByTestId('login-password').fill('secret-password');
+	await page.getByTestId('login-submit').click();
+
+	const session = await page.evaluate(() => {
+		const raw = localStorage.getItem('foodhelper_session');
+		return raw ? JSON.parse(raw) : null;
+	});
+	expect(session).not.toBeNull();
+	const authHeaders = {
+		Authorization: `${session.tokenType} ${session.accessToken}`
+	};
+
+	const weekResponse = await page.request.post(`${backendBaseUrl}/api/v1/proposed-week-menus`, {
+		headers: authHeaders,
+		data: {
+			startDate: '2026-07-08',
+			endDate: '2026-07-14'
+		}
+	});
+	expect(weekResponse.ok()).toBeTruthy();
+	const week = await weekResponse.json();
+
+	const dayResponse = await page.request.put(`${backendBaseUrl}/api/v1/proposed-week-menus/${week.id}/days`, {
+		headers: authHeaders,
+		data: {
+			date: '2026-07-08',
+			sections: [
+				{
+					dayPartId: 1,
+					products: [
+						{
+							productId: 1,
+							sortOrder: 10,
+							units: 1
+						}
+					]
+				}
+			]
+		}
+	});
+	expect(dayResponse.ok()).toBeTruthy();
+
+	const publishResponse = await page.request.post(`${backendBaseUrl}/api/v1/planning/${week.id}/menu`, {
+		headers: authHeaders,
+		data: {
+			payerUserId: 1,
+			personIds: [1]
+		}
+	});
+	expect(publishResponse.ok()).toBeTruthy();
+	const establishedMenu = await publishResponse.json();
+
+	const dummyWeekResponse = await page.request.post(`${backendBaseUrl}/api/v1/proposed-week-menus`, {
+		headers: authHeaders,
+		data: {
+			startDate: '2026-07-22',
+			endDate: '2026-07-28'
+		}
+	});
+	expect(dummyWeekResponse.ok()).toBeTruthy();
+	const dummyWeek = await dummyWeekResponse.json();
+
+	const dummyPublishResponse = await page.request.post(`${backendBaseUrl}/api/v1/planning/${dummyWeek.id}/menu`, {
+		headers: authHeaders,
+		data: {
+			payerUserId: 1,
+			personIds: [1]
+		}
+	});
+	expect(dummyPublishResponse.ok()).toBeTruthy();
+
+	await page.reload();
+	await page.getByTestId('app-ready').waitFor();
+	await page.getByRole('link', { name: 'Menú', exact: true }).click();
+	await expect(page.getByTestId('menu-period-selector')).toBeVisible();
+	await page.evaluate((menuId) => {
+		const select = document.querySelector('[data-testid="menu-period-selector"]') as HTMLSelectElement | null;
+		if (!select) return;
+		select.value = String(menuId);
+		select.dispatchEvent(new Event('change', { bubbles: true }));
+	}, establishedMenu.id);
+
+	await expect(page.getByTestId('menu-week-panel')).toBeVisible();
+	await expect(page.getByTestId('menu-week-panel')).toContainText('1 productos pendientes');
+	await expect(page.getByTestId('menu-week-panel')).toContainText('Apple');
+
+	await page.getByTestId('menu-week-stock-product').selectOption('1');
+	await page.getByTestId('menu-week-stock-quantity').fill('1');
+	await page.getByTestId('menu-week-stock-add').click();
+
+	await expect(page.getByTestId('menu-week-panel')).toContainText('0 productos pendientes');
+	await expect(page.getByTestId('menu-week-panel')).toContainText('No hay productos pendientes.');
+});
+
 test('crea, edita y elimina pesos desde la pantalla de personas', async ({ page }) => {
 	await page.goto('/');
 	await page.getByTestId('login-username').fill('elias');

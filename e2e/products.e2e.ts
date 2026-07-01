@@ -467,6 +467,40 @@ test('crea una planificación y añade un menu diario con productos', async ({ p
 	await expect(page.getByTestId('week-stock-row-2')).toContainText('2,50');
 });
 
+test('enfoca el buscador al abrir el selector de productos desde planificación', async ({ page, request }) => {
+	const username = uniqueUsername();
+	const startDate = '2030-03-10';
+	const endDate = '2030-03-16';
+
+	await registerUser(request, username);
+	await login(page, username);
+
+	await page.getByRole('link', { name: 'Planificación' }).click();
+	await page.getByRole('button', { name: 'Nueva semana' }).click();
+	await page.getByTestId('week-start-date').fill(startDate);
+	await page.getByTestId('week-end-date').fill(endDate);
+	await page.getByTestId('week-create-form').getByRole('button', { name: 'Crear semana' }).click();
+
+	await page.getByTestId(`week-day-action-${startDate}`).click();
+	await expect(page.getByTestId('week-day-modal')).toBeVisible();
+	await page.getByTestId('week-section-day-part-0').selectOption({ label: 'Comida' });
+
+	await page.getByTestId('week-product-id-0-0').click();
+	await expect(page.getByTestId('product-picker-modal')).toBeVisible();
+	await expect(page.getByTestId('product-picker-filter-search')).toBeFocused();
+
+	await page.getByTestId('product-picker-filter-search').fill('Ap');
+	await page.getByTestId('product-picker-option-1').click();
+	await page.getByRole('button', { name: 'Guardar menu' }).click();
+	await expect(page.getByTestId('success-banner')).toContainText('Menu diario guardado correctamente');
+
+	await page.getByTestId(`week-day-action-${startDate}`).click();
+	await expect(page.getByTestId('week-day-modal')).toBeVisible();
+	await page.getByTestId('week-product-id-0-0').click();
+	await expect(page.getByTestId('product-picker-modal')).toBeVisible();
+	await expect(page.getByTestId('product-picker-filter-search')).toBeFocused();
+});
+
 test('permite reabrir y editar un menu diario ya guardado', async ({ page, request }) => {
 	const username = uniqueUsername();
 	const startDate = '2030-02-10';

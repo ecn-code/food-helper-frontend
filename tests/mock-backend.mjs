@@ -612,6 +612,72 @@ function calculateMenuCoverage(menu, stockSnapshot) {
 	};
 }
 
+function adjustShoppingList(shoppingList, productId, quantityDelta) {
+	if (!Array.isArray(shoppingList) || shoppingList.length === 0) {
+		return [];
+	}
+
+	let matched = false;
+	const updated = [];
+	for (const item of shoppingList) {
+		if (item.productId !== productId) {
+			updated.push(item);
+			continue;
+		}
+
+		matched = true;
+		const remaining = Number((Number(item.missingUnits ?? 0) - Number(quantityDelta ?? 0)).toFixed(2));
+		if (remaining > 0) {
+			updated.push({ ...item, missingUnits: remaining });
+		}
+	}
+
+	return matched ? updated : shoppingList;
+}
+
+function replaceWeekStock(menu, requestedWeekStock) {
+	const currentWeekStock = Array.isArray(menu.weekStock) ? menu.weekStock : [];
+	const currentByProduct = new Map(currentWeekStock.map((item) => [item.productId, item]));
+	const requestedByProduct = new Map();
+	for (const item of requestedWeekStock ?? []) {
+		if (!item || !Number.isFinite(Number(item.productId)) || !Number.isFinite(Number(item.quantity)) || Number(item.quantity) <= 0) {
+			throw new Error('Week stock items require a productId and positive quantity');
+		}
+		if (requestedByProduct.has(Number(item.productId))) {
+			throw new Error('Each product can appear only once in weekStock');
+		}
+		requestedByProduct.set(Number(item.productId), {
+			productId: Number(item.productId),
+			productName: String(item.productName ?? productById(Number(item.productId))?.name ?? `Product ${item.productId}`),
+			quantity: Number(item.quantity)
+		});
+	}
+
+	const productIds = [...new Set([...currentByProduct.keys(), ...requestedByProduct.keys()])];
+	let shoppingList = Array.isArray(menu.shoppingList) ? [...menu.shoppingList] : [];
+	const updatedWeekStock = [];
+
+	for (const productId of productIds) {
+		const currentQuantity = Number(currentByProduct.get(productId)?.quantity ?? 0);
+		const requestedQuantity = Number(requestedByProduct.get(productId)?.quantity ?? 0);
+		const delta = Number((requestedQuantity - currentQuantity).toFixed(2));
+		shoppingList = adjustShoppingList(shoppingList, productId, delta);
+		if (requestedQuantity > 0) {
+			const requested = requestedByProduct.get(productId);
+			updatedWeekStock.push({
+				productId,
+				productName: requested?.productName ?? productById(productId)?.name ?? `Product ${productId}`,
+				quantity: requestedQuantity
+			});
+		}
+	}
+
+	return {
+		weekStock: updatedWeekStock,
+		shoppingList
+	};
+}
+
 function establishedWeekMenuResponse(menu) {
 	return {
 		id: menu.id,
@@ -625,6 +691,7 @@ function establishedWeekMenuResponse(menu) {
 		nutritionalValues: menu.nutritionalValues,
 		stockSummary: menu.stockSummary,
 		usedStock: menu.usedStock,
+		weekStock: menu.weekStock ?? [],
 		shoppingList: menu.shoppingList,
 		nutritionalRules: evaluateNutritionalRules(menu.nutritionalValues, menu.days.length)
 	};
@@ -1813,6 +1880,20 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
+	if (proposedWeekMenuMatch && req.method === 'DELETE') {
+		const id = Number(proposedWeekMenuMatch[1]);
+		const index = proposedWeekMenus.findIndex((menu) => menu.id === id);
+		if (index < 0) {
+			sendJson(res, 404, errorBody(404, 'Not Found', 'Proposed week menu not found', url.pathname));
+			return;
+		}
+
+		proposedWeekMenus.splice(index, 1);
+		res.writeHead(204, { 'access-control-allow-origin': '*' });
+		res.end();
+		return;
+	}
+
 	const proposedWeekMenuDayMatch = url.pathname.match(/^\/api\/v1\/(?:proposed-week-menus|planning)\/(\d+)\/days$/);
 	if (proposedWeekMenuDayMatch && req.method === 'PUT') {
 		const id = Number(proposedWeekMenuDayMatch[1]);
@@ -1905,6 +1986,7 @@ const server = http.createServer(async (req, res) => {
 			nutritionalValues: coverage.totals,
 			stockSummary: coverage.stockSummary,
 			usedStock: coverage.usedStock,
+			weekStock: [],
 			shoppingList: coverage.shoppingList
 		};
 		establishedWeekMenus.push(established);
@@ -1939,6 +2021,45 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
+	const establishedWeekMenuWeekStockMatch = url.pathname.match(/^\/api\/v1\/menus\/(\d+)\/week-stock$/);
+	if (establishedWeekMenuWeekStockMatch && req.method === 'GET') {
+		const id = Number(establishedWeekMenuWeekStockMatch[1]);
+		const menu = establishedWeekMenuById(id);
+		if (!menu) {
+			sendJson(res, 404, errorBody(404, 'Not Found', 'Established week menu not found', url.pathname));
+			return;
+		}
+
+		sendJson(res, 200, menu.weekStock ?? []);
+		return;
+	}
+	if (establishedWeekMenuWeekStockMatch && req.method === 'PUT') {
+		const id = Number(establishedWeekMenuWeekStockMatch[1]);
+		const menu = establishedWeekMenuById(id);
+		if (!menu) {
+			sendJson(res, 404, errorBody(404, 'Not Found', 'Established week menu not found', url.pathname));
+			return;
+		}
+
+		const payload = await parseBody(req);
+		if (!Array.isArray(payload?.weekStock)) {
+			sendJson(res, 400, errorBody(400, 'Bad Request', 'weekStock must be an array', url.pathname));
+			return;
+		}
+
+		try {
+			const updated = replaceWeekStock(menu, payload.weekStock);
+			menu.weekStock = updated.weekStock;
+			menu.shoppingList = updated.shoppingList;
+		} catch (error) {
+			sendJson(res, 400, errorBody(400, 'Bad Request', error?.message || 'Invalid week stock', url.pathname));
+			return;
+		}
+
+		sendJson(res, 200, establishedWeekMenuResponse(menu));
+		return;
+	}
+
 	const establishedWeekMenuShoppingListMatch = url.pathname.match(/^\/api\/v1\/(?:established-week-menus|menus)\/(\d+)\/shopping-list$/);
 	if (establishedWeekMenuShoppingListMatch && req.method === 'GET') {
 		const id = Number(establishedWeekMenuShoppingListMatch[1]);
@@ -1948,7 +2069,28 @@ const server = http.createServer(async (req, res) => {
 			return;
 		}
 
-		sendJson(res, 200, menu.shoppingList);
+		const supermarketId = url.searchParams.has('supermarketId')
+			? Number(url.searchParams.get('supermarketId'))
+			: null;
+
+		if (supermarketId === null || Number.isNaN(supermarketId)) {
+			sendJson(res, 200, menu.shoppingList);
+			return;
+		}
+
+		const availableProductIds = new Set(
+			products
+				.filter((product) => {
+					const supermarketIds = Array.isArray(product.supermarketIds) ? product.supermarketIds : [];
+					return supermarketIds.length === 0 || supermarketIds.includes(supermarketId);
+				})
+				.map((product) => product.id)
+		);
+		sendJson(
+			res,
+			200,
+			menu.shoppingList.filter((item) => availableProductIds.has(item.productId))
+		);
 		return;
 	}
 
