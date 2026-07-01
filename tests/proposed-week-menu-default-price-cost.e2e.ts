@@ -77,7 +77,9 @@ test('uses the product default price when a proposed week has no stock', async (
 	await page.goto('/#week');
 	await page.reload();
 
-	await expect(page.getByRole('heading', { name: 'Planificación' })).toBeVisible();
+	await page.getByRole('link', { name: 'Planificación' }).click();
 	await expect(page.getByTestId('week-cost-card')).toContainText('8,40');
-	await expect(page.locator('tr', { hasText: 'Leche con precio base' })).toContainText('8,40');
+	await page.getByRole('button', { name: 'Ver stock' }).click();
+	await expect(page.getByTestId('week-stock-summary')).toContainText('Leche con precio base');
+	await expect(page.getByTestId('week-stock-summary')).toContainText('8,40');
 });

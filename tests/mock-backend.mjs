@@ -22,12 +22,23 @@ let nextManualMoneyBoxId = 1000;
 let deletedUserMoneyBoxIds = new Set();
 let userWeights = [];
 let nextWeightId = 1;
-let nutritionalRules = {
-	calories: { minimum: null, maximum: null },
-	carbohydrates: { minimum: null, maximum: null },
-	proteins: { minimum: null, maximum: null },
-	fats: { minimum: null, maximum: null }
-};
+function emptyNutritionalRuleSet() {
+	return {
+		calories: { minimum: null, maximum: null },
+		carbohydrates: { minimum: null, maximum: null },
+		proteins: { minimum: null, maximum: null },
+		fats: { minimum: null, maximum: null }
+	};
+}
+
+function emptyNutritionalRules() {
+	return {
+		daily: emptyNutritionalRuleSet(),
+		weekly: emptyNutritionalRuleSet()
+	};
+}
+
+let nutritionalRules = emptyNutritionalRules();
 let proposedWeekMenus = [];
 let establishedWeekMenus = [];
 let nextProposedWeekMenuId = 1;
@@ -270,19 +281,19 @@ function addNutrition(totals, nutritionalValues) {
 	return totals;
 }
 
-function evaluateNutritionalRules(totals, plannedDays) {
+function evaluateNutrient(value, rule) {
+	let status = 'WITHIN_RANGE';
+
+	if (rule.minimum === null && rule.maximum === null) status = 'NOT_CONFIGURED';
+	else if (rule.minimum !== null && value < rule.minimum) status = 'BELOW_MINIMUM';
+	else if (rule.maximum !== null && value > rule.maximum) status = 'ABOVE_MAXIMUM';
+
+	return { value, minimum: rule.minimum, maximum: rule.maximum, status };
+}
+
+function evaluateNutritionalRuleSet(totals, plannedDays, rules) {
 	const divisor = plannedDays > 0 ? plannedDays : 1;
-	const evaluate = (metric) => {
-		const value = Number((totals[metric] / divisor).toFixed(2));
-		const rule = nutritionalRules[metric];
-		let status = 'WITHIN_RANGE';
-
-		if (rule.minimum === null && rule.maximum === null) status = 'NOT_CONFIGURED';
-		else if (rule.minimum !== null && value < rule.minimum) status = 'BELOW_MINIMUM';
-		else if (rule.maximum !== null && value > rule.maximum) status = 'ABOVE_MAXIMUM';
-
-		return { value, minimum: rule.minimum, maximum: rule.maximum, status };
-	};
+	const evaluate = (metric) => evaluateNutrient(Number((totals[metric] / divisor).toFixed(2)), rules[metric]);
 
 	return {
 		plannedDays,
@@ -290,6 +301,58 @@ function evaluateNutritionalRules(totals, plannedDays) {
 		carbohydrates: evaluate('carbohydrates'),
 		proteins: evaluate('proteins'),
 		fats: evaluate('fats')
+	};
+}
+
+function evaluateNutritionalRules(totals, plannedDays) {
+	return {
+		daily: evaluateNutritionalRuleSet(totals, plannedDays, nutritionalRules.daily),
+		weekly: evaluateNutritionalRuleSet(totals, plannedDays, nutritionalRules.weekly)
+	};
+}
+
+function toNullableNumber(value) {
+	if (value === null || value === undefined || value === '') return null;
+	const numeric = Number(value);
+	return Number.isNaN(numeric) ? null : numeric;
+}
+
+function normalizeNutritionalRuleSetPayload(payload) {
+	const source = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+
+	return {
+		calories: {
+			minimum: toNullableNumber(source.calories?.minimum),
+			maximum: toNullableNumber(source.calories?.maximum)
+		},
+		carbohydrates: {
+			minimum: toNullableNumber(source.carbohydrates?.minimum),
+			maximum: toNullableNumber(source.carbohydrates?.maximum)
+		},
+		proteins: {
+			minimum: toNullableNumber(source.proteins?.minimum),
+			maximum: toNullableNumber(source.proteins?.maximum)
+		},
+		fats: {
+			minimum: toNullableNumber(source.fats?.minimum),
+			maximum: toNullableNumber(source.fats?.maximum)
+		}
+	};
+}
+
+function normalizeNutritionalRulesPayload(payload) {
+	const source = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+
+	if ('daily' in source || 'weekly' in source) {
+		return {
+			daily: normalizeNutritionalRuleSetPayload(source.daily),
+			weekly: normalizeNutritionalRuleSetPayload(source.weekly)
+		};
+	}
+
+	return {
+		daily: normalizeNutritionalRuleSetPayload(source),
+		weekly: normalizeNutritionalRuleSetPayload(source)
 	};
 }
 
@@ -1102,10 +1165,8 @@ function reset() {
 	recipes = [];
 	stockEntries = [];
 	nutritionalRules = {
-		calories: { minimum: null, maximum: null },
-		carbohydrates: { minimum: null, maximum: null },
-		proteins: { minimum: null, maximum: null },
-		fats: { minimum: null, maximum: null }
+		daily: emptyNutritionalRuleSet(),
+		weekly: emptyNutritionalRuleSet()
 	};
 }
 
@@ -1269,7 +1330,12 @@ const server = http.createServer(async (req, res) => {
 	}
 	if (url.pathname === '/api/v1/nutritional-rules') {
 		if (req.method === 'GET') { sendJson(res, 200, nutritionalRules); return; }
-		if (req.method === 'PUT') { nutritionalRules = await parseBody(req); sendJson(res, 200, nutritionalRules); return; }
+		if (req.method === 'PUT') {
+			const payload = await parseBody(req);
+			nutritionalRules = normalizeNutritionalRulesPayload(payload);
+			sendJson(res, 200, nutritionalRules);
+			return;
+		}
 	}
 	if (req.method === 'GET' && url.pathname === '/api/v1/users') {
 		sendJson(res, 200, [...users.values()].map(userResponse));

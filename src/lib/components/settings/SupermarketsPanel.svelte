@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { Pencil, Plus, Save, Store, Trash2, X } from '@lucide/svelte';
 	import Button from '$lib/components/ui/Button.svelte';
-	import { ApiError } from '$lib/api/backend';
+	import { ApiError, isSessionExpiredError } from '$lib/api/backend';
 	import {
 		createSupermarket,
 		deleteSupermarket,
@@ -24,6 +24,7 @@
 		try {
 			items = await listSupermarkets(authorization);
 		} catch (cause) {
+			if (isSessionExpiredError(cause)) return;
 			error = cause instanceof ApiError ? cause.message : 'No se pudieron cargar los supermercados.';
 		} finally {
 			loaded = true;
@@ -54,6 +55,7 @@
 			}
 			resetForm();
 		} catch (cause) {
+			if (isSessionExpiredError(cause)) return;
 			error = cause instanceof ApiError ? cause.message : 'No se pudo guardar el supermercado.';
 		} finally {
 			saving = false;
@@ -70,6 +72,7 @@
 			if (editingId === item.id) resetForm();
 			message = 'Supermercado eliminado.';
 		} catch (cause) {
+			if (isSessionExpiredError(cause)) return;
 			error = cause instanceof ApiError ? cause.message : 'No se pudo eliminar el supermercado.';
 		} finally {
 			saving = false;

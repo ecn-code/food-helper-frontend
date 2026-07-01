@@ -1,5 +1,6 @@
 import type {
 	NutrientRuleEvaluation,
+	NutritionalRuleSetEvaluation,
 	NutritionalRulesEvaluation
 } from '$lib/api/proposed-week-menus';
 import type { NutritionalValues } from '$lib/products';
@@ -21,15 +22,22 @@ function evaluateNutrient(value: number, rule: NutrientRuleEvaluation): Nutrient
 	};
 }
 
-export function evaluateDailyNutrition(
-	values: NutritionalValues,
-	rules: NutritionalRulesEvaluation
-): NutritionalRulesEvaluation {
+function evaluateRuleSet(values: NutritionalValues, rules: NutritionalRuleSetEvaluation): NutritionalRuleSetEvaluation {
 	return {
-		plannedDays: 1,
+		plannedDays: rules.plannedDays,
 		calories: evaluateNutrient(values.calories, rules.calories),
 		carbohydrates: evaluateNutrient(values.carbohydrates, rules.carbohydrates),
 		proteins: evaluateNutrient(values.proteins, rules.proteins),
 		fats: evaluateNutrient(values.fats, rules.fats)
+	};
+}
+
+export function evaluateNutritionRules(
+	values: NutritionalValues,
+	rules: NutritionalRulesEvaluation
+): NutritionalRulesEvaluation {
+	return {
+		daily: evaluateRuleSet(values, rules.daily),
+		weekly: evaluateRuleSet(values, rules.weekly)
 	};
 }

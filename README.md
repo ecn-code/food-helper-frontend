@@ -17,7 +17,7 @@ La lista siguiente describe lo que funciona en el frontend con el mock y las rut
 - Listar y gestionar recetas
 - Gestionar supermercados y asignarlos a productos
 - Consultar la hucha y registrar movimientos
-- Configurar reglas nutricionales diarias
+- Configurar reglas nutricionales diarias y semanales
 - Crear planificaciones de hasta 16 dias y convertirlas en menus
 - Filtrar listas de compra, cerrar menus y consultar sus estadisticas
 - Consultar personas, historial y pesos

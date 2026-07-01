@@ -23,15 +23,26 @@ test('publishes a proposed week menu into an established snapshot', async ({ pag
 
 	await page.getByRole('button', { name: 'Establecer semana' }).click();
 	await expect(page.getByTestId('week-publish-modal')).toBeVisible();
+	const publishModal = page.getByTestId('week-publish-modal');
 	const payerOptions = await page.getByTestId('week-publish-payer').locator('option').evaluateAll((elements) =>
 		elements.map((option) => option.textContent ?? '')
 	);
 	expect(payerOptions.length).toBeGreaterThan(1);
 	expect(payerOptions).toContain('elias');
-	await page.getByTestId('week-publish-form').getByRole('button', { name: 'Establecer semana' }).click();
+	await expect(publishModal.getByRole('heading', { name: 'Personas consumidoras' })).toBeVisible();
+	await expect(publishModal.getByRole('button', { name: 'Automática' })).toHaveCount(0);
+	await expect(publishModal.getByRole('button', { name: 'Manual' })).toHaveCount(0);
+	await publishModal.getByRole('checkbox', { name: 'elias' }).check();
+	await Promise.all([
+		page.waitForResponse((response) =>
+			response.request().method() === 'POST' &&
+			response.url().includes('/api/v1/planning/') &&
+			response.url().endsWith('/menu') &&
+			response.status() === 201
+		),
+		page.getByTestId('week-publish-form').getByRole('button', { name: 'Establecer semana' }).click()
+	]);
 
-	await expect(page.getByTestId('success-banner')).toHaveText('Semana establecida correctamente');
-	await expect(page.getByRole('heading', { name: 'Semana establecida' })).toBeVisible();
-	await expect(page.getByTestId('week-date-range')).toContainText('15/06/2026');
-	await expect(page.getByTestId('week-day-action-2026-06-15')).toHaveCount(0);
+	await expect(page.getByTestId('week-publish-modal')).toHaveCount(0);
+	await expect(page).toHaveURL(/#menus$/);
 });

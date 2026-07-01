@@ -1,11 +1,16 @@
 import { request } from '$lib/api/backend';
 
 export type NutrientRule = { minimum: number | null; maximum: number | null };
-export type NutritionalRules = {
+export type NutritionalRuleSet = {
 	calories: NutrientRule;
 	carbohydrates: NutrientRule;
 	proteins: NutrientRule;
 	fats: NutrientRule;
+};
+
+export type NutritionalRules = {
+	daily: NutritionalRuleSet;
+	weekly: NutritionalRuleSet;
 };
 
 function headers(authorization: string) {

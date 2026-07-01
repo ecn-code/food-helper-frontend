@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { CircleCheck, RefreshCw, Users } from '@lucide/svelte';
+	import { CircleCheck, Download, Store, Users, X } from '@lucide/svelte';
 	import Button from '$lib/components/ui/Button.svelte';
-	import { ApiError } from '$lib/api/backend';
+	import { ApiError, isSessionExpiredError } from '$lib/api/backend';
 	import {
 		closeMenu,
 		getMenuStats,
@@ -38,8 +38,10 @@
 	let shoppingList = $state<EstablishedWeekMenuShoppingListItemResponse[]>([]);
 	let usedStock = $state<EstablishedWeekMenuUsedStockResponse[]>([]);
 	let supermarketId = $state('');
-	let loading = $state(false);
 	let error = $state('');
+	let shoppingListDialogOpen = $state(false);
+	let shoppingListLoading = $state(false);
+	let shoppingListDialogError = $state('');
 	let closeDialogOpen = $state(false);
 	let selectedPersonIds = $state<string[]>([]);
 	let closing = $state(false);
@@ -66,6 +68,7 @@
 		try {
 			stats = await getMenuStats(menuId, authorization);
 		} catch (cause) {
+			if (isSessionExpiredError(cause)) return;
 			if (!(cause instanceof ApiError && cause.status === 404)) {
 				error = cause instanceof ApiError ? cause.message : 'No se pudieron cargar las estadísticas.';
 			}
@@ -73,15 +76,56 @@
 	})());
 
 	async function filterShoppingList() {
-		loading = true;
-		error = '';
+		if (!supermarketId) {
+			shoppingListDialogError = 'Selecciona un supermercado para generar la lista.';
+			return;
+		}
+
+		shoppingListLoading = true;
+		shoppingListDialogError = '';
 		try {
 			shoppingList = await listMenuShoppingList(menuId, authorization, supermarketId ? Number(supermarketId) : undefined);
+			shoppingListDialogOpen = true;
 		} catch (cause) {
-			error = cause instanceof ApiError ? cause.message : 'No se pudo filtrar la lista de compra.';
+			if (isSessionExpiredError(cause)) return;
+			shoppingListDialogError = cause instanceof ApiError ? cause.message : 'No se pudo cargar la lista de compra.';
 		} finally {
-			loading = false;
+			shoppingListLoading = false;
 		}
+	}
+
+	function selectedSupermarketName() {
+		return supermarkets.find((item) => String(item.id) === supermarketId)?.name ?? '';
+	}
+
+	function shoppingListText() {
+		const lines = [
+			'Lista de compra',
+			`Menu: ${menuId}`,
+			`Supermercado: ${selectedSupermarketName() || 'Todos los supermercados'}`,
+			''
+		];
+
+		if (shoppingList.length === 0) {
+			lines.push('No hay productos pendientes.');
+			return lines.join('\n');
+		}
+
+		for (const item of shoppingList) {
+			lines.push(`- ${item.productName}: ${number(item.missingUnits)} uds`);
+		}
+
+		return lines.join('\n');
+	}
+
+	function downloadShoppingList() {
+		const blob = new Blob([shoppingListText()], { type: 'text/plain;charset=utf-8' });
+		const url = URL.createObjectURL(blob);
+		const link = document.createElement('a');
+		link.href = url;
+		link.download = `menu-${menuId}-lista-compra.txt`;
+		link.click();
+		URL.revokeObjectURL(url);
 	}
 
 	function openCloseDialog() {
@@ -113,6 +157,7 @@
 			usedStock = initialUsedStock;
 			await onClosed?.();
 		} catch (cause) {
+			if (isSessionExpiredError(cause)) return;
 			error = cause instanceof ApiError ? cause.message : 'No se pudo cerrar el menú.';
 		} finally {
 			closing = false;
@@ -151,24 +196,29 @@
 
 	<div class="grid gap-3 lg:grid-cols-[14rem_1fr_auto] lg:items-end">
 		<label class="space-y-2">
-			<span class="text-sm font-medium">Filtrar lista de compra</span>
+			<span class="text-sm font-medium">Supermercado</span>
 			<select class="h-10 w-full rounded-md border bg-white px-3 text-sm" bind:value={supermarketId}>
-				<option value="">Todos los supermercados</option>
+				<option value="">Selecciona un supermercado</option>
 				{#each supermarkets as supermarket}
 					<option value={supermarket.id}>{supermarket.name}</option>
 				{/each}
 			</select>
 		</label>
 		<div class="min-w-0">
-			<p class="text-sm font-medium">{shoppingList.length} productos pendientes</p>
+			<p class="text-sm font-medium">{shoppingList.length} productos en la lista</p>
 			<p class="truncate text-xs text-[hsl(var(--muted-foreground))]">
-				{shoppingList.map((item) => `${item.productName} (${number(item.missingUnits)})`).join(' · ') || 'No falta ningún producto'}
+				{supermarketId ? selectedSupermarketName() : 'Selecciona un supermercado para descargar la lista'}
 			</p>
 		</div>
-		<Button type="button" variant="secondary" onclick={filterShoppingList} disabled={loading}>
-			<RefreshCw class="size-4" /> Aplicar
+		<Button type="button" variant="secondary" onclick={filterShoppingList} disabled={!supermarketId || shoppingListLoading}>
+			<Store class="size-4" />
+			{shoppingListLoading ? 'Generando…' : 'Ver lista'}
 		</Button>
 	</div>
+
+	{#if shoppingListDialogError}
+		<p class="text-sm text-[hsl(var(--destructive))]" role="alert">{shoppingListDialogError}</p>
+	{/if}
 
 	{#if usedStock.length > 0}
 		<div class="space-y-2 rounded-lg border p-3">
@@ -220,6 +270,63 @@
 		</div>
 	{/if}
 </section>
+
+{#if shoppingListDialogOpen}
+	<div class="fixed inset-0 z-40 flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-sm" role="presentation" onclick={(event) => event.currentTarget === event.target && (shoppingListDialogOpen = false)}>
+		<div class="w-full max-w-2xl rounded-lg border bg-[hsl(var(--card))] shadow-xl" role="dialog" aria-modal="true" aria-labelledby="shopping-list-title" data-testid="shopping-list-dialog" tabindex="-1">
+			<div class="flex items-start justify-between gap-4 border-b p-5">
+				<div class="min-w-0">
+					<h2 id="shopping-list-title" class="text-lg font-semibold">Lista de compra</h2>
+					<p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">
+						{selectedSupermarketName() || 'Todos los supermercados'} · {shoppingList.length} productos
+					</p>
+				</div>
+				<Button variant="ghost" size="icon" type="button" onclick={() => (shoppingListDialogOpen = false)} aria-label="Cerrar">
+					<X class="size-4" />
+				</Button>
+			</div>
+			<div class="space-y-4 p-5">
+				{#if shoppingList.length === 0}
+					<p class="text-sm text-[hsl(var(--muted-foreground))]">No hay productos pendientes para este supermercado.</p>
+				{:else}
+					<div class="hidden overflow-x-auto md:block">
+						<table class="w-full text-sm">
+							<thead class="bg-[hsl(var(--secondary))] text-xs text-[hsl(var(--muted-foreground))]">
+								<tr>
+									<th class="px-3 py-2 text-left font-medium">Producto</th>
+									<th class="px-3 py-2 text-right font-medium">Faltan</th>
+								</tr>
+							</thead>
+							<tbody class="divide-y">
+								{#each shoppingList as item}
+									<tr>
+										<td class="px-3 py-2">{item.productName}</td>
+										<td class="px-3 py-2 text-right tabular-nums">{number(item.missingUnits)}</td>
+									</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+					<div class="space-y-2 md:hidden">
+						{#each shoppingList as item}
+							<div class="rounded-md border p-3">
+								<p class="text-sm font-medium">{item.productName}</p>
+								<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">{number(item.missingUnits)} uds</p>
+							</div>
+						{/each}
+					</div>
+				{/if}
+			</div>
+			<div class="flex flex-col-reverse gap-2 border-t p-5 sm:flex-row sm:justify-end">
+				<Button type="button" variant="secondary" onclick={() => (shoppingListDialogOpen = false)}>Cerrar</Button>
+				<Button type="button" onclick={downloadShoppingList} disabled={shoppingList.length === 0}>
+					<Download class="size-4" />
+					Descargar lista
+				</Button>
+			</div>
+		</div>
+	</div>
+{/if}
 
 {#if closeDialogOpen}
 	<div class="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm" role="presentation">

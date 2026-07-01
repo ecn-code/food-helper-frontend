@@ -87,18 +87,6 @@ function sanitizeAdjustStockQuantityRequest(values: AdjustStockQuantityRequest) 
 	};
 }
 
-export async function addStockQuantity(
-	stockEntryId: number,
-	values: AdjustStockQuantityRequest,
-	authorization: string
-) {
-	return await request<void>(`/api/v1/stock/${stockEntryId}/add`, {
-		method: 'POST',
-		headers: authHeaders(authorization),
-		body: JSON.stringify(sanitizeAdjustStockQuantityRequest(values))
-	});
-}
-
 export async function removeStockQuantity(
 	stockEntryId: number,
 	values: AdjustStockQuantityRequest,

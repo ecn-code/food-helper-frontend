@@ -31,9 +31,10 @@
 		Store,
 		PiggyBank,
 		SlidersHorizontal,
+		ChevronDown,
 		X
 	} from '@lucide/svelte';
-	import { apiBaseUrl, checkHealth, ApiError } from '$lib/api/backend';
+	import { apiBaseUrl, checkHealth, ApiError, isSessionExpiredError } from '$lib/api/backend';
 	import { login as loginUser, register as registerUser } from '$lib/api/auth';
 	import {
 		listProductStats,
@@ -58,7 +59,6 @@
 	} from '$lib/api/recipes';
 	import {
 		createStockEntry as createStockEntryRequest,
-		addStockQuantity as addStockQuantityRequest,
 		listStockEntries,
 		removeStockQuantity as removeStockQuantityRequest,
 		updateStockEntry as updateStockEntryRequest
@@ -149,6 +149,7 @@
 	import DailyNutritionalEvaluation from '$lib/components/planning/DailyNutritionalEvaluation.svelte';
 	import NutritionalEvaluationPanel from '$lib/components/planning/NutritionalEvaluationPanel.svelte';
 	import PeoplePanel from '$lib/components/people/PeoplePanel.svelte';
+	import MenuMealsTable from '$lib/components/menus/MenuMealsTable.svelte';
 	import { listSupermarkets, type Supermarket } from '$lib/api/supermarkets';
 	import { listPlanning, type PlanningMenuResponse } from '$lib/api/planning';
 	import { listUsers, type UserResponse } from '$lib/api/users';
@@ -268,7 +269,6 @@
 		| 'product-delete'
 		| 'stock'
 		| 'stock-delete'
-		| 'stock-add'
 		| 'product-view'
 		| 'product-picker'
 		| 'recipe-view'
@@ -277,6 +277,7 @@
 		| 'recipe-delete'
 		| 'recipe-derive'
 		| 'week-create'
+		| 'week-stock'
 		| 'week-day'
 		| 'week-publish'
 		| 'day-part'
@@ -297,6 +298,8 @@
 		| 'money-box'
 		| 'nutritional-rules';
 	type StockViewMode = 'block' | 'list';
+	type ProductViewMode = 'block' | 'list';
+	type RecipeViewMode = 'block' | 'list';
 	// The planning section now comes from the backend planning catalog, not localStorage.
 	type PlanningMenu = PlanningMenuResponse & {
 		label: string;
@@ -443,20 +446,21 @@
 	let stockProduct = $state<Product | null>(null);
 	let editingStockEntry = $state<StockEntry | null>(null);
 	let deletingStockEntry = $state<StockEntry | null>(null);
-	let adjustingStockEntry = $state<StockEntry | null>(null);
-	let stockAdjustmentQuantity = $state('');
 	let stockProductFilter = $state('');
 	let stockExpiresBefore = $state('');
 	let stockStatsOpen = $state(false);
 	let stockViewMode = $state<StockViewMode>('block');
+	let productStatsOpen = $state(false);
+	let productViewMode = $state<ProductViewMode>('block');
+	let recipeStatsOpen = $state(false);
+	let recipeViewMode = $state<RecipeViewMode>('block');
 	let deleteRecipeItem = $state<Recipe | null>(null);
 	let editingProductId = $state<number | null>(null);
 	let editingRecipeId = $state<number | null>(null);
 	let derivingRecipeId = $state<number | null>(null);
 	let creatingWeekMenuDraft = $state<ProposedWeekMenuCreateFormValues>(emptyProposedWeekMenuCreateForm());
 	let publishPayerUserId = $state('');
-	let publishAllocationMode = $state<'auto' | 'manual'>('auto');
-	let publishManualAllocations = $state<Record<number, string>>({});
+	let publishPersonIds = $state<string[]>([]);
 	let dayPartDraft = $state<ProposedWeekMenuDayPartFormValues>(emptyProposedWeekMenuDayPartForm());
 	let editingDayPartId = $state<number | null>(null);
 	let editingWeekDayDate = $state<string | null>(null);
@@ -487,10 +491,19 @@
 	let sessionExpiredDialogMessage = $state<string | null>(null);
 	let hydrated = $state(false);
 	let visibleProductsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+	const planningSummary = $derived(weekPlanningSummary());
+	const planningDayList = $derived(weekDays());
 	let recipesRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 	let loginSuccessTimer: ReturnType<typeof setTimeout> | null = null;
 	let visibleProductsRequestToken = 0;
 	let productsRequestToken = 0;
+	let sessionExpiredListener: ((event: Event) => void) | null = null;
+	let planningMenusLoadedAt = $state(0);
+	let proposedWeekMenuLoadedAt = $state(0);
+	let establishedWeekMenuLoadedAt = $state(0);
+	let menusLoadedAt = $state(0);
+	let proposedWeekMenuDayPartsLoadedAt = $state(0);
+	const WEEK_MENU_CACHE_TTL_MS = 60_000;
 
 	function clearLoginSuccessTimer() {
 		if (loginSuccessTimer !== null) {
@@ -514,6 +527,10 @@
 	let refreshCatalogToken = $state(0);
 	const stockStatsStorageKey = 'foodhelper_stock_stats_open';
 	const stockViewModeStorageKey = 'foodhelper_stock_view_mode';
+	const productStatsStorageKey = 'foodhelper_product_stats_open';
+	const productViewModeStorageKey = 'foodhelper_product_view_mode';
+	const recipeStatsStorageKey = 'foodhelper_recipe_stats_open';
+	const recipeViewModeStorageKey = 'foodhelper_recipe_view_mode';
 
 	function loginErrors(): AuthFormErrors {
 		return form?.type === 'login' && 'fieldErrors' in form
@@ -577,34 +594,22 @@
 		return 'Productos';
 	}
 
-	function sectionHint(section: SectionMode) {
-		if (section === 'recipes') return `${recipeCountLabel()} recetas`;
-		if (section === 'stock') return `${loadingCountLabel(data.stockEntriesLoaded, data.stockEntries.length)} entradas de stock`;
-		if (section === 'planning') {
-			const menu = data.proposedWeekMenu;
-			if (menu) return weekDateRangeLabel(menu.startDate, menu.endDate);
-			return 'Borradores y días planificados';
-		}
-		if (section === 'menus') {
-			const menu = data.establishedWeekMenu;
-			if (menu) return weekDateRangeLabel(menu.startDate, menu.endDate);
-			return 'Menú actual';
-		}
-		if (section === 'closed-menus') {
-			const menu = data.establishedWeekMenu;
-			if (menu) return weekDateRangeLabel(menu.startDate, menu.endDate);
-			return 'Menús cerrados e historiales';
-		}
-		if (section === 'people-weights') return 'Mediciones de peso';
-		if (section === 'people-history') return 'Historial de menús filtrable';
-		if (section === 'people-trend') return 'Calorías y peso alineados';
-		if (section === 'day-parts') {
-			return `${loadingCountLabel(data.proposedWeekMenuDayPartsLoaded, data.proposedWeekMenuDayParts.length)} partes configuradas`;
-		}
-		if (section === 'supermarkets') return 'Comercios y disponibilidad';
-		if (section === 'money-box') return 'Saldos y movimientos';
-		if (section === 'nutritional-rules') return 'Límites diarios';
-		return `${loadingCountLabel(data.productsLoaded, productsTotalElements)} productos`;
+	function isCacheFresh(loaded: boolean, loadedAt: number, force = false) {
+		if (force || !loaded) return false;
+		if (!loadedAt) return false;
+		return Date.now() - loadedAt < WEEK_MENU_CACHE_TTL_MS;
+	}
+
+	function invalidateWeekMenuCaches() {
+		planningMenusLoadedAt = 0;
+		proposedWeekMenuLoadedAt = 0;
+		establishedWeekMenuLoadedAt = 0;
+		menusLoadedAt = 0;
+		proposedWeekMenuDayPartsLoadedAt = 0;
+	}
+
+	function shouldRefreshMenusViewAfterMutation() {
+		return currentSection === 'menus' || currentSection === 'closed-menus' || data.menusLoaded || data.establishedWeekMenuLoaded;
 	}
 
 	function createErrors(): ProductFormErrors {
@@ -847,6 +852,11 @@
 		data.supermarketsLoaded = false;
 		data.usersLoaded = false;
 		data.planningMenusLoaded = false;
+		planningMenusLoadedAt = 0;
+		proposedWeekMenuLoadedAt = 0;
+		establishedWeekMenuLoadedAt = 0;
+		menusLoadedAt = 0;
+		proposedWeekMenuDayPartsLoadedAt = 0;
 		productFilters = emptyProductFilters();
 		recipeFilters = emptyRecipeFilters();
 		productPickerTarget = null;
@@ -1069,7 +1079,7 @@
 			data.productStats = null;
 			data.productStatsLoaded = false;
 
-			if (error instanceof ApiError && error.status === 401) {
+			if (isSessionExpiredError(error)) {
 				throw error;
 			}
 
@@ -1213,8 +1223,15 @@
 	}
 
 	function planningMenuLabel(menu: PlanningMenuResponse) {
-		const prefix = menu.state === 'DRAFT' ? 'Borrador' : menu.state === 'CLOSED' ? 'Cerrado' : 'En curso';
-		return `${prefix} #${menu.id} · ${weekDateRangeLabel(menu.startDate, menu.endDate)}`;
+		return `#${menu.id} · ${weekDateRangeLabel(menu.startDate, menu.endDate)}`;
+	}
+
+	function draftPlanningMenus() {
+		return planningMenus.filter((menu) => menu.state === 'DRAFT');
+	}
+
+	function planningMenusForSelector() {
+		return draftPlanningMenus();
 	}
 
 	function menuLabel(menu: EstablishedWeekMenu) {
@@ -1239,8 +1256,10 @@
 		planningMenus = planning.map((menu) => ({ ...menu, label: planningMenuLabel(menu) }));
 		data.planningMenus = planning.map((menu) => ({ ...menu, label: planningMenuLabel(menu) }));
 		data.planningMenusLoaded = true;
+		planningMenusLoadedAt = Date.now();
+		const draftMenus = planningMenus.filter((menu) => menu.state === 'DRAFT');
 		if (selectedPlanningMenuId && !planningMenus.some((menu) => menu.id === selectedPlanningMenuId)) {
-			selectedPlanningMenuId = planningMenus.find((menu) => menu.state === 'DRAFT')?.id ?? planningMenus[0]?.id ?? null;
+			selectedPlanningMenuId = draftMenus[0]?.id ?? null;
 		}
 	}
 
@@ -1250,6 +1269,7 @@
 		menus = (await listMenusRequest(authorization)).map((menu) => toEstablishedWeekMenuModel(menu));
 		data.menus = menus;
 		data.menusLoaded = true;
+		menusLoadedAt = Date.now();
 		if (selectedMenuId && !inProgressMenus().some((menu) => menu.id === selectedMenuId)) {
 			selectedMenuId = inProgressMenus()[0]?.id ?? null;
 		}
@@ -1316,6 +1336,7 @@
 		try {
 			data.proposedWeekMenu = toProposedWeekMenuModel(await getProposedWeekMenuRequest(menuId, authorization));
 			data.proposedWeekMenuLoaded = true;
+			proposedWeekMenuLoadedAt = Date.now();
 			activeProposedWeekMenuId = data.proposedWeekMenu.id;
 			activeEstablishedWeekMenuId = null;
 			rememberProposedWeekMenu(data.proposedWeekMenu);
@@ -1358,6 +1379,7 @@
 				await getEstablishedWeekMenuRequest(menuId, authorization)
 			);
 			data.establishedWeekMenuLoaded = true;
+			establishedWeekMenuLoadedAt = Date.now();
 			activeEstablishedWeekMenuId = data.establishedWeekMenu.id;
 			activeProposedWeekMenuId = null;
 			if (target === 'closed') {
@@ -1399,6 +1421,7 @@
 			toProposedWeekMenuDayPartModel
 		);
 		data.proposedWeekMenuDayPartsLoaded = true;
+		proposedWeekMenuDayPartsLoadedAt = Date.now();
 	}
 
 	async function refreshProductsView(session = authSession, force = false) {
@@ -1453,14 +1476,12 @@
 			return;
 		}
 
-		if (force || !data.planningMenusLoaded) {
+		if (!isCacheFresh(data.planningMenusLoaded, planningMenusLoadedAt, force)) {
 			await loadPlanningMenus(session);
 		}
 
-		let selectedMenu =
-			planningMenus.find((menu) => menu.id === selectedPlanningMenuId && menu.state === 'DRAFT') ??
-			planningMenus.find((menu) => menu.state === 'DRAFT') ??
-			null;
+		const draftMenus = planningMenus.filter((menu) => menu.state === 'DRAFT');
+		let selectedMenu = draftMenus.find((menu) => menu.id === selectedPlanningMenuId) ?? draftMenus[0] ?? null;
 		if (!selectedMenu) {
 			selectedPlanningMenuId = null;
 			if (force || !data.proposedWeekMenuLoaded) {
@@ -1474,26 +1495,24 @@
 		}
 		const tasks: Promise<void>[] = [];
 
-		if (selectedMenu.state === 'DRAFT') {
-			if (force || !productsFullyLoaded) {
-				tasks.push(loadAllProducts(session));
-			}
+		if (force || !productsFullyLoaded) {
+			tasks.push(loadAllProducts(session));
+		}
 
-			if (force || !data.proposedWeekMenuLoaded) {
-				tasks.push(loadProposedWeekMenu(session, selectedMenu.id));
-			}
+		if (!isCacheFresh(data.proposedWeekMenuLoaded, proposedWeekMenuLoadedAt, force) || activeProposedWeekMenuId !== selectedMenu.id) {
+			tasks.push(loadProposedWeekMenu(session, selectedMenu.id));
+		}
 
-			if (force || !data.proposedWeekMenuDayPartsLoaded) {
-				tasks.push(loadProposedWeekMenuDayParts(session));
-			}
+		if (!isCacheFresh(data.proposedWeekMenuDayPartsLoaded, proposedWeekMenuDayPartsLoadedAt, force)) {
+			tasks.push(loadProposedWeekMenuDayParts(session));
+		}
 
-			if (force || !data.stockEntriesLoaded) {
-				tasks.push(loadStockEntries(session));
-			}
+		if (force || !data.stockEntriesLoaded) {
+			tasks.push(loadStockEntries(session));
+		}
 
-			if (force || !data.usersLoaded) {
-				tasks.push(loadUsers(session));
-			}
+		if (force || !data.usersLoaded) {
+			tasks.push(loadUsers(session));
 		}
 
 		await Promise.all(tasks);
@@ -1505,34 +1524,12 @@
 			return;
 		}
 
-		if (force || !data.planningMenusLoaded) {
+		if (!isCacheFresh(data.planningMenusLoaded, planningMenusLoadedAt, force)) {
 			await loadPlanningMenus(session);
 		}
 
-		if (force || !data.menusLoaded) {
+		if (!isCacheFresh(data.menusLoaded, menusLoadedAt, force)) {
 			await loadMenus(session);
-		}
-
-		const openMenus = inProgressMenus();
-		if (selectedMenuId && !openMenus.some((menu) => menu.id === selectedMenuId)) {
-			selectedMenuId = null;
-		}
-
-		let menuId = selectedMenuId;
-		if (!menuId && openMenus.length > 0) {
-			menuId = openMenus[0].id;
-			selectedMenuId = menuId;
-		}
-
-		if (!menuId) {
-			if (force || !data.establishedWeekMenuLoaded) {
-				await loadEstablishedWeekMenu(session, null, 'selected');
-			}
-			return;
-		}
-
-		if (force || !data.establishedWeekMenuLoaded || activeEstablishedWeekMenuId !== menuId) {
-			await loadEstablishedWeekMenu(session, menuId, 'selected');
 		}
 	}
 
@@ -1542,11 +1539,11 @@
 			return;
 		}
 
-		if (force || !data.planningMenusLoaded) {
+		if (!isCacheFresh(data.planningMenusLoaded, planningMenusLoadedAt, force)) {
 			await loadPlanningMenus(session);
 		}
 
-		if (force || !data.menusLoaded) {
+		if (!isCacheFresh(data.menusLoaded, menusLoadedAt, force)) {
 			await loadMenus(session);
 		}
 
@@ -1568,7 +1565,7 @@
 			return;
 		}
 
-		if (force || !data.establishedWeekMenuLoaded || activeEstablishedWeekMenuId !== menuId) {
+		if (!isCacheFresh(data.establishedWeekMenuLoaded, establishedWeekMenuLoadedAt, force) || activeEstablishedWeekMenuId !== menuId) {
 			await loadEstablishedWeekMenu(session, menuId, 'closed');
 		}
 	}
@@ -1636,6 +1633,10 @@
 	onMount(() => {
 		hydrated = true;
 		currentSection = normalizeSection(window.location.hash.slice(1));
+		sessionExpiredListener = (event: Event) => {
+			const detail = (event as CustomEvent<{ message?: string }>).detail;
+			openSessionExpiredDialog(detail?.message);
+		};
 
 		const syncSection = () => {
 			currentSection = normalizeSection(window.location.hash.slice(1));
@@ -1675,6 +1676,24 @@
 					: prefersCompactStockList
 						? 'list'
 						: 'block';
+			const storedProductStatsOpen = typeof window !== 'undefined' ? window.localStorage.getItem(productStatsStorageKey) : null;
+			productStatsOpen = storedProductStatsOpen === null ? !prefersCompactStockList : storedProductStatsOpen === '1';
+			const storedProductViewMode = typeof window !== 'undefined' ? window.localStorage.getItem(productViewModeStorageKey) : null;
+			productViewMode =
+				storedProductViewMode === 'list' || storedProductViewMode === 'block'
+					? storedProductViewMode
+					: prefersCompactStockList
+						? 'block'
+						: 'list';
+			const storedRecipeStatsOpen = typeof window !== 'undefined' ? window.localStorage.getItem(recipeStatsStorageKey) : null;
+			recipeStatsOpen = storedRecipeStatsOpen === null ? !prefersCompactStockList : storedRecipeStatsOpen === '1';
+			const storedRecipeViewMode = typeof window !== 'undefined' ? window.localStorage.getItem(recipeViewModeStorageKey) : null;
+			recipeViewMode =
+				storedRecipeViewMode === 'list' || storedRecipeViewMode === 'block'
+					? storedRecipeViewMode
+					: prefersCompactStockList
+						? 'block'
+						: 'list';
 
 			try {
 				await checkHealth();
@@ -1716,9 +1735,16 @@
 		};
 
 		void bootstrap();
+		if (sessionExpiredListener) {
+			window.addEventListener('foodhelper-session-expired', sessionExpiredListener);
+		}
 		window.addEventListener('hashchange', syncSection);
 
 		return () => {
+			if (sessionExpiredListener) {
+				window.removeEventListener('foodhelper-session-expired', sessionExpiredListener);
+				sessionExpiredListener = null;
+			}
 			window.removeEventListener('hashchange', syncSection);
 		};
 	});
@@ -1806,12 +1832,6 @@
 		modalMode = 'stock';
 	}
 
-	function openAddStockQuantityModal(stockEntry: StockEntry) {
-		adjustingStockEntry = stockEntry;
-		stockAdjustmentQuantity = '';
-		modalMode = 'stock-add';
-	}
-
 	function filteredStockEntries() {
 		return data.stockEntries.filter((entry) => {
 			if (stockProductFilter && String(entry.productId) !== stockProductFilter) return false;
@@ -1844,14 +1864,17 @@
 
 	function openPublishWeekMenuModal() {
 		publishPayerUserId = String(authSession?.userId ?? '');
-		publishAllocationMode = 'auto';
-		publishManualAllocations = {};
+		publishPersonIds = authSession?.userId ? [String(authSession.userId)] : [];
 		if (authSession && !data.usersLoaded) {
 			void loadUsers(authSession).catch(() => {
 				// The select can still open; the backend error banner handles failures elsewhere.
 			});
 		}
 		modalMode = 'week-publish';
+	}
+
+	function openWeekStockDialog() {
+		modalMode = 'week-stock';
 	}
 
 	function resetDayPartForm() {
@@ -2009,8 +2032,6 @@
 		stockProduct = null;
 		editingStockEntry = null;
 		deletingStockEntry = null;
-		adjustingStockEntry = null;
-		stockAdjustmentQuantity = '';
 		deleteRecipeItem = null;
 		editingProductId = null;
 		editingRecipeId = null;
@@ -2020,8 +2041,7 @@
 		creatingWeekMenuDraft = emptyProposedWeekMenuCreateForm();
 		weekDayDraft = emptyProposedWeekMenuDayForm();
 		publishPayerUserId = '';
-		publishAllocationMode = 'auto';
-		publishManualAllocations = {};
+		publishPersonIds = [];
 	}
 
 	function productPhotoUrl(photo: string) {
@@ -2224,8 +2244,12 @@
 		const menu = data.proposedWeekMenu;
 		if (!menu) return [];
 
-		const start = parseDateInput(menu.startDate);
-		const end = parseDateInput(menu.endDate);
+		return weekDaysBetween(menu.startDate, menu.endDate);
+	}
+
+	function weekDaysBetween(startDate: string, endDate: string) {
+		const start = parseDateInput(startDate);
+		const end = parseDateInput(endDate);
 		if (!start || !end) return [];
 
 		const days: string[] = [];
@@ -2239,6 +2263,23 @@
 
 	function weekPlanningSummary() {
 		return buildWeekPlanningSummary(data.proposedWeekMenu, data.stockEntries, data.products);
+	}
+
+	function menuDays(menu: EstablishedWeekMenu | null) {
+		if (!menu) return [];
+		const dayLookup = new Map(menu.days.map((day) => [day.date, day]));
+		return weekDaysBetween(menu.startDate, menu.endDate).map((date) => ({
+			date,
+			day: dayLookup.get(date) ?? null
+		}));
+	}
+
+	function menuSectionColumns(menu: EstablishedWeekMenu | null) {
+		if (!menu) return [];
+		const sections = menu.days.flatMap((day) => day.sections);
+		return [...new Map(sections.map((section) => [section.dayPartId, section])).values()].sort(
+			(left, right) => left.sortOrder - right.sortOrder || left.name.localeCompare(right.name)
+		);
 	}
 
 	function weekDayProductCount(day: ProposedWeekMenu['days'][number]) {
@@ -2645,6 +2686,42 @@
 		}
 	}
 
+	function setProductStatsOpen(next: boolean) {
+		productStatsOpen = next;
+		if (typeof window !== 'undefined') {
+			window.localStorage.setItem(productStatsStorageKey, next ? '1' : '0');
+		}
+	}
+
+	function toggleProductStatsOpen() {
+		setProductStatsOpen(!productStatsOpen);
+	}
+
+	function setProductViewMode(next: ProductViewMode) {
+		productViewMode = next;
+		if (typeof window !== 'undefined') {
+			window.localStorage.setItem(productViewModeStorageKey, next);
+		}
+	}
+
+	function setRecipeStatsOpen(next: boolean) {
+		recipeStatsOpen = next;
+		if (typeof window !== 'undefined') {
+			window.localStorage.setItem(recipeStatsStorageKey, next ? '1' : '0');
+		}
+	}
+
+	function toggleRecipeStatsOpen() {
+		setRecipeStatsOpen(!recipeStatsOpen);
+	}
+
+	function setRecipeViewMode(next: RecipeViewMode) {
+		recipeViewMode = next;
+		if (typeof window !== 'undefined') {
+			window.localStorage.setItem(recipeViewModeStorageKey, next);
+		}
+	}
+
 	function loadingCountLabel(loaded: boolean, count: number) {
 		return loaded ? String(count) : 'Cargando...';
 	}
@@ -2720,11 +2797,7 @@
 	}
 
 	function handleExpiredSession(error: unknown) {
-		if (
-			error instanceof ApiError &&
-			error.status === 401 &&
-			error.message.includes('Missing or invalid Bearer token')
-		) {
+		if (isSessionExpiredError(error)) {
 			openSessionExpiredDialog();
 			return true;
 		}
@@ -3137,26 +3210,6 @@
 		}
 	}
 
-	async function submitAddStockQuantity(event: SubmitEvent) {
-		event.preventDefault();
-		if (!authSession || !adjustingStockEntry) return;
-		const quantity = Number(stockAdjustmentQuantity);
-		if (!Number.isFinite(quantity) || quantity <= 0) {
-			form = { type: 'stock', error: 'La cantidad debe ser mayor que cero', id: adjustingStockEntry.productId };
-			return;
-		}
-		try {
-			await addStockQuantityRequest(adjustingStockEntry.id, { quantity }, authorizationHeader(authSession));
-			const productId = adjustingStockEntry.productId;
-			closeModal();
-			form = { type: 'stock', success: 'Cantidad añadida correctamente', id: productId };
-			await refreshProductsView(authSession, true);
-		} catch (error) {
-			if (handleExpiredSession(error)) return;
-			form = { type: 'stock', error: error instanceof ApiError ? error.message : 'No se pudo añadir la cantidad', id: adjustingStockEntry.productId };
-		}
-	}
-
 	async function submitCreateRecipe(event: SubmitEvent) {
 		event.preventDefault();
 		if (!authSession) return;
@@ -3417,17 +3470,21 @@
 				);
 			}
 
-				form = {
-					type: actionType,
-					success: editingDayPartId === null ? 'Parte del dia creada correctamente' : 'Parte del dia actualizada correctamente',
-					id: editingDayPartId ?? undefined,
-					values
-				};
-				modalMode = null;
-				resetDayPartForm();
-				await refreshDayPartsView(authSession, true);
+			form = {
+				type: actionType,
+				success: editingDayPartId === null ? 'Parte del dia creada correctamente' : 'Parte del dia actualizada correctamente',
+				id: editingDayPartId ?? undefined,
+				values
+			};
+			modalMode = null;
+			resetDayPartForm();
+			invalidateWeekMenuCaches();
+			await refreshDayPartsView(authSession, true);
 			if (data.proposedWeekMenuLoaded) {
 				await loadProposedWeekMenu(authSession);
+			}
+			if (shouldRefreshMenusViewAfterMutation()) {
+				await refreshMenusView(authSession, true);
 			}
 		} catch (error) {
 			if (handleExpiredSession(error)) {
@@ -3473,16 +3530,19 @@
 				)
 			);
 			setActiveProposedWeekMenu(menu);
-			weekDayDraft = emptyProposedWeekMenuDayForm();
-			editingWeekDayDate = null;
-			modalMode = null;
-			form = {
-				type: 'week-day',
-				success: 'Menu diario guardado correctamente',
-				id: activeProposedWeekMenuId,
-				values
-			};
-			await refreshPlanningView(authSession, true);
+				weekDayDraft = emptyProposedWeekMenuDayForm();
+				editingWeekDayDate = null;
+				modalMode = null;
+				form = {
+					type: 'week-day',
+					success: 'Menu diario guardado correctamente',
+					id: activeProposedWeekMenuId,
+					values
+				};
+				invalidateWeekMenuCaches();
+				if (shouldRefreshMenusViewAfterMutation()) {
+					await refreshMenusView(authSession, true);
+				}
 		} catch (error) {
 			if (handleExpiredSession(error)) {
 				return;
@@ -3511,14 +3571,14 @@
 			return;
 		}
 
-		const stockAllocations = publishAllocationMode === 'manual'
-			? Object.entries(publishManualAllocations)
-					.map(([stockEntryId, usedUnits]) => ({ stockEntryId: Number(stockEntryId), usedUnits: Number(usedUnits) }))
-					.filter((allocation) => Number.isFinite(allocation.stockEntryId) && allocation.stockEntryId > 0 && Number.isFinite(allocation.usedUnits) && allocation.usedUnits > 0)
-			: undefined;
+		const personIds = [...new Set(
+			publishPersonIds
+				.map((personId) => Number(personId))
+				.filter((personId) => Number.isFinite(personId) && personId > 0)
+		)];
 
-		if (publishAllocationMode === 'manual' && (!stockAllocations || stockAllocations.length === 0)) {
-			form = { type: 'week-publish', error: 'Añade al menos una asignación manual.', id: activeProposedWeekMenuId };
+		if (personIds.length === 0) {
+			form = { type: 'week-publish', error: 'Selecciona al menos una persona que consuma la semana.', id: activeProposedWeekMenuId };
 			return;
 		}
 
@@ -3528,7 +3588,7 @@
 					activeProposedWeekMenuId,
 					{
 						payerUserId,
-						...(stockAllocations ? { stockAllocations } : {})
+						personIds
 					},
 					authorizationHeader(authSession)
 				)
@@ -3542,7 +3602,10 @@
 			};
 			modalMode = null;
 			setSection('menus');
-			await refreshMenusView(authSession, true);
+			invalidateWeekMenuCaches();
+			if (shouldRefreshMenusViewAfterMutation()) {
+				await refreshMenusView(authSession, true);
+			}
 			refreshCatalogToken += 1;
 		} catch (error) {
 			if (handleExpiredSession(error)) {
@@ -3581,7 +3644,11 @@
 				id: menuId
 			};
 			setSection('planning');
+			invalidateWeekMenuCaches();
 			await refreshPlanningView(authSession, true);
+			if (shouldRefreshMenusViewAfterMutation()) {
+				await refreshMenusView(authSession, true);
+			}
 			refreshCatalogToken += 1;
 		} catch (error) {
 			if (handleExpiredSession(error)) {
@@ -3593,6 +3660,35 @@
 				id: menuId
 			};
 		}
+	}
+
+	async function undoEstablishedMenu(menu: EstablishedWeekMenu) {
+		if (!authSession) return;
+		const previousMenuId = activeEstablishedWeekMenuId;
+		activeEstablishedWeekMenuId = menu.id;
+		data.establishedWeekMenu = menu;
+		try {
+			await undoActiveEstablishedWeekMenu();
+		} finally {
+			if (activeEstablishedWeekMenuId === menu.id) {
+				activeEstablishedWeekMenuId = previousMenuId;
+			}
+		}
+	}
+
+	async function editEstablishedMenu(menu: EstablishedWeekMenu) {
+		if (!authSession) return;
+
+		const planningMenu = planningMenus.find((item) => item.menuId === menu.id) ?? null;
+		if (!planningMenu) {
+			data.backendError = 'No se pudo localizar la planificación asociada a este menú.';
+			return;
+		}
+
+		await loadProposedWeekMenu(authSession, planningMenu.id);
+		const firstDayDate = data.proposedWeekMenu?.days[0]?.date ?? menu.startDate;
+		setSection('menus');
+		openWeekDayModal(firstDayDate);
 	}
 </script>
 
@@ -3746,13 +3842,24 @@
 		<div class="border-t border-[hsl(var(--border))] p-3">
 			<div class="space-y-2">
 				{#if data.session}
-					<div class="flex min-w-0 items-start gap-2 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-3">
-						<UserRound class="mt-0.5 size-4 shrink-0 text-[hsl(var(--primary))]" aria-hidden="true" />
-						<div class="min-w-0">
-							<p class="truncate text-sm font-medium">{data.session.username}</p>
-							<p class="mt-1 text-xs leading-5 text-[hsl(var(--muted-foreground))]">Sesion activa</p>
+					<details class="group rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))]">
+						<summary class="flex list-none cursor-pointer items-center gap-2 p-3 [&::-webkit-details-marker]:hidden">
+							<UserRound class="mt-0.5 size-4 shrink-0 text-[hsl(var(--primary))]" aria-hidden="true" />
+							<div class="min-w-0 flex-1">
+								<p class="truncate text-sm font-medium">{data.session.username}</p>
+								<p class="mt-1 text-xs leading-5 text-[hsl(var(--muted-foreground))]">Sesion activa</p>
+							</div>
+							<ChevronDown class="size-4 shrink-0 text-[hsl(var(--muted-foreground))] transition-transform group-open:rotate-180" aria-hidden="true" />
+						</summary>
+						<div class="border-t border-[hsl(var(--border))] p-3">
+							<form onsubmit={submitLogout}>
+								<Button variant="secondary" size="sm" type="submit" class="w-full" data-testid="logout-button">
+									<LogOut class="size-4" aria-hidden="true" />
+									Salir
+								</Button>
+							</form>
 						</div>
-					</div>
+					</details>
 				{/if}
 				<div class="flex min-w-0 items-start gap-2 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-3">
 					{#if data.backendAvailable}
@@ -3774,34 +3881,6 @@
 	</aside>
 
 	<div class="lg:pl-60">
-		<header class="sticky top-0 z-20 border-b border-[hsl(var(--border))] bg-[hsl(var(--background)/0.92)] backdrop-blur">
-			<div class="mx-auto flex h-14 max-w-7xl items-center justify-between gap-3 px-4 md:px-6">
-					<div class="flex min-w-0 items-center gap-2">
-						<span class="grid size-8 place-items-center rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] lg:hidden">
-							<Database class="size-4" aria-hidden="true" />
-						</span>
-							<div class="min-w-0">
-								<p class="truncate text-sm font-medium">
-									{data.session ? sectionLabel(currentSection) : 'Acceso'}
-								</p>
-						<p class="truncate text-xs text-[hsl(var(--muted-foreground))]">
-							{data.session ? sectionHint(currentSection) : 'Inicia sesion para continuar'}
-						</p>
-							</div>
-					</div>
-					<div class="flex shrink-0 items-center gap-2">
-						{#if data.session}
-							<form onsubmit={submitLogout}>
-								<Button variant="secondary" size="sm" type="submit" data-testid="logout-button">
-									<LogOut class="size-4" aria-hidden="true" />
-									Salir
-								</Button>
-							</form>
-						{/if}
-					</div>
-				</div>
-			</header>
-
 		<main class="mx-auto max-w-7xl space-y-6 p-4 md:p-6">
 			{#if !data.session}
 				<section class="grid min-h-[calc(100vh-7rem)] items-center py-6" data-testid="login-screen">
@@ -3991,10 +4070,10 @@
 									<span class="min-w-0 break-words">{data.backendError}</span>
 								</p>
 							{/if}
-						</div>
-					</div>
-				</section>
-			{:else}
+										</div>
+									</div>
+							</section>
+				{:else}
 			<div class="grid grid-cols-2 gap-1 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-1 shadow-sm sm:grid-cols-4 lg:hidden" aria-label="Selector de pantalla">
 				<button
 					type="button"
@@ -4140,25 +4219,64 @@
 				</p>
 			{/if}
 			{#if currentSection === 'products'}
-			<section id="products" class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-				<div class="min-w-0">
-					<h1 class="text-2xl font-semibold tracking-tight text-[hsl(var(--foreground))]">Productos</h1>
-					<p class="mt-1 max-w-2xl text-sm leading-6 text-[hsl(var(--muted-foreground))]">
-						Gestiona alimentos, calorias y macronutrientes por 100g en una vista compacta.
-					</p>
-				</div>
-				<Button
-					type="button"
-					class="sm:shrink-0"
-					onclick={openCreateModal}
-					disabled={!data.backendAvailable}
-					aria-label="Añadir producto"
-					data-testid="open-create-modal"
-				>
-					<Plus class="size-4" aria-hidden="true" />
-					Añadir producto
-				</Button>
-			</section>
+				<section id="products" class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+					<div class="min-w-0">
+						<h1 class="text-2xl font-semibold tracking-tight text-[hsl(var(--foreground))]">Productos</h1>
+						<p class="mt-1 max-w-2xl text-sm leading-6 text-[hsl(var(--muted-foreground))]">
+							Gestiona alimentos, calorias y macronutrientes por 100g en una vista compacta.
+						</p>
+					</div>
+					<div class="flex flex-wrap gap-2 sm:shrink-0 sm:justify-end">
+						<Button
+							type="button"
+							variant="secondary"
+							size="sm"
+							onclick={toggleProductStatsOpen}
+							aria-pressed={productStatsOpen}
+							data-testid="product-stats-toggle"
+						>
+							<Eye class="size-4" aria-hidden="true" />
+							{productStatsOpen ? 'Ocultar stats' : 'Ver stats'}
+						</Button>
+						<div class="inline-flex rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-1 shadow-sm">
+							<Button
+								type="button"
+								size="sm"
+								variant={productViewMode === 'list' ? 'primary' : 'ghost'}
+								class={productViewMode === 'list' ? '' : 'text-[hsl(var(--muted-foreground))]'}
+								onclick={() => setProductViewMode('list')}
+								aria-pressed={productViewMode === 'list'}
+								data-testid="product-view-list"
+							>
+								<LayoutList class="size-4" aria-hidden="true" />
+								Lista
+							</Button>
+							<Button
+								type="button"
+								size="sm"
+								variant={productViewMode === 'block' ? 'primary' : 'ghost'}
+								class={productViewMode === 'block' ? '' : 'text-[hsl(var(--muted-foreground))]'}
+								onclick={() => setProductViewMode('block')}
+								aria-pressed={productViewMode === 'block'}
+								data-testid="product-view-block"
+							>
+								<SlidersHorizontal class="size-4" aria-hidden="true" />
+								Bloque
+							</Button>
+						</div>
+						<Button
+							type="button"
+							class="sm:shrink-0"
+							onclick={openCreateModal}
+							disabled={!data.backendAvailable}
+							aria-label="Añadir producto"
+							data-testid="open-create-modal"
+						>
+							<Plus class="size-4" aria-hidden="true" />
+							Añadir producto
+						</Button>
+					</div>
+				</section>
 
 			<ProductFilters
 				filters={productFilters}
@@ -4201,7 +4319,8 @@
 				</div>
 			{/if}
 
-				<section class="grid gap-3 md:grid-cols-2 xl:grid-cols-6" aria-label="Metricas del catalogo">
+				{#if productStatsOpen}
+					<section class="grid gap-3 md:grid-cols-2 xl:grid-cols-6" aria-label="Metricas del catalogo">
 					<MetricCard
 						label="Top Kcal"
 						value={highestMetric('calories')}
@@ -4231,10 +4350,10 @@
 						tone="accent"
 					>
 						<Droplets class="size-4" aria-hidden="true" />
-					</MetricCard>
-				</section>
-
-					<section class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-sm">
+						</MetricCard>
+						</section>
+					{/if}
+								<section class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-sm">
 				<div class="flex flex-col gap-3 border-b border-[hsl(var(--border))] p-4 sm:flex-row sm:items-center sm:justify-between">
 					<div class="min-w-0">
 							<h2 class="text-base font-semibold text-[hsl(var(--foreground))]">Productos</h2>
@@ -4297,8 +4416,8 @@
 						</div>
 					</div>
 				{:else}
-					<div data-testid="product-list">
-							<div class="hidden overflow-x-auto md:block">
+						<div data-testid="product-list">
+								<div class={productViewMode === 'list' ? 'overflow-x-auto' : 'hidden'}>
 								<table class="w-full table-fixed text-sm">
 									<colgroup>
 										<col class="w-[34%]" />
@@ -4435,7 +4554,7 @@
 							</table>
 						</div>
 
-						<div class="divide-y divide-[hsl(var(--border))] md:hidden">
+							<div class={productViewMode === 'block' ? 'divide-y divide-[hsl(var(--border))]' : 'hidden'}>
 							{#each filteredProducts() as product (product.id)}
 								<article class="space-y-4 p-4">
 									<div class="flex min-w-0 items-start gap-3">
@@ -4523,7 +4642,7 @@
 											<p class="mt-1 text-sm font-medium tabular-nums">{productDefaultPriceLabel(product)}</p>
 										</div>
 
-										<div class="grid grid-cols-2 gap-2">
+											<div class="grid grid-cols-2 gap-2">
 											<Button
 												variant="secondary"
 												size="sm"
@@ -4613,18 +4732,57 @@
 									Los stats quedan plegados en móvil y las preferencias se guardan en este navegador.
 								</p>
 							</div>
-							<div class="flex flex-wrap gap-2 lg:justify-end">
-								<Button
-									type="button"
-									variant="secondary"
-									size="sm"
-									onclick={toggleStockStatsOpen}
+								<div class="flex flex-wrap gap-2 lg:justify-end">
+									<Button
+										type="button"
+										variant="secondary"
+										size="sm"
+										onclick={toggleStockStatsOpen}
 									aria-pressed={stockStatsOpen}
 									data-testid="stock-stats-toggle"
+										>
+											<Eye class="size-4" aria-hidden="true" />
+											{stockStatsOpen ? 'Ocultar stats' : 'Ver stats'}
+										</Button>
+								</div>
+							</div>
+
+						{#if stockStatsOpen}
+							<section class="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3" aria-label="Metricas del stock" data-testid="stock-stats-panel">
+								<MetricCard
+									label="Stock total"
+									value={totalStockQuantityLabel()}
+									hint={data.productStats ? 'Suma de todas las entradas' : 'Cargando estadisticas'}
 								>
-									<Eye class="size-4" aria-hidden="true" />
-									{stockStatsOpen ? 'Ocultar stats' : 'Ver stats'}
-								</Button>
+									<Package class="size-4" aria-hidden="true" />
+								</MetricCard>
+								<MetricCard
+									label="Entradas"
+									value={loadingCountLabel(!stockSectionLoading(), stockEntriesCount())}
+									hint="Lotes registrados en el sistema"
+								>
+									<Package class="size-4" aria-hidden="true" />
+								</MetricCard>
+								<MetricCard
+									label="Antes caduca"
+									value={earliestExpirationLabel()}
+									hint={earliestExpirationHint()}
+									tone="accent"
+								>
+									<CalendarClock class="size-4" aria-hidden="true" />
+								</MetricCard>
+							</section>
+						{/if}
+					</section>
+						<section class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-sm">
+						<div class="flex flex-col gap-3 border-b border-[hsl(var(--border))] p-4 sm:flex-row sm:items-center sm:justify-between">
+							<div class="min-w-0">
+								<h3 class="text-base font-semibold text-[hsl(var(--foreground))]">Inventario</h3>
+								<p class="mt-1 max-w-2xl text-sm text-[hsl(var(--muted-foreground))]">
+									Entradas de stock ordenadas por caducidad para consultar el estado real del almacen.
+								</p>
+							</div>
+							<div class="flex flex-wrap items-center gap-2">
 								<div class="inline-flex rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-1 shadow-sm">
 									<Button
 										type="button"
@@ -4655,50 +4813,12 @@
 									<Plus class="size-4" aria-hidden="true" />
 									Añadir stock
 								</Button>
+								<span class="inline-flex w-fit shrink-0 items-center gap-1.5 rounded-md border border-[hsl(var(--border))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]">
+									<Package class="size-3.5" aria-hidden="true" />
+									<span data-testid="stock-count">{loadingCountLabel(!stockSectionLoading(), filteredStockEntries().length)}</span>
+									entradas
+								</span>
 							</div>
-						</div>
-
-						{#if stockStatsOpen}
-							<section class="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3" aria-label="Metricas del stock" data-testid="stock-stats-panel">
-								<MetricCard
-									label="Stock total"
-									value={totalStockQuantityLabel()}
-									hint={data.productStats ? 'Suma de todas las entradas' : 'Cargando estadisticas'}
-								>
-									<Package class="size-4" aria-hidden="true" />
-								</MetricCard>
-								<MetricCard
-									label="Entradas"
-									value={loadingCountLabel(!stockSectionLoading(), stockEntriesCount())}
-									hint="Lotes registrados en el sistema"
-								>
-									<Package class="size-4" aria-hidden="true" />
-								</MetricCard>
-								<MetricCard
-									label="Antes caduca"
-									value={earliestExpirationLabel()}
-									hint={earliestExpirationHint()}
-									tone="accent"
-								>
-									<CalendarClock class="size-4" aria-hidden="true" />
-								</MetricCard>
-							</section>
-						{/if}
-					</section>
-
-					<section class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-sm">
-						<div class="flex flex-col gap-3 border-b border-[hsl(var(--border))] p-4 sm:flex-row sm:items-center sm:justify-between">
-							<div class="min-w-0">
-								<h3 class="text-base font-semibold text-[hsl(var(--foreground))]">Inventario</h3>
-								<p class="mt-1 max-w-2xl text-sm text-[hsl(var(--muted-foreground))]">
-									Entradas de stock ordenadas por caducidad para consultar el estado real del almacen.
-								</p>
-							</div>
-							<span class="inline-flex w-fit shrink-0 items-center gap-1.5 rounded-md border border-[hsl(var(--border))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]">
-								<Package class="size-3.5" aria-hidden="true" />
-								<span data-testid="stock-count">{loadingCountLabel(!stockSectionLoading(), filteredStockEntries().length)}</span>
-								entradas
-							</span>
 						</div>
 
 						{#if !stockSectionLoading() && data.stockEntries.length > 0}
@@ -4783,9 +4903,6 @@
 													<td class="px-3 py-3 text-right align-top tabular-nums">{formatDate(stockEntry.entryDate)}</td>
 													<td class="px-4 py-3 align-top">
 														<div class="flex justify-end gap-1">
-															<Button variant="ghost" size="icon" type="button" aria-label="Añadir cantidad" title="Añadir cantidad" onclick={() => openAddStockQuantityModal(stockEntry)}>
-																<Plus class="size-4" aria-hidden="true" />
-															</Button>
 															<Button
 																variant="ghost"
 																size="icon"
@@ -4836,9 +4953,6 @@
 												<span class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.2)] px-2 py-1">Entra {formatDate(stockEntry.entryDate)}</span>
 											</div>
 											<div class="flex justify-end gap-1">
-												<Button variant="ghost" size="icon" type="button" aria-label="Añadir cantidad" title="Añadir cantidad" onclick={() => openAddStockQuantityModal(stockEntry)}>
-													<Plus class="size-4" aria-hidden="true" />
-												</Button>
 												<Button
 													variant="ghost"
 													size="icon"
@@ -4898,11 +5012,7 @@
 													<dd class="mt-1 font-medium tabular-nums">{formatNumber(stockEntry.quantity)}</dd>
 												</div>
 											</dl>
-											<div class="grid grid-cols-3 gap-2">
-												<Button variant="secondary" size="sm" type="button" onclick={() => openAddStockQuantityModal(stockEntry)}>
-													<Plus class="size-4" aria-hidden="true" />
-													Añadir
-												</Button>
+											<div class="grid grid-cols-2 gap-2">
 												<Button
 													variant="secondary"
 													size="sm"
@@ -4929,22 +5039,40 @@
 									{/each}
 								</div>
 							{/if}
-						{/if}
-					</section>
-				</section>
+							{/if}
+									</section>
+						</section>
 
-				{:else if currentSection === 'planning'}
+					{:else if currentSection === 'planning'}
 					{@const activeMenu = data.proposedWeekMenu}
 					<section id="planning" class="space-y-4">
 						<div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
 							<div class="min-w-0">
-								<div class="flex flex-wrap items-center gap-2">
+								<div class="flex flex-wrap items-center gap-3">
 									<h2 class="text-2xl font-semibold tracking-tight text-[hsl(var(--foreground))]">Planificación</h2>
 									{#if activeMenu}
 										<span class="inline-flex w-fit items-center gap-1.5 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]" data-testid="week-date-range">
 											<CalendarClock class="size-3.5" aria-hidden="true" />
 											{weekDateRangeLabel(activeMenu.startDate, activeMenu.endDate)}
 										</span>
+									{/if}
+									{#if planningMenusForSelector().length > 0}
+										<label class="min-w-0">
+											<span class="sr-only">Periodo de planificación</span>
+											<select
+												class="h-10 w-full max-w-[18rem] cursor-pointer rounded-md border border-[hsl(var(--input))] bg-[hsl(var(--card))] px-3 pr-8 text-sm text-[hsl(var(--foreground))] shadow-sm transition-colors focus:border-[hsl(var(--ring))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--ring)/0.14)] disabled:cursor-not-allowed disabled:bg-[hsl(var(--muted))] disabled:opacity-70"
+												value={selectedPlanningMenuId ?? ''}
+												onchange={(event) => void selectPlanningMenu(Number((event.currentTarget as HTMLSelectElement).value))}
+												disabled={!data.backendAvailable}
+												data-testid="planning-menu-selector"
+												aria-label="Periodo de planificación"
+											>
+												<option value="" disabled>Selecciona un periodo</option>
+												{#each planningMenusForSelector() as menu (menu.id)}
+													<option value={menu.id}>{menu.label}</option>
+												{/each}
+											</select>
+										</label>
 									{/if}
 								</div>
 								<p class="mt-1 max-w-2xl text-sm leading-6 text-[hsl(var(--muted-foreground))]">
@@ -4965,35 +5093,8 @@
 							</div>
 						</div>
 
-						{#if planningMenus.length > 0}
-							<section class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4 shadow-sm">
-								<div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(260px,360px)] lg:items-end">
-									<div class="min-w-0">
-										<h3 class="flex items-center gap-2 text-sm font-semibold text-[hsl(var(--foreground))]">
-											<LayoutList class="size-4 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
-											Planificaciones
-										</h3>
-										<p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">
-											{planningMenus.length} planificaciones cargadas desde el backend.
-										</p>
-									</div>
-									<label class="block min-w-0">
-										<span class={fieldLabelClass}>Planificación activa</span>
-										<select
-											class={inputClass}
-											value={selectedPlanningMenuId ?? ''}
-											onchange={(event) => void selectPlanningMenu(Number((event.currentTarget as HTMLSelectElement).value))}
-											disabled={!data.backendAvailable}
-											data-testid="planning-menu-selector"
-										>
-											<option value="" disabled>Selecciona una planificación</option>
-											{#each planningMenus as menu (menu.id)}
-												<option value={menu.id}>{menu.label}</option>
-											{/each}
-										</select>
-									</label>
-								</div>
-							</section>
+						{#if planningMenusForSelector().length > 0}
+							<!-- selector moved into the header -->
 						{/if}
 
 						{#if !data.proposedWeekMenuLoaded}
@@ -5025,148 +5126,64 @@
 								</div>
 							</div>
 						{:else}
-							{@const weekSummary = weekPlanningSummary()}
-							{@const weekDayList = weekDays()}
-
-							<section class="grid gap-3 md:grid-cols-2 xl:grid-cols-4" aria-label="Metricas de la planificacion">
-								<div data-testid="week-planned-days-card">
-									<MetricCard label="Dias planificados" value={String(weekSummary.plannedDays)} hint="Dias ya guardados">
-										<LayoutList class="size-4" aria-hidden="true" />
-									</MetricCard>
-								</div>
-								<div data-testid="week-calories-card">
-									<MetricCard
-										label="Calorias"
-										value={formatNumber(weekSummary.calories.averagePerPlannedDay)}
-										hint={weekSummary.plannedDays > 0 && weekSummary.calories.maxDay && weekSummary.calories.minDay ? `Media por dia. Max ${formatShortDate(weekSummary.calories.maxDay.date)} ${formatNumber(weekSummary.calories.maxDay.calories)} kcal · Min ${formatShortDate(weekSummary.calories.minDay.date)} ${formatNumber(weekSummary.calories.minDay.calories)} kcal` : 'Sin dias planificados'}
-									>
-										<Flame class="size-4" aria-hidden="true" />
-									</MetricCard>
-								</div>
-								<div data-testid="week-distinct-products-card">
-									<MetricCard label="Productos distintos" value={String(weekSummary.distinctProducts)} hint="Variedad de productos" tone="accent">
-										<Package class="size-4" aria-hidden="true" />
-									</MetricCard>
-								</div>
-								<div data-testid="week-cost-card">
-									<MetricCard label="Coste estimado" value={formatCurrency(weekSummary.estimatedCost)} hint="Stock disponible y precio por defecto">
-										<Database class="size-4" aria-hidden="true" />
-									</MetricCard>
-								</div>
-							</section>
-
-							{#if activeMenu.nutritionalRules}
-								<NutritionalEvaluationPanel evaluation={activeMenu.nutritionalRules} />
-							{/if}
-
-							<section class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-sm" data-testid="week-stock-summary">
-								<div class="flex flex-col gap-3 border-b border-[hsl(var(--border))] p-4 sm:flex-row sm:items-center sm:justify-between">
-									<div class="min-w-0">
-										<h3 class="text-base font-semibold text-[hsl(var(--foreground))]">Stock necesario</h3>
-										<p class="mt-1 max-w-2xl text-sm text-[hsl(var(--muted-foreground))]">
-											Resumen de unidades necesarias por producto, su cobertura real con el stock actual y el coste estimado del faltante con el precio por defecto.
-										</p>
-									</div>
-									<span class="inline-flex w-fit shrink-0 items-center gap-1.5 rounded-md border border-[hsl(var(--border))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]">
-										<Package class="size-3.5" aria-hidden="true" />
-										{weekSummary.requirements.length} productos
-									</span>
-								</div>
-								{#if weekSummary.requirements.length === 0}
-									<div class="p-8 text-center">
-										<div class="mx-auto grid size-10 place-items-center rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
-											<Package class="size-5 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
-										</div>
-										<h4 class="mt-3 text-sm font-semibold text-[hsl(var(--foreground))]">Aun no hay productos planificados</h4>
-										<p class="mx-auto mt-1 max-w-sm text-sm text-[hsl(var(--muted-foreground))]">
-											Añade menús diarios para calcular cuantas unidades de cada producto se necesitaran.
-										</p>
-									</div>
-								{:else}
-									<div class="hidden overflow-x-auto md:block">
-										<table class="w-full table-fixed text-sm">
-											<colgroup>
-												<col class="w-[34%]" />
-												<col class="w-[14%]" />
-												<col class="w-[14%]" />
-												<col class="w-[14%]" />
-												<col class="w-[24%]" />
-											</colgroup>
-											<thead class="bg-[hsl(var(--secondary))] text-xs text-[hsl(var(--muted-foreground))]">
-												<tr class="border-b border-[hsl(var(--border))]">
-													<th class="px-4 py-2.5 text-left font-medium">Producto</th>
-													<th class="px-3 py-2.5 text-right font-medium">Necesarias</th>
-													<th class="px-3 py-2.5 text-right font-medium">Disponibles</th>
-													<th class="px-3 py-2.5 text-right font-medium">Faltan</th>
-													<th class="px-4 py-2.5 text-right font-medium">Coste estimado</th>
-												</tr>
-											</thead>
-											<tbody class="divide-y divide-[hsl(var(--border))]">
-												{#each weekSummary.requirements as requirement (requirement.productId)}
-													<tr class={`transition-colors hover:bg-[hsl(var(--secondary)/0.55)] ${requirement.missingUnits > 0 ? 'bg-[hsl(var(--destructive)/0.04)]' : ''}`} data-testid={`week-stock-row-${requirement.productId}`}>
-														<td class="px-4 py-3 align-top">
-															<div class="min-w-0">
-																<p class="truncate font-medium text-[hsl(var(--foreground))]">{requirement.productName}</p>
-																<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Producto #{requirement.productId}</p>
-															</div>
-														</td>
-														<td class="px-3 py-3 text-right align-top tabular-nums">{formatNumber(requirement.requiredUnits)}</td>
-														<td class="px-3 py-3 text-right align-top tabular-nums">{formatNumber(requirement.availableUnits)}</td>
-														<td class="px-3 py-3 text-right align-top tabular-nums">{formatNumber(requirement.missingUnits)}</td>
-														<td class="px-4 py-3 text-right align-top tabular-nums">{formatCurrency(requirement.estimatedCost)}</td>
-													</tr>
-												{/each}
-											</tbody>
-										</table>
-									</div>
-									<div class="divide-y divide-[hsl(var(--border))] md:hidden">
-										{#each weekSummary.requirements as requirement (requirement.productId)}
-											<article class={`space-y-4 p-4 ${requirement.missingUnits > 0 ? 'bg-[hsl(var(--destructive)/0.04)]' : ''}`} data-testid={`week-stock-card-${requirement.productId}`}>
-												<div class="flex items-start justify-between gap-3">
-													<div class="min-w-0">
-														<h4 class="truncate text-sm font-semibold text-[hsl(var(--foreground))]">{requirement.productName}</h4>
-														<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Producto #{requirement.productId}</p>
-													</div>
-													<span class={`shrink-0 rounded-md px-2 py-1 text-xs font-medium ${requirement.missingUnits > 0 ? 'bg-[hsl(var(--destructive)/0.1)] text-[hsl(var(--destructive))]' : 'bg-[hsl(var(--primary)/0.08)] text-[hsl(var(--primary))]'}`}>
-														{requirement.missingUnits > 0 ? 'Falta stock' : 'Cubierto'}
-													</span>
-												</div>
-												<dl class="grid grid-cols-2 gap-2 text-sm">
-													<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-2.5">
-														<dt class="text-xs text-[hsl(var(--muted-foreground))]">Necesarias</dt>
-														<dd class="mt-1 font-medium tabular-nums">{formatNumber(requirement.requiredUnits)}</dd>
-													</div>
-													<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-2.5">
-														<dt class="text-xs text-[hsl(var(--muted-foreground))]">Disponibles</dt>
-														<dd class="mt-1 font-medium tabular-nums">{formatNumber(requirement.availableUnits)}</dd>
-													</div>
-													<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-2.5">
-														<dt class="text-xs text-[hsl(var(--muted-foreground))]">Faltan</dt>
-														<dd class="mt-1 font-medium tabular-nums">{formatNumber(requirement.missingUnits)}</dd>
-													</div>
-													<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-2.5">
-														<dt class="text-xs text-[hsl(var(--muted-foreground))]">Coste estimado</dt>
-														<dd class="mt-1 font-medium tabular-nums">{formatCurrency(requirement.estimatedCost)}</dd>
-													</div>
-												</dl>
-											</article>
-										{/each}
-									</div>
-								{/if}
-							</section>
-
 							<section class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-sm">
-								<div class="flex flex-col gap-3 border-b border-[hsl(var(--border))] p-4 sm:flex-row sm:items-center sm:justify-between">
-									<div class="min-w-0">
-										<h3 class="text-base font-semibold text-[hsl(var(--foreground))]">Dias de la semana</h3>
-										<p class="mt-1 max-w-2xl text-sm text-[hsl(var(--muted-foreground))]">Las semanas se pueden dejar vacias y completar dia a dia.</p>
+								<div class="border-b border-[hsl(var(--border))] p-4">
+									<div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+										<div class="min-w-0">
+											<div class="flex flex-wrap items-center gap-2">
+												<h3 class="text-base font-semibold text-[hsl(var(--foreground))]">Dias de la semana</h3>
+												<span class="inline-flex w-fit shrink-0 items-center gap-1.5 rounded-md border border-[hsl(var(--border))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]">
+													<CalendarClock class="size-3.5" aria-hidden="true" />
+														{planningDayList.length} dias
+												</span>
+											</div>
+											<p class="mt-1 max-w-2xl text-sm text-[hsl(var(--muted-foreground))]">Las semanas se pueden dejar vacias y completar dia a dia.</p>
+											<Button type="button" variant="secondary" onclick={openWeekStockDialog} disabled={!activeMenu} class="mt-3 w-fit">
+												<Package class="size-4" aria-hidden="true" />
+												Ver stock
+											</Button>
+										</div>
+										<div class="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+											<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.18)] px-3 py-2 shadow-sm" data-testid="week-planned-days-card">
+												<div class="flex items-center gap-2 text-xs text-[hsl(var(--muted-foreground))]">
+													<LayoutList class="size-3.5" aria-hidden="true" />
+													<span>Dias planificados</span>
+												</div>
+												<p class="mt-1 text-xl font-semibold tabular-nums text-[hsl(var(--foreground))]">{planningSummary.plannedDays}</p>
+											</div>
+											<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.18)] px-3 py-2 shadow-sm" data-testid="week-calories-card">
+												<div class="flex items-center gap-2 text-xs text-[hsl(var(--muted-foreground))]">
+													<Flame class="size-3.5" aria-hidden="true" />
+													<span>Calorias</span>
+												</div>
+												<p class="mt-1 text-xl font-semibold tabular-nums text-[hsl(var(--foreground))]">{formatNumber(planningSummary.calories.averagePerPlannedDay)}</p>
+												<p class="mt-0.5 text-[11px] leading-4 text-[hsl(var(--muted-foreground))]">
+													{planningSummary.plannedDays > 0 && planningSummary.calories.maxDay && planningSummary.calories.minDay ? `Media por dia. Max ${formatShortDate(planningSummary.calories.maxDay.date)} ${formatNumber(planningSummary.calories.maxDay.calories)} kcal · Min ${formatShortDate(planningSummary.calories.minDay.date)} ${formatNumber(planningSummary.calories.minDay.calories)} kcal` : 'Sin dias planificados'}
+												</p>
+											</div>
+											<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.18)] px-3 py-2 shadow-sm" data-testid="week-distinct-products-card">
+												<div class="flex items-center gap-2 text-xs text-[hsl(var(--muted-foreground))]">
+													<Package class="size-3.5" aria-hidden="true" />
+													<span>Productos distintos</span>
+												</div>
+												<p class="mt-1 text-xl font-semibold tabular-nums text-[hsl(var(--foreground))]">{planningSummary.distinctProducts}</p>
+											</div>
+											<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.18)] px-3 py-2 shadow-sm" data-testid="week-cost-card">
+												<div class="flex items-center gap-2 text-xs text-[hsl(var(--muted-foreground))]">
+													<Database class="size-3.5" aria-hidden="true" />
+													<span>Coste estimado</span>
+												</div>
+												<p class="mt-1 text-xl font-semibold tabular-nums text-[hsl(var(--foreground))]">{formatCurrency(planningSummary.estimatedCost)}</p>
+											</div>
+										</div>
 									</div>
-									<span class="inline-flex w-fit shrink-0 items-center gap-1.5 rounded-md border border-[hsl(var(--border))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]">
-										<CalendarClock class="size-3.5" aria-hidden="true" />
-										{weekDayList.length} dias
-									</span>
 								</div>
-								{#if data.proposedWeekMenuDayPartsLoaded && data.proposedWeekMenuDayParts.length === 0}
+									{#if activeMenu.nutritionalRules}
+										<div class="border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.16)] p-4">
+											<NutritionalEvaluationPanel evaluation={activeMenu.nutritionalRules} />
+										</div>
+									{/if}
+									{#if data.proposedWeekMenuDayPartsLoaded && data.proposedWeekMenuDayParts.length === 0}
 									<div class="flex flex-col gap-3 border-b border-[hsl(var(--accent)/0.3)] bg-[hsl(var(--accent)/0.08)] p-4 sm:flex-row sm:items-center sm:justify-between" role="alert" data-testid="week-day-parts-warning">
 										<div class="flex min-w-0 items-start gap-3">
 											<CircleAlert class="mt-0.5 size-5 shrink-0 text-[hsl(var(--accent))]" aria-hidden="true" />
@@ -5184,62 +5201,59 @@
 									</div>
 								{/if}
 								<div class="divide-y divide-[hsl(var(--border))]">
-									{#each weekDayList as date (date)}
+									{#each planningDayList as date (date)}
 										{@const day = proposedWeekMenuDay(date)}
 										<article class="space-y-4 p-4" data-testid={`week-day-card-${date}`}>
 											<div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
 												<div class="min-w-0">
 													<div class="flex flex-wrap items-center gap-2">
 														<h4 class="text-sm font-semibold text-[hsl(var(--foreground))]">{formatLongDate(date)}</h4>
-														<span class="rounded-md bg-[hsl(var(--secondary))] px-1.5 py-0.5 text-xs text-[hsl(var(--muted-foreground))]">{date}</span>
 													</div>
 													<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">{day ? `${day.sections.length} secciones · ${weekDayProductCount(day)} productos` : 'Sin menu todavía'}</p>
 												</div>
 												<div class="flex flex-wrap gap-2">
-													<Button type="button" variant="secondary" onclick={() => openWeekDayModal(date)} disabled={!data.backendAvailable || data.proposedWeekMenuDayParts.length === 0} data-testid={`week-day-action-${date}`}>
+													<Button
+														type="button"
+														variant="secondary"
+														class={day ? 'border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 focus-visible:ring-emerald-500' : ''}
+														onclick={() => openWeekDayModal(date)}
+														disabled={!data.backendAvailable || data.proposedWeekMenuDayParts.length === 0}
+														data-testid={`week-day-action-${date}`}
+													>
 														{day ? 'Editar menu' : 'Añadir menu'}
 													</Button>
 												</div>
 											</div>
 											{#if day}
-												{#if activeMenu.nutritionalRules}
-													<DailyNutritionalEvaluation values={day.nutritionalValues} rules={activeMenu.nutritionalRules} />
-												{:else}
-													<div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+													{#if activeMenu.nutritionalRules}
+														<DailyNutritionalEvaluation values={day.nutritionalValues} rules={activeMenu.nutritionalRules} />
+													{:else}
+														<div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
 														<MetricCard label="Calorias" value={formatNumber(day.nutritionalValues.calories)} hint="Total del dia"><Flame class="size-4" aria-hidden="true" /></MetricCard>
 														<MetricCard label="Carbos" value={formatNumber(day.nutritionalValues.carbohydrates)} hint="Total del dia"><Wheat class="size-4" aria-hidden="true" /></MetricCard>
 														<MetricCard label="Proteinas" value={formatNumber(day.nutritionalValues.proteins)} hint="Total del dia"><Drumstick class="size-4" aria-hidden="true" /></MetricCard>
 														<MetricCard label="Grasas" value={formatNumber(day.nutritionalValues.fats)} hint="Total del dia"><Droplets class="size-4" aria-hidden="true" /></MetricCard>
 													</div>
 												{/if}
-												<div class="space-y-3">
+												<div class="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
 													{#each day.sections as section}
-														<div class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.35)] p-3">
-															<div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+														<div class="flex min-h-[14rem] flex-col overflow-hidden rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.35)] p-3 lg:aspect-square">
+															<div class="flex items-start justify-between gap-3">
 																<div>
 																	<p class="text-sm font-medium text-[hsl(var(--foreground))]">{section.name}</p>
-																	<p class="text-xs text-[hsl(var(--muted-foreground))]">Orden {section.sortOrder}</p>
 																</div>
 																<p class="text-xs text-[hsl(var(--muted-foreground))]">{section.products.length} productos</p>
 															</div>
-															<div class="mt-3 grid gap-2">
+															<div class="mt-3 min-h-0 flex-1 space-y-2 overflow-auto pr-1">
 																{#each section.products as product}
-																	<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-3">
-																		<div class="flex items-start justify-between gap-3">
-																			<div class="min-w-0">
-																				<p class="truncate text-sm font-medium text-[hsl(var(--foreground))]">{product.productName}</p>
-																				<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Producto #{product.productId}</p>
-																			</div>
-																			<div class="text-right text-xs text-[hsl(var(--muted-foreground))]">
-																				<p>Orden {product.sortOrder}</p>
-																				<p class="mt-1 tabular-nums">
-																					{product.units} uds
-																					{#if product.grams}
-																						· {formatNumber(product.grams)} g
-																					{/if}
-																				</p>
-																			</div>
-																		</div>
+																	<div class="flex items-center justify-between gap-3 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-2.5 py-2">
+																		<p class="min-w-0 truncate text-xs font-medium text-[hsl(var(--foreground))]">{product.productName}</p>
+																		<p class="shrink-0 text-xs tabular-nums text-[hsl(var(--muted-foreground))]">
+																			{product.units} uds
+																			{#if product.grams}
+																				· {formatNumber(product.grams)} g
+																			{/if}
+																		</p>
 																	</div>
 																{/each}
 															</div>
@@ -5259,133 +5273,31 @@
 					</section>
 
 				{:else if currentSection === 'menus'}
-					{@const activeMenu = data.establishedWeekMenu}
-					{@const openMenus = inProgressMenus()}
 					<section id="menus" class="space-y-4">
 						<div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
 							<div class="min-w-0">
-								<div class="flex flex-wrap items-center gap-2">
-									<h2 class="text-2xl font-semibold tracking-tight text-[hsl(var(--foreground))]">Menú</h2>
-									{#if activeMenu}
-										<span class="inline-flex w-fit items-center gap-1.5 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]" data-testid="menu-date-range">
-											<CalendarClock class="size-3.5" aria-hidden="true" />
-											{weekDateRangeLabel(activeMenu.startDate, activeMenu.endDate)}
-										</span>
-									{/if}
-								</div>
+								<h2 class="text-2xl font-semibold tracking-tight text-[hsl(var(--foreground))]">Menú</h2>
 								<p class="mt-1 max-w-2xl text-sm leading-6 text-[hsl(var(--muted-foreground))]">
-									Consulta los snapshots que siguen abiertos, su stock consumido y las acciones pendientes antes del cierre.
+									Consulta las comidas planificadas por período de menú o por un rango de fechas.
 								</p>
 							</div>
 							<div class="flex flex-wrap gap-2 sm:shrink-0">
-								<Button type="button" variant="secondary" onclick={() => setSection('closed-menus')}>
-									<CircleCheck class="size-4" aria-hidden="true" />
-									Ver cerrados
-								</Button>
 								<Button type="button" variant="secondary" onclick={() => setSection('planning')}>
 									<CalendarClock class="size-4" aria-hidden="true" />
 									Ir a planificación
 								</Button>
-								{#if activeMenu && planningStateByMenuId(activeMenu.id) === 'ESTABLISHED'}
-									<Button type="button" variant="secondary" onclick={() => void undoActiveEstablishedWeekMenu()} disabled={!data.backendAvailable}>
-										<X class="size-4" aria-hidden="true" />
-										Deshacer menú
-									</Button>
-								{/if}
 							</div>
 						</div>
 
-						{#if openMenus.length > 0}
-							<section class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4 shadow-sm">
-								<div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(260px,360px)] lg:items-end">
-									<div class="min-w-0">
-										<h3 class="flex items-center gap-2 text-sm font-semibold text-[hsl(var(--foreground))]">
-											<LayoutList class="size-4 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
-											Menús abiertos
-										</h3>
-										<p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">
-											{openMenus.length} menús cargados desde el backend.
-										</p>
-									</div>
-									<label class="block min-w-0">
-										<span class={fieldLabelClass}>Menú activo</span>
-										<select
-											class={inputClass}
-											value={selectedMenuId ?? ''}
-											onchange={(event) => void selectMenu(Number((event.currentTarget as HTMLSelectElement).value))}
-											disabled={!data.backendAvailable}
-											data-testid="menu-selector"
-										>
-											<option value="" disabled>Selecciona un menú</option>
-											{#each openMenus as menu (menu.id)}
-												<option value={menu.id}>{menuLabel(menu)}</option>
-											{/each}
-										</select>
-									</label>
-								</div>
-							</section>
-						{/if}
-
-						{#if !data.establishedWeekMenuLoaded}
-							<div class="grid place-items-center rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-8 py-16 text-center shadow-sm">
-								<div class="grid size-12 place-items-center rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
-									<div class="size-5 animate-spin rounded-full border-2 border-[hsl(var(--muted-foreground))] border-t-transparent" aria-hidden="true"></div>
-								</div>
-								<h3 class="mt-4 text-sm font-semibold text-[hsl(var(--foreground))]">Cargando menú</h3>
-								<p class="mt-1 max-w-sm text-sm text-[hsl(var(--muted-foreground))]">
-									Estamos consultando el snapshot abierto seleccionado y sus datos de cierre.
-								</p>
-							</div>
-						{:else if !activeMenu || planningStateByMenuId(activeMenu.id) !== 'ESTABLISHED'}
-							<div class="grid gap-4 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-8 shadow-sm">
-								<div class="mx-auto grid size-12 place-items-center rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
-									<CircleCheck class="size-5 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
-								</div>
-								<div class="text-center">
-									<h3 class="text-base font-semibold text-[hsl(var(--foreground))]">No hay un menú en curso</h3>
-									<p class="mt-1 text-sm leading-6 text-[hsl(var(--muted-foreground))]">
-										Selecciona un menú abierto para ver su cierre, stock consumido y lista de compra.
-									</p>
-								</div>
-							</div>
-						{:else}
-							<MenuCompletionPanel
-								menuId={activeMenu.id}
-								payerUsername={activeMenu.payerUsername}
-								currentUserId={authSession!.userId}
-								authorization={authorizationHeader(authSession!)}
-								initialShoppingList={activeMenu.shoppingList}
-								initialUsedStock={activeMenu.usedStock}
-								onClosed={async () => {
-									selectedClosedMenuId = activeMenu.id;
-									await refreshMenusView(authSession, true);
-									await refreshClosedMenusView(authSession, true);
-									setSection('closed-menus');
-								}}
-							/>
-							<section class="grid gap-3 md:grid-cols-2 xl:grid-cols-4" aria-label="Metricas del menu">
-								<div data-testid="menu-planned-days-card">
-									<MetricCard label="Dias planificados" value={String(activeMenu.stockSummary.plannedDays)} hint="Dias ya guardados">
-										<LayoutList class="size-4" aria-hidden="true" />
-									</MetricCard>
-								</div>
-								<div data-testid="menu-calories-card">
-									<MetricCard label="Calorias" value={formatNumber(activeMenu.nutritionalValues.calories)} hint="Total del menú">
-										<Flame class="size-4" aria-hidden="true" />
-									</MetricCard>
-								</div>
-								<div data-testid="menu-distinct-products-card">
-									<MetricCard label="Productos distintos" value={String(activeMenu.stockSummary.distinctProducts)} hint="Variedad de productos" tone="accent">
-										<Package class="size-4" aria-hidden="true" />
-									</MetricCard>
-								</div>
-								<div data-testid="menu-cost-card">
-									<MetricCard label="Coste estimado" value={formatCurrency(activeMenu.stockSummary.estimatedCost)} hint="Stock aplicado y coste real">
-										<Database class="size-4" aria-hidden="true" />
-									</MetricCard>
-								</div>
-							</section>
-						{/if}
+						<MenuMealsTable
+							menus={data.menus}
+							loaded={data.menusLoaded}
+							menuStateByMenuId={planningStateByMenuId}
+							selectedMenuId={selectedMenuId}
+							onSelectMenu={selectMenu}
+							onEditMenu={editEstablishedMenu}
+							onDeleteMenu={undoEstablishedMenu}
+						/>
 					</section>
 
 				{:else if currentSection === 'closed-menus'}
@@ -5423,11 +5335,7 @@
 							<section class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4 shadow-sm">
 								<div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(260px,360px)] lg:items-end">
 									<div class="min-w-0">
-										<h3 class="flex items-center gap-2 text-sm font-semibold text-[hsl(var(--foreground))]">
-											<LayoutList class="size-4 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
-											Historial de menús
-										</h3>
-										<p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">
+										<p class="text-sm text-[hsl(var(--muted-foreground))]">
 											{closedMenuList.length} menús cerrados cargados desde el backend.
 										</p>
 									</div>
@@ -5637,9 +5545,9 @@
 													<p class="text-xs text-[hsl(var(--muted-foreground))]">Orden {dayPart.sortOrder}</p>
 												</article>
 											{/each}
-										</div>
-									{/if}
-								</section>
+									</div>
+								{/if}
+							</section>
 							</section>
 
 					{:else if currentSection === 'supermarkets'}
@@ -5650,27 +5558,67 @@
 						<NutritionalRulesPanel authorization={authorizationHeader(authSession!)} />
 					{:else}
 						<section id="recipes" class="space-y-4">
-					<div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-						<div class="min-w-0">
-							<h2 class="text-2xl font-semibold tracking-tight text-[hsl(var(--foreground))]">Recetas</h2>
-							<p class="mt-1 max-w-2xl text-sm leading-6 text-[hsl(var(--muted-foreground))]">
-								Combina productos existentes, calcula nutrientes y genera productos derivados desde una sola vista.
-							</p>
+						<div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+							<div class="min-w-0">
+								<h2 class="text-2xl font-semibold tracking-tight text-[hsl(var(--foreground))]">Recetas</h2>
+								<p class="mt-1 max-w-2xl text-sm leading-6 text-[hsl(var(--muted-foreground))]">
+									Combina productos existentes, calcula nutrientes y genera productos derivados desde una sola vista.
+								</p>
+							</div>
+							<div class="flex flex-wrap gap-2 sm:shrink-0 sm:justify-end">
+								<Button
+									type="button"
+									variant="secondary"
+									size="sm"
+									onclick={toggleRecipeStatsOpen}
+									aria-pressed={recipeStatsOpen}
+									data-testid="recipe-stats-toggle"
+								>
+									<Eye class="size-4" aria-hidden="true" />
+									{recipeStatsOpen ? 'Ocultar stats' : 'Ver stats'}
+								</Button>
+								<div class="inline-flex rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-1 shadow-sm">
+									<Button
+										type="button"
+										size="sm"
+										variant={recipeViewMode === 'list' ? 'primary' : 'ghost'}
+										class={recipeViewMode === 'list' ? '' : 'text-[hsl(var(--muted-foreground))]'}
+										onclick={() => setRecipeViewMode('list')}
+										aria-pressed={recipeViewMode === 'list'}
+										data-testid="recipe-view-list"
+									>
+										<LayoutList class="size-4" aria-hidden="true" />
+										Lista
+									</Button>
+									<Button
+										type="button"
+										size="sm"
+										variant={recipeViewMode === 'block' ? 'primary' : 'ghost'}
+										class={recipeViewMode === 'block' ? '' : 'text-[hsl(var(--muted-foreground))]'}
+										onclick={() => setRecipeViewMode('block')}
+										aria-pressed={recipeViewMode === 'block'}
+										data-testid="recipe-view-block"
+									>
+										<SlidersHorizontal class="size-4" aria-hidden="true" />
+										Bloque
+									</Button>
+								</div>
+								<Button
+									type="button"
+									class="sm:shrink-0"
+									onclick={openCreateRecipeModal}
+									disabled={!data.backendAvailable}
+									aria-label="Añadir receta"
+									data-testid="open-create-recipe-modal"
+								>
+									<Plus class="size-4" aria-hidden="true" />
+									Añadir receta
+								</Button>
+							</div>
 						</div>
-						<Button
-							type="button"
-							class="sm:shrink-0"
-							onclick={openCreateRecipeModal}
-							disabled={!data.backendAvailable}
-							aria-label="Añadir receta"
-							data-testid="open-create-recipe-modal"
-						>
-							<Plus class="size-4" aria-hidden="true" />
-							Añadir receta
-						</Button>
-					</div>
 
-					<section class="grid gap-3 md:grid-cols-2 xl:grid-cols-4" aria-label="Metricas de recetas">
+						{#if recipeStatsOpen}
+							<section class="grid gap-3 md:grid-cols-2 xl:grid-cols-4" aria-label="Metricas de recetas">
 						<MetricCard
 							label="Recetas activas"
 							value={String(data.recipeStats?.activeRecipes ?? data.recipes.length)}
@@ -5702,8 +5650,9 @@
 							<Package class="size-4" aria-hidden="true" />
 						</MetricCard>
 					</section>
+				{/if}
 
-					<RecipeFilters
+				<RecipeFilters
 						filters={recipeFilters}
 						onChange={updateRecipeFilters}
 						onClear={clearRecipeFilters}
@@ -5711,12 +5660,12 @@
 					/>
 
 					<section class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-sm">
-						<div class="flex flex-col gap-3 border-b border-[hsl(var(--border))] p-4 sm:flex-row sm:items-center sm:justify-between">
-							<div class="min-w-0">
-								<h3 class="text-base font-semibold text-[hsl(var(--foreground))]">Biblioteca de recetas</h3>
-								<p class="mt-1 max-w-2xl text-sm text-[hsl(var(--muted-foreground))]">
-									Define ingredientes, instrucciones y el producto derivado que quieras exponer.
-								</p>
+							<div class="flex flex-col gap-3 border-b border-[hsl(var(--border))] p-4 sm:flex-row sm:items-center sm:justify-between">
+								<div class="min-w-0">
+									<h3 class="text-base font-semibold text-[hsl(var(--foreground))]">Biblioteca de recetas</h3>
+									<p class="mt-1 max-w-2xl text-sm text-[hsl(var(--muted-foreground))]">
+										Define ingredientes, instrucciones y el producto derivado que quieras exponer.
+									</p>
 							</div>
 								<span class="inline-flex w-fit shrink-0 items-center gap-1.5 rounded-md border border-[hsl(var(--border))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]">
 									<BookOpen class="size-3.5" aria-hidden="true" />
@@ -5724,10 +5673,10 @@
 									{recipeCountLabel()}
 								</span>
 								cargadas
-							</span>
-						</div>
+									</span>
+									</div>
 
-						{#if recipesSectionLoading()}
+								{#if recipesSectionLoading()}
 							<div class="grid place-items-center px-8 py-16 text-center">
 								<div class="grid size-12 place-items-center rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
 									<div
@@ -5740,7 +5689,7 @@
 									Estamos esperando al backend para mostrar la biblioteca.
 								</p>
 							</div>
-						{:else if data.recipes.length === 0}
+							{:else if data.recipes.length === 0}
 							<div class="p-8 text-center">
 								<div class="mx-auto grid size-10 place-items-center rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
 									<BookOpen class="size-5 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
@@ -5784,8 +5733,8 @@
 								</div>
 							</div>
 						{:else}
-							<div data-testid="recipe-list">
-								<div class="hidden overflow-x-auto md:block">
+								<div data-testid="recipe-list">
+									<div class={recipeViewMode === 'list' ? 'overflow-x-auto' : 'hidden'}>
 									<table class="w-full table-fixed text-sm">
 										<colgroup>
 											<col class="w-[34%]" />
@@ -5888,7 +5837,7 @@
 									</table>
 								</div>
 
-								<div class="divide-y divide-[hsl(var(--border))] md:hidden">
+									<div class={recipeViewMode === 'block' ? 'divide-y divide-[hsl(var(--border))]' : 'hidden'}>
 									{#each filteredRecipes() as recipe (recipe.id)}
 										<article class="space-y-4 p-4">
 											<div class="flex min-w-0 items-start gap-3">
@@ -6007,17 +5956,17 @@
 											{data.recipes.length} de {recipesTotalElements} recetas cargadas
 										</p>
 									{/if}
-								</div>
-							</div>
-						{/if}
-					</section>
-					</section>
-				{/if}
-			{/if}
-				</main>
-			</div>
+											</div>
+										</div>
+									{/if}
+									</section>
+								</section>
+								{/if}
+							{/if}
+							</main>
+					</div>
 
-	{#if sessionExpiredDialogOpen}
+			{#if sessionExpiredDialogOpen}
 		<div
 			class="fixed inset-0 z-50 flex items-center justify-center bg-[hsl(var(--background)/0.72)] px-4 backdrop-blur-sm"
 			role="presentation"
@@ -6150,9 +6099,9 @@
 									{/if}
 								</label>
 							</div>
-						</section>
+							</section>
 
-						<section class="space-y-3 border-t border-[hsl(var(--border))] pt-5">
+							<section class="space-y-3 border-t border-[hsl(var(--border))] pt-5">
 							<div><h3 class="text-sm font-semibold">Supermercados</h3><p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Selecciona dónde está disponible el producto.</p></div>
 							{#if data.supermarkets.length === 0}<p class="text-sm text-[hsl(var(--muted-foreground))]">No hay supermercados configurados.</p>{:else}<div class="grid gap-2 sm:grid-cols-2">{#each data.supermarkets as supermarket (supermarket.id)}<label class="flex items-center gap-2 rounded-md border p-3 text-sm"><input type="checkbox" value={String(supermarket.id)} bind:group={createDraft.supermarketIds} /><span class="min-w-0 truncate">{supermarket.name}</span></label>{/each}</div>{/if}
 						</section>
@@ -6262,12 +6211,12 @@
 											onclick={() => clearPhotoSelection('create')}
 										>
 											Quitar imagen
-										</Button>
+											</Button>
+										</div>
 									</div>
-								</div>
-							{/if}
-						</section>
-					</fieldset>
+								{/if}
+							</section>
+						</fieldset>
 
 					<div class="flex flex-col-reverse gap-2 border-t border-[hsl(var(--border))] pt-5 sm:flex-row sm:justify-end">
 						<Button variant="secondary" type="button" onclick={closeModal}>Cancelar</Button>
@@ -6727,15 +6676,6 @@
 						</Button>
 					</div>
 				</form>
-			</div>
-		</div>
-	{/if}
-
-	{#if modalMode === 'stock-add' && adjustingStockEntry}
-		<div class="fixed inset-0 z-30 flex items-start justify-center overflow-y-auto bg-black/30 p-3 backdrop-blur-sm sm:p-4" role="presentation">
-			<div class="mt-[10vh] w-full max-w-md rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-xl" role="dialog" aria-modal="true" aria-labelledby="add-stock-title" data-testid="add-stock-quantity-modal">
-				<div class="flex items-start justify-between gap-4 border-b p-5"><div class="min-w-0"><h2 id="add-stock-title" class="text-lg font-semibold">Añadir cantidad</h2><p class="mt-1 break-words text-sm text-[hsl(var(--muted-foreground))]">Suma unidades a la entrada de {adjustingStockEntry.productName}.</p></div><Button variant="ghost" size="icon" type="button" onclick={closeModal} aria-label="Cerrar modal"><X class="size-4" /></Button></div>
-				<form class="space-y-5 p-5" onsubmit={submitAddStockQuantity}><label class="block"><span class={fieldLabelClass}>Cantidad que se añade</span><input class={inputClass} type="number" min="0.01" step="any" inputmode="decimal" bind:value={stockAdjustmentQuantity} data-testid="stock-add-quantity" required /></label><div class="flex flex-col-reverse gap-2 border-t pt-5 sm:flex-row sm:justify-end"><Button variant="secondary" type="button" onclick={closeModal}>Cancelar</Button><Button type="submit" disabled={!data.backendAvailable}><Plus class="size-4" /> Añadir cantidad</Button></div></form>
 			</div>
 		</div>
 	{/if}
@@ -7414,28 +7354,8 @@
 							<div class="space-y-4">
 								{#each weekDayDraft.sections as section, sectionIndex}
 									<div class="space-y-4 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.25)] p-4">
-										<div class="flex flex-wrap items-start justify-between gap-3">
-											<div>
-												<h4 class="text-sm font-semibold text-[hsl(var(--foreground))]">Seccion {sectionIndex + 1}</h4>
-												<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
-													El orden visual lo determina la configuracion de la parte del dia.
-												</p>
-											</div>
-											<Button
-												type="button"
-												variant="ghost"
-												size="sm"
-												disabled={weekDayDraft.sections.length <= 1}
-												onclick={() => removeWeekDaySection(sectionIndex)}
-											>
-												<Trash2 class="size-4" aria-hidden="true" />
-												Eliminar seccion
-											</Button>
-										</div>
-
-										<div class="grid gap-4">
-											<label class="block min-w-0">
-												<span class={fieldLabelClass}>Parte del dia</span>
+										<div class="flex flex-wrap items-end gap-3">
+											<label class="block min-w-0 flex-1">
 												<select
 													class={inputClass}
 													name="dayPartId"
@@ -7449,15 +7369,19 @@
 												</select>
 												{#if weekDayErrors().sectionErrors?.[sectionIndex]?.dayPartId}
 													<small class={fieldErrorClass}>{weekDayErrors().sectionErrors?.[sectionIndex]?.dayPartId}</small>
-												{:else if section.dayPartId}
-													{@const selectedDayPart = data.proposedWeekMenuDayParts.find((dayPart) => String(dayPart.id) === section.dayPartId)}
-													{#if selectedDayPart?.description}
-														<small class="mt-1.5 block text-xs text-[hsl(var(--muted-foreground))]">
-															{selectedDayPart.description}
-														</small>
-													{/if}
 												{/if}
 											</label>
+											<Button
+												type="button"
+												variant="ghost"
+												size="sm"
+												disabled={weekDayDraft.sections.length <= 1}
+												onclick={() => removeWeekDaySection(sectionIndex)}
+												class="shrink-0"
+											>
+												<Trash2 class="size-4" aria-hidden="true" />
+												Eliminar seccion
+											</Button>
 										</div>
 
 										<div class="space-y-3">
@@ -7610,7 +7534,7 @@
 				<div class="flex items-start justify-between gap-4 border-b border-[hsl(var(--border))] p-5">
 					<div class="min-w-0">
 						<h2 id="week-publish-title" class="text-lg font-semibold text-[hsl(var(--foreground))]">Establecer semana</h2>
-						<p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">Elige pagador y modo de asignación del stock.</p>
+						<p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">Elige pagador y personas consumidoras. El stock se asignará automáticamente.</p>
 					</div>
 					<Button variant="ghost" size="icon" type="button" onclick={closeModal} aria-label="Cerrar modal">
 						<X class="size-4" aria-hidden="true" />
@@ -7631,74 +7555,41 @@
 									{/each}
 								</select>
 							</label>
-							<div class="space-y-2">
-								<span class={fieldLabelClass}>Asignación</span>
-								<div class="flex gap-2">
-									<Button type="button" variant={publishAllocationMode === 'auto' ? 'primary' : 'secondary'} onclick={() => (publishAllocationMode = 'auto')}>Automática</Button>
-									<Button type="button" variant={publishAllocationMode === 'manual' ? 'primary' : 'secondary'} onclick={() => (publishAllocationMode = 'manual')}>Manual</Button>
-								</div>
+							<div class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.25)] p-4">
+								<h3 class="text-sm font-semibold">Consumo compartido</h3>
+								<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
+									Selecciona las personas que consumirán la semana. Cada una contará para la asignación automática del stock.
+								</p>
 							</div>
 						</section>
-						{#if publishAllocationMode === 'manual'}
-							<section class="space-y-3 rounded-lg border p-4">
+						<section class="space-y-3 rounded-lg border p-4">
+							<div class="flex flex-wrap items-center justify-between gap-2">
 								<div>
-									<h3 class="text-sm font-semibold">Asignación manual por entrada de stock</h3>
-									<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Solo se enviarán las entradas con unidades mayores que cero.</p>
+									<h3 class="text-sm font-semibold">Personas consumidoras</h3>
+									<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Por defecto se incluye tu usuario actual.</p>
 								</div>
-								<div class="hidden overflow-x-auto md:block">
-									<table class="w-full text-sm">
-										<thead class="bg-[hsl(var(--secondary))] text-xs text-[hsl(var(--muted-foreground))]">
-											<tr>
-												<th class="px-3 py-2 text-left font-medium">Stock</th>
-												<th class="px-3 py-2 text-right font-medium">Disponible</th>
-												<th class="px-3 py-2 text-right font-medium">Usar</th>
-											</tr>
-										</thead>
-										<tbody class="divide-y">
-											{#each data.stockEntries as stockEntry}
-												<tr>
-													<td class="px-3 py-2">{stockEntry.productName}</td>
-													<td class="px-3 py-2 text-right tabular-nums">{formatNumber(stockEntry.quantity)}</td>
-													<td class="px-3 py-2 text-right">
-														<input
-															class="h-9 w-28 rounded-md border px-2 text-right text-sm tabular-nums"
-															type="number"
-															min="0"
-															step="0.01"
-															value={publishManualAllocations[stockEntry.id] ?? ''}
-															oninput={(event) => {
-																const next = (event.currentTarget as HTMLInputElement).value;
-																publishManualAllocations = { ...publishManualAllocations, [stockEntry.id]: next };
-															}}
-														/>
-													</td>
-												</tr>
-											{/each}
-										</tbody>
-									</table>
-								</div>
-								<div class="space-y-2 md:hidden">
-									{#each data.stockEntries as stockEntry}
-										<div class="rounded-md border p-3">
-											<p class="text-sm font-medium">{stockEntry.productName}</p>
-											<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Disponible: {formatNumber(stockEntry.quantity)}</p>
+								<span class="rounded-md bg-[hsl(var(--secondary))] px-2 py-1 text-xs text-[hsl(var(--muted-foreground))]">
+									{publishPersonIds.length} seleccionadas
+								</span>
+							</div>
+							{#if data.usersLoaded}
+								<div class="grid gap-2 sm:grid-cols-2">
+									{#each data.users as user (user.id)}
+										<label class="flex items-center gap-3 rounded-md border px-3 py-2 text-sm">
 											<input
-												class="mt-2 h-9 w-full rounded-md border px-2 text-sm tabular-nums"
-												type="number"
-												min="0"
-												step="0.01"
-												placeholder="Unidades a usar"
-												value={publishManualAllocations[stockEntry.id] ?? ''}
-												oninput={(event) => {
-													const next = (event.currentTarget as HTMLInputElement).value;
-													publishManualAllocations = { ...publishManualAllocations, [stockEntry.id]: next };
-												}}
+												type="checkbox"
+												value={String(user.id)}
+												bind:group={publishPersonIds}
+												data-testid={`week-publish-person-${user.id}`}
 											/>
-										</div>
+											<span class="min-w-0 truncate">{user.username}</span>
+										</label>
 									{/each}
 								</div>
-							</section>
-						{/if}
+							{:else}
+								<p class="text-sm text-[hsl(var(--muted-foreground))]">Cargando personas…</p>
+							{/if}
+						</section>
 					</fieldset>
 					<div class="flex flex-col-reverse gap-2 border-t border-[hsl(var(--border))] pt-5 sm:flex-row sm:justify-end">
 						<Button variant="secondary" type="button" onclick={closeModal}>Cancelar</Button>
@@ -7708,6 +7599,108 @@
 						</Button>
 					</div>
 				</form>
+			</div>
+		</div>
+	{/if}
+
+	{#if modalMode === 'week-stock' && data.proposedWeekMenu}
+		{@const activeMenu = data.proposedWeekMenu}
+		<div class="fixed inset-0 z-30 flex items-start justify-center overflow-y-auto bg-black/30 p-3 backdrop-blur-sm sm:p-4" role="presentation" onclick={(event) => event.currentTarget === event.target && closeModal()}>
+			<div class="w-full max-w-5xl rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-xl" role="dialog" aria-modal="true" aria-labelledby="week-stock-title" data-testid="week-stock-summary" tabindex="-1">
+				<div class="flex items-start justify-between gap-4 border-b border-[hsl(var(--border))] p-5">
+					<div class="min-w-0">
+						<h2 id="week-stock-title" class="text-lg font-semibold text-[hsl(var(--foreground))]">Stock</h2>
+						<p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">
+							{weekDateRangeLabel(activeMenu.startDate, activeMenu.endDate)} · {planningSummary.requirements.length} productos
+						</p>
+					</div>
+					<Button variant="ghost" size="icon" type="button" onclick={closeModal} aria-label="Cerrar stock">
+						<X class="size-4" aria-hidden="true" />
+					</Button>
+				</div>
+				<div class="max-h-[calc(100vh-12rem)] overflow-y-auto">
+					{#if planningSummary.requirements.length === 0}
+						<div class="p-8 text-center">
+							<div class="mx-auto grid size-10 place-items-center rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
+								<Package class="size-5 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
+							</div>
+							<h4 class="mt-3 text-sm font-semibold text-[hsl(var(--foreground))]">Aun no hay productos planificados</h4>
+							<p class="mx-auto mt-1 max-w-sm text-sm text-[hsl(var(--muted-foreground))]">
+								Añade menús diarios para calcular cuantas unidades de cada producto se necesitaran.
+							</p>
+						</div>
+					{:else}
+						<div class="hidden overflow-x-auto md:block">
+							<table class="w-full table-fixed text-sm">
+								<colgroup>
+									<col class="w-[34%]" />
+									<col class="w-[14%]" />
+									<col class="w-[14%]" />
+									<col class="w-[14%]" />
+									<col class="w-[24%]" />
+								</colgroup>
+								<thead class="bg-[hsl(var(--secondary))] text-xs text-[hsl(var(--muted-foreground))]">
+									<tr class="border-b border-[hsl(var(--border))]">
+										<th class="px-4 py-2.5 text-left font-medium">Producto</th>
+										<th class="px-3 py-2.5 text-right font-medium">Necesarias</th>
+										<th class="px-3 py-2.5 text-right font-medium">Disponibles</th>
+										<th class="px-3 py-2.5 text-right font-medium">Faltan</th>
+										<th class="px-4 py-2.5 text-right font-medium">Coste estimado</th>
+									</tr>
+								</thead>
+								<tbody class="divide-y divide-[hsl(var(--border))]">
+									{#each planningSummary.requirements as requirement (requirement.productId)}
+										<tr class={`transition-colors hover:bg-[hsl(var(--secondary)/0.55)] ${requirement.missingUnits > 0 ? 'bg-[hsl(var(--destructive)/0.04)]' : ''}`} data-testid={`week-stock-row-${requirement.productId}`}>
+											<td class="px-4 py-3 align-top">
+												<div class="min-w-0">
+													<p class="truncate font-medium text-[hsl(var(--foreground))]">{requirement.productName}</p>
+													<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Producto #{requirement.productId}</p>
+												</div>
+											</td>
+											<td class="px-3 py-3 text-right align-top tabular-nums">{formatNumber(requirement.requiredUnits)}</td>
+											<td class="px-3 py-3 text-right align-top tabular-nums">{formatNumber(requirement.availableUnits)}</td>
+											<td class="px-3 py-3 text-right align-top tabular-nums">{formatNumber(requirement.missingUnits)}</td>
+											<td class="px-4 py-3 text-right align-top tabular-nums">{formatCurrency(requirement.estimatedCost)}</td>
+										</tr>
+									{/each}
+								</tbody>
+							</table>
+						</div>
+						<div class="divide-y divide-[hsl(var(--border))] md:hidden">
+							{#each planningSummary.requirements as requirement (requirement.productId)}
+								<article class={`space-y-4 p-4 ${requirement.missingUnits > 0 ? 'bg-[hsl(var(--destructive)/0.04)]' : ''}`} data-testid={`week-stock-card-${requirement.productId}`}>
+									<div class="flex items-start justify-between gap-3">
+										<div class="min-w-0">
+											<h4 class="truncate text-sm font-semibold text-[hsl(var(--foreground))]">{requirement.productName}</h4>
+											<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Producto #{requirement.productId}</p>
+										</div>
+										<span class={`shrink-0 rounded-md px-2 py-1 text-xs font-medium ${requirement.missingUnits > 0 ? 'bg-[hsl(var(--destructive)/0.1)] text-[hsl(var(--destructive))]' : 'bg-[hsl(var(--primary)/0.08)] text-[hsl(var(--primary))]'}`}>
+											{requirement.missingUnits > 0 ? 'Falta stock' : 'Cubierto'}
+										</span>
+									</div>
+									<dl class="grid grid-cols-2 gap-2 text-sm">
+										<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-2.5">
+											<dt class="text-xs text-[hsl(var(--muted-foreground))]">Necesarias</dt>
+											<dd class="mt-1 font-medium tabular-nums">{formatNumber(requirement.requiredUnits)}</dd>
+										</div>
+										<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-2.5">
+											<dt class="text-xs text-[hsl(var(--muted-foreground))]">Disponibles</dt>
+											<dd class="mt-1 font-medium tabular-nums">{formatNumber(requirement.availableUnits)}</dd>
+										</div>
+										<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-2.5">
+											<dt class="text-xs text-[hsl(var(--muted-foreground))]">Faltan</dt>
+											<dd class="mt-1 font-medium tabular-nums">{formatNumber(requirement.missingUnits)}</dd>
+										</div>
+										<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-2.5">
+											<dt class="text-xs text-[hsl(var(--muted-foreground))]">Coste estimado</dt>
+											<dd class="mt-1 font-medium tabular-nums">{formatCurrency(requirement.estimatedCost)}</dd>
+										</div>
+									</dl>
+								</article>
+							{/each}
+						</div>
+					{/if}
+				</div>
 			</div>
 		</div>
 	{/if}

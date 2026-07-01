@@ -14,12 +14,17 @@ export type NutrientRuleEvaluation = {
 	status: 'BELOW_MINIMUM' | 'WITHIN_RANGE' | 'ABOVE_MAXIMUM' | 'NOT_CONFIGURED';
 };
 
-export type NutritionalRulesEvaluation = {
+export type NutritionalRuleSetEvaluation = {
 	plannedDays: number;
 	calories: NutrientRuleEvaluation;
 	carbohydrates: NutrientRuleEvaluation;
 	proteins: NutrientRuleEvaluation;
 	fats: NutrientRuleEvaluation;
+};
+
+export type NutritionalRulesEvaluation = {
+	daily: NutritionalRuleSetEvaluation;
+	weekly: NutritionalRuleSetEvaluation;
 };
 
 export type CreateProposedWeekMenuRequest = {

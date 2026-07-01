@@ -74,7 +74,11 @@ function authHeaders(authorization: string) {
 
 export async function publishProposedWeekMenu(
 	id: number,
-	options: { payerUserId: number; stockAllocations?: ManualStockAllocationRequest[] },
+	options: {
+		payerUserId: number;
+		personIds?: number[];
+		stockAllocations?: ManualStockAllocationRequest[];
+	},
 	authorization: string
 ) {
 	return await request<EstablishedWeekMenuResponse>(`/api/v1/planning/${id}/menu`, {
@@ -82,6 +86,7 @@ export async function publishProposedWeekMenu(
 		headers: authHeaders(authorization),
 		body: JSON.stringify({
 			payerUserId: Number(options.payerUserId),
+			...(options.personIds ? { personIds: options.personIds.map((personId) => Number(personId)) } : {}),
 			...(options.stockAllocations ? { stockAllocations: options.stockAllocations.map((allocation) => ({
 				stockEntryId: Number(allocation.stockEntryId),
 				usedUnits: Number(allocation.usedUnits)

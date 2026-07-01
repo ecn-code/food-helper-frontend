@@ -12,8 +12,19 @@ export class ApiError extends Error {
 	}
 }
 
+const sessionExpiredEventName = 'foodhelper-session-expired';
+
 export function apiBaseUrl() {
 	return PUBLIC_BACKEND_BASE_URL || defaultBaseUrl;
+}
+
+export function notifySessionExpired(message = 'La sesion ha caducado. Vuelve a iniciar sesion.') {
+	if (typeof window === 'undefined') return;
+	window.dispatchEvent(new CustomEvent(sessionExpiredEventName, { detail: { message } }));
+}
+
+export function isSessionExpiredError(error: unknown) {
+	return error instanceof ApiError && error.status === 401;
 }
 
 async function parseError(response: Response) {
@@ -25,7 +36,11 @@ async function parseError(response: Response) {
 	}
 }
 
-export async function request<T>(path: string, init?: RequestInit): Promise<T> {
+type BackendRequestInit = RequestInit & {
+	suppressSessionExpired?: boolean;
+};
+
+export async function request<T>(path: string, init?: BackendRequestInit): Promise<T> {
 	const response = await fetch(`${apiBaseUrl()}${path}`, {
 		...init,
 		headers: {
@@ -37,7 +52,11 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	});
 
 	if (!response.ok) {
-		throw new ApiError(response.status, await parseError(response));
+		const message = await parseError(response);
+		if (response.status === 401 && !init?.suppressSessionExpired) {
+			notifySessionExpired();
+		}
+		throw new ApiError(response.status, message);
 	}
 
 	if (response.status === 204) return undefined as T;

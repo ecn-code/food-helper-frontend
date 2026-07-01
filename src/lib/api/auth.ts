@@ -21,6 +21,7 @@ export type AuthResponse = {
 
 export async function login(values: LoginValues) {
 	return await request<AuthResponse>('/api/v1/auth/login', {
+		suppressSessionExpired: true,
 		method: 'POST',
 		body: JSON.stringify({
 			username: values.username.trim(),
@@ -31,6 +32,7 @@ export async function login(values: LoginValues) {
 
 export async function register(values: RegisterValues) {
 	return await request<AuthResponse>('/api/v1/auth/register', {
+		suppressSessionExpired: true,
 		method: 'POST',
 		body: JSON.stringify({
 			username: values.username.trim(),

@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { ArrowDown, ArrowUp, PiggyBank, Plus, Trash2, UserRound, WalletCards } from '@lucide/svelte';
 	import Button from '$lib/components/ui/Button.svelte';
-	import { ApiError } from '$lib/api/backend';
+	import { ApiError, isSessionExpiredError } from '$lib/api/backend';
 	import {
 		addMoneyBoxMovement,
 		createManualMoneyBox,
@@ -37,6 +37,7 @@
 				selectedId = boxes.find((box) => box.userId === userId)?.id ?? boxes[0]?.id ?? null;
 			}
 		} catch (cause) {
+			if (isSessionExpiredError(cause)) return;
 			error = cause instanceof ApiError ? cause.message : 'No se pudieron cargar las huchas.';
 		} finally {
 			loaded = true;
@@ -65,6 +66,7 @@
 			newBoxName = '';
 			message = 'Hucha creada.';
 		} catch (cause) {
+			if (isSessionExpiredError(cause)) return;
 			error = cause instanceof ApiError ? cause.message : 'No se pudo crear la hucha.';
 		} finally {
 			creating = false;
@@ -94,6 +96,7 @@
 			description = '';
 			message = 'Movimiento registrado.';
 		} catch (cause) {
+			if (isSessionExpiredError(cause)) return;
 			error = cause instanceof ApiError ? cause.message : 'No se pudo registrar el movimiento.';
 		} finally {
 			savingMovement = false;
@@ -118,6 +121,7 @@
 			}
 			message = 'Hucha eliminada.';
 		} catch (cause) {
+			if (isSessionExpiredError(cause)) return;
 			error = cause instanceof ApiError ? cause.message : 'No se pudo eliminar la hucha.';
 		} finally {
 			deleting = false;
@@ -145,6 +149,7 @@
 			);
 			message = 'Movimiento eliminado.';
 		} catch (cause) {
+			if (isSessionExpiredError(cause)) return;
 			error = cause instanceof ApiError ? cause.message : 'No se pudo eliminar el movimiento.';
 		} finally {
 			deletingMovementId = null;

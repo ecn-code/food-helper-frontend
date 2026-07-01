@@ -3,7 +3,7 @@
 	import { CalendarClock, Pencil, Trash2, Users, TrendingUp } from '@lucide/svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import MetricCard from '$lib/components/ui/MetricCard.svelte';
-	import { ApiError } from '$lib/api/backend';
+	import { ApiError, isSessionExpiredError } from '$lib/api/backend';
 	import {
 		createUserWeight,
 		deleteUserWeight,
@@ -254,6 +254,7 @@
 			users = await listUsers(authorization);
 			selectedUserId = initialUserId();
 		} catch (cause) {
+			if (isSessionExpiredError(cause)) return;
 			error = cause instanceof ApiError ? cause.message : 'No se pudieron cargar las personas.';
 		} finally {
 			loadingUsers = false;
@@ -300,6 +301,7 @@
 				authorization
 			);
 		} catch (cause) {
+			if (isSessionExpiredError(cause)) return;
 			if (!error) {
 				error = cause instanceof ApiError ? cause.message : 'No se pudo cargar el historial.';
 			}
@@ -320,6 +322,7 @@
 				authorization
 			);
 		} catch (cause) {
+			if (isSessionExpiredError(cause)) return;
 			if (!error) {
 				error = cause instanceof ApiError ? cause.message : 'No se pudieron cargar los pesos.';
 			}
@@ -399,6 +402,7 @@
 			clearWeightDraft();
 			await loadWeights(userId);
 		} catch (cause) {
+			if (isSessionExpiredError(cause)) return;
 			error = cause instanceof ApiError ? cause.message : 'No se pudo guardar el peso.';
 		}
 	}
@@ -412,6 +416,7 @@
 			await deleteUserWeight(userId, weight.id, authorization);
 			await loadWeights(userId);
 		} catch (cause) {
+			if (isSessionExpiredError(cause)) return;
 			error = cause instanceof ApiError ? cause.message : 'No se pudo eliminar el peso.';
 		}
 	}

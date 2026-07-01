@@ -459,6 +459,8 @@ test('crea una planificación y añade un menu diario con productos', async ({ p
 	await expect(page.getByTestId('week-calories-card')).toContainText('01/01/2030');
 	await expect(page.getByTestId('week-distinct-products-card')).toContainText('2');
 	await expect(page.getByTestId('week-cost-card')).toContainText('7,50');
+	await page.getByRole('button', { name: 'Ver stock' }).click();
+	await expect(page.getByTestId('week-stock-summary')).toBeVisible();
 	await expect(page.getByTestId('week-stock-summary')).toContainText('Apple');
 	await expect(page.getByTestId('week-stock-summary')).toContainText('Rice');
 	await expect(page.getByTestId('week-stock-row-1')).toContainText('5,00');
