@@ -8,6 +8,13 @@ export const nutritionalMetricFields: { key: NutritionalMetric; label: string; u
 	{ key: 'fats', label: 'Grasas', unit: 'g' }
 ];
 
+export const emptyNutrientRuleEvaluation: NutrientRuleEvaluation = {
+	value: 0,
+	minimum: null,
+	maximum: null,
+	status: 'NOT_CONFIGURED'
+};
+
 export function statusLabel(status: NutrientRuleEvaluation['status']) {
 	if (status === 'BELOW_MINIMUM') return 'Bajo';
 	if (status === 'ABOVE_MAXIMUM') return 'Alto';

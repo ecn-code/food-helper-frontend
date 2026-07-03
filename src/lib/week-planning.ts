@@ -1,7 +1,5 @@
 import type { EstablishedWeekMenu } from '$lib/established-week-menus';
 import type { ProposedWeekMenu } from '$lib/proposed-week-menus';
-import type { Product } from '$lib/products';
-import type { StockEntry } from '$lib/stock';
 
 export type WeekDayCalories = {
 	date: string;
@@ -52,24 +50,6 @@ function inclusiveRangeDays(startDate: string, endDate: string) {
 	return difference + 1;
 }
 
-function sortStockEntries(left: StockEntry, right: StockEntry) {
-	const leftExpiration = left.expirationDate;
-	const rightExpiration = right.expirationDate;
-
-	if (leftExpiration && rightExpiration) {
-		const byExpiration = leftExpiration.localeCompare(rightExpiration);
-		if (byExpiration !== 0) return byExpiration;
-	} else if (leftExpiration) {
-		return -1;
-	} else if (rightExpiration) {
-		return 1;
-	}
-
-	const byEntryDate = left.entryDate.localeCompare(right.entryDate);
-	if (byEntryDate !== 0) return byEntryDate;
-	return left.id - right.id;
-}
-
 function roundNumber(value: number) {
 	return Number(value.toFixed(2));
 }
@@ -78,18 +58,8 @@ function roundUnits(value: number) {
 	return Number(value.toFixed(2));
 }
 
-function plannedDays(menu: ProposedWeekMenu) {
-	return menu.days.filter((day) => day.sections.some((section) => section.products.length > 0));
-}
-
-function dayCalories(day: ProposedWeekMenu['days'][number]) {
-	return Number(day.nutritionalValues.calories ?? 0);
-}
-
 export function buildWeekPlanningSummary(
-	menu: ProposedWeekMenu | EstablishedWeekMenu | null,
-	stockEntries: StockEntry[],
-	products: Product[] = []
+	menu: ProposedWeekMenu | EstablishedWeekMenu | null
 ): WeekPlanningSummary {
 	if (!menu) {
 		return {
@@ -107,7 +77,7 @@ export function buildWeekPlanningSummary(
 		};
 	}
 
-	if ('stockSummary' in menu) {
+	if ('stockSummary' in menu && menu.stockSummary) {
 		const totalCalories = menu.days.reduce((sum, day) => sum + Number(day.nutritionalValues.calories ?? 0), 0);
 
 		return {
@@ -133,108 +103,17 @@ export function buildWeekPlanningSummary(
 		};
 	}
 
-	const days = plannedDays(menu);
-	const caloriesByDay = days.map((day) => ({
-		date: day.date,
-		calories: dayCalories(day)
-	}));
-	const totalCalories = caloriesByDay.reduce((sum, day) => sum + day.calories, 0);
-	const maxDay = caloriesByDay.reduce<WeekDayCalories | null>((currentMax, day) => {
-		if (!currentMax || day.calories > currentMax.calories) return day;
-		return currentMax;
-	}, null);
-	const minDay = caloriesByDay.reduce<WeekDayCalories | null>((currentMin, day) => {
-		if (!currentMin || day.calories < currentMin.calories) return day;
-		return currentMin;
-	}, null);
-
-	const requirementsByProduct = new Map<
-		number,
-		{ productId: number; productName: string; requiredUnits: number }
-	>();
-
-	for (const day of days) {
-		for (const section of day.sections) {
-			for (const product of section.products) {
-				const productId = product.productId;
-				if (productId === null) continue;
-				const requiredUnits = product.units ?? 1;
-				const current = requirementsByProduct.get(productId) ?? {
-					productId,
-					productName: product.productName,
-					requiredUnits: 0
-				};
-
-				current.requiredUnits += Number.isFinite(requiredUnits) ? requiredUnits : 0;
-				requirementsByProduct.set(productId, current);
-			}
-		}
-	}
-
-	const stockByProduct = new Map<number, StockEntry[]>();
-	const productById = new Map(products.map((product) => [product.id, product]));
-	for (const stockEntry of stockEntries) {
-		const entries = stockByProduct.get(stockEntry.productId) ?? [];
-		entries.push(stockEntry);
-		stockByProduct.set(stockEntry.productId, entries);
-	}
-
-	const requirements = [...requirementsByProduct.values()]
-		.map((requirement) => {
-			const lots = [...(stockByProduct.get(requirement.productId) ?? [])].sort(sortStockEntries);
-			const productDefaultPrice = productById.get(requirement.productId)?.defaultPrice;
-			let remainingUnits = requirement.requiredUnits;
-			let availableUnits = 0;
-			let coveredUnits = 0;
-			let stockCost = 0;
-
-			for (const lot of lots) {
-				const lotQuantity = Number(lot.quantity ?? 0);
-				if (!Number.isFinite(lotQuantity) || lotQuantity <= 0) continue;
-
-				availableUnits += lotQuantity;
-				if (remainingUnits <= 0) continue;
-
-				const consumedUnits = Math.min(remainingUnits, lotQuantity);
-				coveredUnits += consumedUnits;
-				stockCost += consumedUnits * Number(lot.price ?? 0);
-				remainingUnits -= consumedUnits;
-			}
-
-			const missingUnits = Math.max(0, requirement.requiredUnits - coveredUnits);
-			const missingCost =
-				Number.isFinite(productDefaultPrice ?? Number.NaN) && productDefaultPrice !== null
-					? missingUnits * Number(productDefaultPrice)
-					: 0;
-
-			return {
-				productId: requirement.productId,
-				productName: requirement.productName,
-				requiredUnits: roundUnits(requirement.requiredUnits),
-				availableUnits: roundUnits(availableUnits),
-				coveredUnits: roundUnits(coveredUnits),
-				missingUnits: roundUnits(missingUnits),
-				estimatedCost: roundNumber(stockCost + missingCost)
-			};
-		})
-		.sort((left, right) => {
-			if (left.missingUnits !== right.missingUnits) return right.missingUnits - left.missingUnits;
-			return left.productName.localeCompare(right.productName);
-		});
-
-	const estimatedCost = roundNumber(requirements.reduce((sum, item) => sum + item.estimatedCost, 0));
-
 	return {
 		rangeDays: inclusiveRangeDays(menu.startDate, menu.endDate),
-		plannedDays: days.length,
+		plannedDays: 0,
 		calories: {
-			total: roundNumber(totalCalories),
-			averagePerPlannedDay: roundNumber(days.length > 0 ? totalCalories / days.length : 0),
-			maxDay,
-			minDay
+			total: 0,
+			averagePerPlannedDay: 0,
+			maxDay: null,
+			minDay: null
 		},
-		distinctProducts: requirementsByProduct.size,
-		estimatedCost,
-		requirements
+		distinctProducts: 0,
+		estimatedCost: 0,
+		requirements: []
 	};
 }

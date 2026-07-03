@@ -4,6 +4,7 @@
 	import type { NutritionalValues } from '$lib/products';
 	import { evaluateNutritionRules } from '$lib/nutritional-rules';
 	import {
+		emptyNutrientRuleEvaluation,
 		formatNumber,
 		nutritionalMetricFields,
 		statusLabel,
@@ -27,7 +28,7 @@
 	data-testid="daily-nutritional-evaluation"
 >
 	{#each nutritionalMetricFields as field}
-		{@const rule = evaluation[field.key]}
+		{@const rule = evaluation[field.key] ?? emptyNutrientRuleEvaluation}
 		<div class={`rounded-lg border p-4 shadow-sm ${statusCardTone(rule.status)}`}>
 			<div class="flex min-w-0 items-center justify-between gap-2">
 				<div class="flex min-w-0 items-center gap-2 text-sm text-[hsl(var(--muted-foreground))]">

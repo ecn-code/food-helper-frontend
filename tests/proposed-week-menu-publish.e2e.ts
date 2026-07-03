@@ -1,6 +1,10 @@
 import { expect, test } from '@playwright/test';
 
-test('publishes a proposed week menu into an established snapshot', async ({ page }) => {
+test('publishes a proposed week menu into an established snapshot', async ({ page, request }) => {
+	const backendBaseUrl =
+		process.env.MOCK_BACKEND_URL || `http://127.0.0.1:${process.env.MOCK_BACKEND_PORT || 4010}`;
+	await request.post(`${backendBaseUrl}/__reset`);
+
 	await page.goto('/');
 
 	await page.getByTestId('login-username').fill('elias');
@@ -15,7 +19,7 @@ test('publishes a proposed week menu into an established snapshot', async ({ pag
 	await page.getByTestId('week-create-form').getByRole('button', { name: 'Crear semana' }).click();
 
 	await page.getByTestId('week-day-action-2026-06-15').click();
-	await page.getByTestId('week-product-id-0-0').click();
+	await page.getByRole('button', { name: 'Catálogo' }).click();
 	await expect(page.getByTestId('product-picker-modal')).toBeVisible();
 	await page.getByTestId('product-picker-option-1').click();
 	await expect(page.getByTestId('product-picker-modal')).toHaveCount(0);

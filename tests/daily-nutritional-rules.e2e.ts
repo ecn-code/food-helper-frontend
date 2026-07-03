@@ -37,7 +37,8 @@ test('muestra la evaluación de las reglas en cada menú diario', async ({ page,
 	await page.getByTestId('week-create-form').getByRole('button', { name: 'Crear semana' }).click();
 
 	await page.getByTestId('week-day-action-2026-06-15').click();
-	await page.getByTestId('week-product-id-0-0').click();
+	await page.getByTestId('week-day-form').getByRole('button', { name: 'Catálogo' }).click();
+	await expect(page.getByTestId('product-picker-modal')).toBeVisible();
 	await page.getByTestId('product-picker-option-1').click();
 	await page.getByRole('button', { name: 'Guardar menu' }).click();
 

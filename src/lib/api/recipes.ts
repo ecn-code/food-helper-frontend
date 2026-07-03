@@ -9,21 +9,24 @@ export type NutritionalValues = {
 
 export type RecipeIngredientAssignment = {
 	productId: number;
-	grams: number;
+	quantity: number;
+	quantityType: string;
 };
 
 export type RecipeIngredientPayload = {
 	productId: number;
 	productName: string;
-	grams: number;
+	quantity: number;
+	quantityType: string;
 	nutritionalValues: NutritionalValues;
 };
 
 export type RecipeDerivedProductPayload = {
 	productId: number;
-	producedGrams: number;
-	gramsPerUnit: number;
+	name: string;
 	unitsProduced: number;
+	stockFromComposition: boolean;
+	ingredients: RecipeIngredientPayload[];
 };
 
 export type PhotoUploadPayload = {
@@ -40,11 +43,14 @@ export type CreateRecipeRequest = {
 	photo?: PhotoUploadPayload;
 };
 
-export type UpdateRecipeRequest = CreateRecipeRequest;
+export type UpdateRecipeRequest = CreateRecipeRequest & {
+	stockFromComposition?: boolean;
+};
 
 export type CreateRecipeDerivedProductRequest = {
-	producedGrams: number;
-	gramsPerUnit: number;
+	name: string;
+	units: number;
+	stockFromComposition: boolean;
 };
 
 export type RecipePayload = {
@@ -89,14 +95,17 @@ function authHeaders(authorization: string) {
 	};
 }
 
-function sanitizeRecipeRequest(values: CreateRecipeRequest): CreateRecipeRequest {
+function sanitizeRecipeRequest(values: CreateRecipeRequest): CreateRecipeRequest & {
+	stockFromComposition?: boolean;
+} {
 	return {
 		name: values.name.trim(),
 		description: values.description.trim(),
 		instructions: values.instructions.trim(),
 		products: values.products.map((product) => ({
 			productId: Number(product.productId),
-			grams: Number(product.grams)
+			quantity: Number(product.quantity),
+			quantityType: product.quantityType.trim()
 		})),
 		photo: values.photo
 			? {
@@ -104,14 +113,18 @@ function sanitizeRecipeRequest(values: CreateRecipeRequest): CreateRecipeRequest
 					contentType: values.photo.contentType.trim(),
 					base64Data: values.photo.base64Data
 				}
-			: undefined
+			: undefined,
+		...(typeof (values as UpdateRecipeRequest).stockFromComposition === 'boolean'
+			? { stockFromComposition: (values as UpdateRecipeRequest).stockFromComposition }
+			: {})
 	};
 }
 
 function sanitizeDerivedProductRequest(values: CreateRecipeDerivedProductRequest) {
 	return {
-		producedGrams: Number(values.producedGrams),
-		gramsPerUnit: Number(values.gramsPerUnit)
+		name: values.name.trim(),
+		units: Number(values.units),
+		stockFromComposition: Boolean(values.stockFromComposition)
 	};
 }
 
@@ -128,7 +141,11 @@ function buildPageQuery(params: ListRecipesParams = {}) {
 	searchParams.set('page', String(normalizePage(params.page, 0)));
 	searchParams.set('size', String(normalizePageSize(params.size)));
 	if (params.search?.trim()) searchParams.set('search', params.search.trim());
-	if (params.derived && params.derived !== 'all') searchParams.set('derived', params.derived);
+	if (params.derived === 'with-derived') {
+		searchParams.set('hasDerivedProduct', 'true');
+	} else if (params.derived === 'without-derived') {
+		searchParams.set('hasDerivedProduct', 'false');
+	}
 	for (const key of ['caloriesMin', 'caloriesMax', 'carbohydratesMin', 'carbohydratesMax', 'proteinsMin', 'proteinsMax', 'fatsMin', 'fatsMax'] as const) {
 		const value = params[key];
 		if (value !== undefined && value !== null && String(value).trim() !== '') {

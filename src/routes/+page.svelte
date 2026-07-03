@@ -19,6 +19,7 @@
 		Package,
 		Pencil,
 		Plus,
+		ChevronUp,
 		RefreshCw,
 		Save,
 		Settings,
@@ -47,6 +48,7 @@
 	import {
 		createProduct as createProductRequest,
 		deleteProduct as deleteProductRequest,
+		getProduct as getProductRequest,
 		listProducts,
 		listProductsPage,
 		updateProduct as updateProductRequest,
@@ -88,6 +90,7 @@
 		toProductFormValues,
 		type NutritionalValues,
 		type Product,
+		productQuantityMode,
 		type ProductFormErrors,
 		type ProductFormValues
 	} from '$lib/products';
@@ -154,6 +157,7 @@
 	import PeoplePanel from '$lib/components/people/PeoplePanel.svelte';
 	import MenuWeekPanel from '$lib/components/menus/MenuWeekPanel.svelte';
 	import MenuMealsTable from '$lib/components/menus/MenuMealsTable.svelte';
+	import ValidationDialog from '$lib/components/ui/ValidationDialog.svelte';
 	import { listSupermarkets, type Supermarket } from '$lib/api/supermarkets';
 	import { listPlanning, type PlanningMenuResponse } from '$lib/api/planning';
 	import { listUsers, type UserResponse } from '$lib/api/users';
@@ -261,6 +265,11 @@
 		values?: ProposedWeekMenuDayPartFormValues;
 		fieldErrors?: ProposedWeekMenuDayPartFormErrors;
 	};
+	type ValidationDialogState = {
+		title: string;
+		message: string;
+		items: string[];
+	};
 	type ClientActionState =
 		| LoginActionState
 		| LogoutActionState
@@ -348,6 +357,7 @@
 		backendError: string | null;
 		session: PublicAuthSession | null;
 		products: Product[];
+		selectedProducts: Product[];
 		recipes: Recipe[];
 		stockEntries: StockEntry[];
 		proposedWeekMenu: ProposedWeekMenu | null;
@@ -399,6 +409,7 @@
 		backendError: null,
 		session: null,
 		products: [],
+		selectedProducts: [],
 		recipes: [],
 		stockEntries: [],
 		proposedWeekMenu: null,
@@ -427,6 +438,7 @@
 		createRecipeDerivedProductDefaults: emptyRecipeDerivedProductForm()
 	});
 	let form = $state<ClientActionState | null>(null);
+	let validationDialog = $state<ValidationDialogState | null>(null);
 	let authSession = $state<AuthSession | null>(null);
 	let modalMode = $state<ModalMode>(null);
 	let authMode = $state<AuthMode>('login');
@@ -436,6 +448,7 @@
 	let recipeCreateDraft = $state<RecipeFormValues>(emptyRecipeForm());
 	let recipeEditDraft = $state<RecipeFormValues>(emptyRecipeForm());
 	let recipeDerivedProductDraft = $state<RecipeDerivedProductFormValues>(emptyRecipeDerivedProductForm());
+	let derivingRecipeHasDerivedProduct = $state(false);
 	let loginDraft = $state({ username: '', password: '' });
 	let registerDraft = $state({ username: '', password: '', registrationCode: '' });
 	let registerResult = $state<RegisterActionState | null>(null);
@@ -453,6 +466,9 @@
 	let brokenProductPhotoUrls = $state<Record<SignedPhoto, true>>({});
 	let previewProduct = $state<Product | null>(null);
 	let detailProduct = $state<Product | null>(null);
+	let editingProduct = $state<Product | null>(null);
+	let productDetailLoading = $state(false);
+	let productDetailError = $state<string | null>(null);
 	let detailRecipe = $state<Recipe | null>(null);
 	let deleteProduct = $state<Product | null>(null);
 	let stockProduct = $state<Product | null>(null);
@@ -475,6 +491,7 @@
 	let publishPersonIds = $state<string[]>([]);
 	let dayPartDraft = $state<ProposedWeekMenuDayPartFormValues>(emptyProposedWeekMenuDayPartForm());
 	let editingDayPartId = $state<number | null>(null);
+	let dayPartOrderBusy = $state(false);
 	let editingWeekDayDate = $state<string | null>(null);
 	let weekDayDraft = $state<ProposedWeekMenuDayFormValues>(emptyProposedWeekMenuDayForm());
 	let createPhotoInput = $state<HTMLInputElement | null>(null);
@@ -505,7 +522,6 @@
 	let visibleProductsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 	const planningSummary = $derived(weekPlanningSummary());
 	const planningDayList = $derived(weekDays());
-	const publishWeekMenuConflict = $derived(findWeekPublishConflict());
 	const activeEstablishedMenu = $derived(
 		data.establishedWeekMenu ?? menus.find((menu) => planningStateByMenuId(menu.id) === 'ESTABLISHED') ?? null
 	);
@@ -514,6 +530,7 @@
 	let sessionNow = $state(Date.now());
 	let visibleProductsRequestToken = 0;
 	let productsRequestToken = 0;
+	let productDetailRequestToken = 0;
 	let sessionExpiredListener: ((event: Event) => void) | null = null;
 	let planningMenusLoadedAt = $state(0);
 	let proposedWeekMenuLoadedAt = $state(0);
@@ -615,9 +632,20 @@
 		return data.establishedWeekMenu ?? data.proposedWeekMenu;
 	}
 
-	function setSection(section: SectionMode) {
+	function resetCatalogFilters() {
+		productFilters = emptyProductFilters();
+		recipeFilters = emptyRecipeFilters();
+	}
+
+	function setSection(section: SectionMode, options: { updateHash?: boolean } = {}) {
+		const { updateHash = true } = options;
+
+		if (section === 'products' || section === 'recipes') {
+			resetCatalogFilters();
+		}
+
 		currentSection = section;
-		if (typeof window !== 'undefined') {
+		if (updateHash && typeof window !== 'undefined') {
 			window.location.hash = section;
 		}
 	}
@@ -710,6 +738,67 @@
 			: {};
 	}
 
+	function closeValidationDialog() {
+		validationDialog = null;
+	}
+
+	function openValidationDialog(title: string, message: string, items: string[] = []) {
+		validationDialog = {
+			title,
+			message,
+			items
+		};
+	}
+
+	function labeledValidationItems(entries: Array<[string, string | undefined]>) {
+		return entries.filter(([, value]) => Boolean(value)).map(([label, value]) => `${label}: ${value}`);
+	}
+
+	function recipeValidationItems(errors: RecipeFormErrors) {
+		const items = labeledValidationItems([
+			['Nombre', errors.name],
+			['Descripcion', errors.description],
+			['Instrucciones', errors.instructions],
+			['Ingredientes', errors.ingredients]
+		]);
+
+		const count = Math.max(errors.ingredientProductId?.length ?? 0, errors.ingredientGrams?.length ?? 0);
+		for (let index = 0; index < count; index += 1) {
+			const productError = errors.ingredientProductId?.[index];
+			const gramsError = errors.ingredientGrams?.[index];
+			if (productError) items.push(`Ingrediente ${index + 1}, producto: ${productError}`);
+			if (gramsError) items.push(`Ingrediente ${index + 1}, gramos: ${gramsError}`);
+		}
+
+		return items;
+	}
+
+	function weekDayValidationItems(errors: ProposedWeekMenuDayFormErrors) {
+		const items: string[] = [];
+		if (errors.date) items.push(`Fecha: ${errors.date}`);
+		if (errors.sections) items.push(`Secciones: ${errors.sections}`);
+
+		errors.sectionErrors?.forEach((sectionError, sectionIndex) => {
+			if (!sectionError) return;
+			if (sectionError.dayPartId) {
+				items.push(`Sección ${sectionIndex + 1}, parte del día: ${sectionError.dayPartId}`);
+			}
+			if (sectionError.products) {
+				items.push(`Sección ${sectionIndex + 1}, productos: ${sectionError.products}`);
+			}
+
+			sectionError.productErrors?.forEach((productError, productIndex) => {
+				if (!productError) return;
+				for (const [field, message] of Object.entries(productError)) {
+					if (!message) continue;
+					items.push(`Sección ${sectionIndex + 1}, producto ${productIndex + 1}, ${field}: ${message}`);
+				}
+			});
+		});
+
+		return items;
+	}
+
 	function catalogProducts() {
 		return hasActiveProductFilters(productFilters) ? visibleProducts : data.products;
 	}
@@ -756,6 +845,9 @@
 		const loadedProduct = data.products.find((product) => product.id === numericId);
 		if (loadedProduct) return loadedProduct.name;
 
+		const cachedProduct = data.selectedProducts.find((product) => product.id === numericId);
+		if (cachedProduct) return cachedProduct.name;
+
 		for (const recipe of data.recipes) {
 			const ingredient = recipe.ingredients.find((item) => item.productId === numericId);
 			if (ingredient) return ingredient.productName;
@@ -798,11 +890,12 @@
 		productPickerPreviousModalMode = null;
 	}
 
-	function selectProductFromPicker(productId: number) {
+	function selectProductFromPicker(product: Product) {
 		const target = productPickerTarget;
 		if (!target) return;
 
-		const selectedProductId = String(productId);
+		rememberSelectedProduct(product);
+		const selectedProductId = String(product.id);
 		if (target.type === 'recipe-create') {
 			recipeCreateDraft = {
 				...recipeCreateDraft,
@@ -822,6 +915,7 @@
 				)
 			};
 		} else if (target.type === 'week-day') {
+			const mode = productQuantityMode(product);
 			weekDayDraft = {
 				...weekDayDraft,
 				sections: weekDayDraft.sections.map((section, sectionIndex) =>
@@ -835,6 +929,9 @@
 												type: 'catalog',
 												productId: selectedProductId,
 												productName: '',
+												quantityMode: mode,
+												units: mode === 'units' ? product.units : '',
+												grams: mode === 'grams' ? product.grams : '',
 												calories: '',
 												carbohydrates: '',
 												proteins: '',
@@ -849,6 +946,16 @@
 		}
 
 		closeProductPicker();
+	}
+
+	function rememberSelectedProduct(product: Product) {
+		data.selectedProducts = [product, ...data.selectedProducts.filter((item) => item.id !== product.id)];
+	}
+
+	function productPickerProducts() {
+		return [...data.products, ...data.selectedProducts].filter(
+			(product, index, products) => index === products.findIndex((item) => item.id === product.id)
+		);
 	}
 
 	function resetCatalogState() {
@@ -880,6 +987,7 @@
 		recipesTotalPages = 1;
 		recipesLoadingMore = false;
 		data.products = [];
+		data.selectedProducts = [];
 		data.recipes = [];
 		data.stockEntries = [];
 		data.proposedWeekMenu = null;
@@ -931,6 +1039,14 @@
 			window.localStorage.removeItem('foodhelper_selected_menu_id');
 			window.localStorage.removeItem('foodhelper_selected_closed_menu_id');
 		}
+	}
+
+	function handleRecipeLoadError(error: unknown) {
+		if (handleExpiredSession(error)) {
+			return;
+		}
+
+		data.backendError = error instanceof ApiError ? error.message : 'No se pudieron cargar las recetas.';
 	}
 
 	async function loadProducts(session = authSession) {
@@ -1039,20 +1155,24 @@
 		recipesRequestToken += 1;
 	}
 
+	function invalidateRecipesCache() {
+		cancelRecipesRefresh();
+	}
+
 	function scheduleRecipeRefresh(immediate = false) {
 		cancelRecipesRefresh();
 		if (!authSession) return;
 		if (!hasActiveRecipeFilters(recipeFilters)) {
-			void loadRecipes(authSession, true);
+			void loadRecipes(authSession, true).catch(handleRecipeLoadError);
 			return;
 		}
 		if (immediate) {
-			void loadRecipes(authSession, true);
+			void loadRecipes(authSession, true).catch(handleRecipeLoadError);
 			return;
 		}
 		recipesRefreshTimer = setTimeout(() => {
 			recipesRefreshTimer = null;
-			void loadRecipes(authSession, true);
+			void loadRecipes(authSession, true).catch(handleRecipeLoadError);
 		}, 180);
 	}
 
@@ -1145,12 +1265,17 @@
 	async function loadRecipes(session = authSession, reset = true) {
 		if (!session) return;
 
-		if (recipesLoadingMore) return;
+		if (!reset && recipesLoadingMore) return;
 		if (!reset && recipesPage >= recipesTotalPages) return;
 
 		const pageToLoad = reset ? 0 : recipesPage;
 		const requestToken = reset ? ++recipesRequestToken : recipesRequestToken;
 		const authorization = authorizationHeader(session);
+		const previousRecipes = data.recipes;
+		const previousRecipesLoaded = data.recipesLoaded;
+		const previousRecipesPage = recipesPage;
+		const previousRecipesTotalElements = recipesTotalElements;
+		const previousRecipesTotalPages = recipesTotalPages;
 
 		if (reset) {
 			data.recipesLoaded = false;
@@ -1185,6 +1310,16 @@
 			recipesTotalElements = response.totalElements;
 			recipesTotalPages = Math.max(response.totalPages, 1);
 			data.recipesLoaded = true;
+		} catch (error) {
+			if (requestToken !== recipesRequestToken) return;
+			if (reset) {
+				data.recipes = previousRecipes;
+				data.recipesLoaded = previousRecipesLoaded;
+				recipesPage = previousRecipesPage;
+				recipesTotalElements = previousRecipesTotalElements;
+				recipesTotalPages = previousRecipesTotalPages;
+			}
+			throw error;
 		} finally {
 			if (requestToken === recipesRequestToken) {
 				recipesLoadingMore = false;
@@ -1193,7 +1328,11 @@
 	}
 
 	async function loadMoreRecipes(session = authSession) {
-		await loadRecipes(session, false);
+		try {
+			await loadRecipes(session, false);
+		} catch (error) {
+			handleRecipeLoadError(error);
+		}
 	}
 
 	$effect(() => {
@@ -1251,8 +1390,17 @@
 		if (!session) return;
 
 		const authorization = authorizationHeader(session);
-		data.recipeStats = await listRecipeStats(authorization);
-		data.recipeStatsLoaded = true;
+		try {
+			data.recipeStats = await listRecipeStats(authorization);
+			data.recipeStatsLoaded = true;
+		} catch (error) {
+			data.recipeStats = null;
+			data.recipeStatsLoaded = false;
+
+			if (handleExpiredSession(error)) {
+				return;
+			}
+		}
 	}
 
 	async function loadStockEntries(session = authSession) {
@@ -1477,9 +1625,9 @@
 		if (!session) return;
 
 		const authorization = authorizationHeader(session);
-		data.proposedWeekMenuDayParts = (await listProposedWeekMenuDayPartsRequest(authorization)).map(
-			toProposedWeekMenuDayPartModel
-		);
+		data.proposedWeekMenuDayParts = (await listProposedWeekMenuDayPartsRequest(authorization))
+			.map(toProposedWeekMenuDayPartModel)
+			.sort((left, right) => left.sortOrder - right.sortOrder || left.name.localeCompare(right.name));
 		data.proposedWeekMenuDayPartsLoaded = true;
 		proposedWeekMenuDayPartsLoadedAt = Date.now();
 	}
@@ -1496,9 +1644,9 @@
 			tasks.push(loadProducts(session));
 		}
 
-		if (force || !data.stockEntriesLoaded) {
-			tasks.push(loadStockEntries(session));
-		}
+		// Planning summaries depend on the latest stock snapshot, so we always
+		// reload stock here instead of reusing a potentially stale in-memory copy.
+		tasks.push(loadStockEntries(session));
 
 		if (force || !data.productStatsLoaded) {
 			tasks.push(loadProductStats(session));
@@ -1559,9 +1707,9 @@
 			tasks.push(loadAllProducts(session));
 		}
 
-		if (!isCacheFresh(data.proposedWeekMenuLoaded, proposedWeekMenuLoadedAt, force) || activeProposedWeekMenuId !== selectedMenu.id) {
-			tasks.push(loadProposedWeekMenu(session, selectedMenu.id));
-		}
+		// The planning response includes the stock summary, so we always reload the
+		// selected menu instead of reusing an in-memory copy that can drift from the server.
+		tasks.push(loadProposedWeekMenu(session, selectedMenu.id));
 
 		if (!isCacheFresh(data.proposedWeekMenuDayPartsLoaded, proposedWeekMenuDayPartsLoadedAt, force)) {
 			tasks.push(loadProposedWeekMenuDayParts(session));
@@ -1693,14 +1841,14 @@
 	onMount(() => {
 		hydrated = true;
 		sessionNow = Date.now();
-		const sessionTimer = window.setInterval(() => {
-			sessionNow = Date.now();
-		}, 1000);
-		const initialHash = window.location.hash.slice(1);
-		currentSection = normalizeSection(initialHash);
-		if (initialHash === 'people-history') {
-			window.history.replaceState(null, '', '#menus-history');
-		}
+			const sessionTimer = window.setInterval(() => {
+				sessionNow = Date.now();
+			}, 1000);
+			const initialHash = window.location.hash.slice(1);
+			setSection(normalizeSection(initialHash), { updateHash: false });
+			if (initialHash === 'people-history') {
+				window.history.replaceState(null, '', '#menus-history');
+			}
 		sessionExpiredListener = (event: Event) => {
 			const detail = (event as CustomEvent<{ message?: string }>).detail;
 			openSessionExpiredDialog(detail?.message);
@@ -1708,7 +1856,7 @@
 
 		const syncSection = () => {
 			const nextHash = window.location.hash.slice(1);
-			currentSection = normalizeSection(nextHash);
+			setSection(normalizeSection(nextHash), { updateHash: false });
 			if (nextHash === 'people-history') {
 				window.history.replaceState(null, '', '#menus-history');
 			}
@@ -1827,18 +1975,66 @@
 	});
 
 	function openCreateModal() {
-		createDraft = data.createDefaults;
-		createPhotoPreview = null;
-		if (createPhotoInput) createPhotoInput.value = '';
+		form = null;
+		resetProductCreateDraft();
 		modalMode = 'product-create';
 	}
 
-	function openEditModal(product: Product) {
+	async function loadProductForModal(productId: number, fallbackProduct: Product, target: 'edit' | 'view') {
+		if (!authSession) {
+			clearSession();
+			return;
+		}
+
+		const requestToken = ++productDetailRequestToken;
+		productDetailLoading = true;
+		productDetailError = null;
+
+		try {
+			const product = await getProductRequest(productId, authorizationHeader(authSession));
+			if (requestToken !== productDetailRequestToken) return;
+
+			if (target === 'edit') {
+				editingProduct = product;
+				editDraft = toProductFormValues(product);
+			} else {
+				detailProduct = product;
+			}
+		} catch (error) {
+			if (requestToken !== productDetailRequestToken) return;
+			if (handleExpiredSession(error)) {
+				return;
+			}
+
+			if (error instanceof ApiError && (error.status === 404 || error.status === 405)) {
+				// Backwards compatibility for backends that still do not expose the detail endpoint.
+				if (target === 'edit') {
+					editingProduct = fallbackProduct;
+					editDraft = toProductFormValues(fallbackProduct);
+				} else {
+					detailProduct = fallbackProduct;
+				}
+				return;
+			}
+
+			productDetailError = error instanceof ApiError ? error.message : 'No se pudo cargar el producto.';
+		} finally {
+			if (requestToken === productDetailRequestToken) {
+				productDetailLoading = false;
+			}
+		}
+	}
+
+	async function openEditModal(product: Product) {
+		form = null;
+		resetProductEditDraft();
 		editingProductId = product.id;
-		editDraft = toProductFormValues(product);
-		editPhotoPreview = null;
-		if (editPhotoInput) editPhotoInput.value = '';
+		editingProduct = null;
+		detailProduct = null;
+		detailRecipe = null;
+		productDetailError = null;
 		modalMode = 'product-edit';
+		void loadProductForModal(product.id, product, 'edit');
 	}
 
 	function openDeleteModal(product: Product) {
@@ -1846,10 +2042,13 @@
 		modalMode = 'product-delete';
 	}
 
-	function openViewProductModal(product: Product) {
-		detailProduct = product;
+	async function openViewProductModal(product: Product) {
+		detailProduct = null;
+		editingProduct = null;
 		detailRecipe = null;
+		productDetailError = null;
 		modalMode = 'product-view';
+		void loadProductForModal(product.id, product, 'view');
 	}
 
 	function openStockModal(product: Product | null = null) {
@@ -1869,6 +2068,21 @@
 		return product.defaultPrice === null ? 'Sin precio' : formatCurrency(product.defaultPrice);
 	}
 
+	function productStockSourceLabel(product: Product | null | undefined) {
+		if (!product?.derivedProduct) return null;
+		return product.derivedProduct.stockFromComposition ? 'Composición' : 'Producto propio';
+	}
+
+	function closeProductActionMenu(target: EventTarget | null) {
+		if (!(target instanceof HTMLElement)) return;
+		target.closest('details')?.removeAttribute('open');
+	}
+
+	function runProductAction(event: MouseEvent, action: () => void) {
+		closeProductActionMenu(event.currentTarget);
+		action();
+	}
+
 	function productFromStockEntry(stockEntry: StockEntry): Product {
 		return (
 			data.products.find((item: Product) => item.id === stockEntry.productId) ?? {
@@ -1876,6 +2090,7 @@
 				name: stockEntry.productName,
 				description: '',
 				gramsPerUnit: 0,
+				nutritionBasis: 'PER_100_GRAMS',
 				defaultPrice: null,
 				nutritionalValues: {
 					calories: 0,
@@ -1926,7 +2141,8 @@
 	}
 
 	function openCreateRecipeModal() {
-		recipeCreateDraft = data.createRecipeDefaults;
+		form = null;
+		resetRecipeCreateDraft();
 		modalMode = 'recipe-create';
 	}
 
@@ -1961,6 +2177,7 @@
 
 	function openCreateDayPartModal() {
 		resetDayPartForm();
+		dayPartDraft.sortOrder = String(nextDayPartSortOrder());
 		form = null;
 		modalMode = 'day-part';
 	}
@@ -1974,7 +2191,7 @@
 
 	function createDaySectionDraft(existingSections: ProposedWeekMenuSectionFormValues[] = []) {
 		const usedDayPartIds = new Set(existingSections.map((section) => section.dayPartId).filter(Boolean));
-		const nextDayPart = data.proposedWeekMenuDayParts.find((dayPart) => !usedDayPartIds.has(String(dayPart.id)));
+		const nextDayPart = orderedProposedWeekMenuDayParts().find((dayPart) => !usedDayPartIds.has(String(dayPart.id)));
 
 		return {
 			...emptyProposedWeekMenuSectionForm(),
@@ -1999,10 +2216,31 @@
 		};
 	}
 
+	function weekDayProductQuantityError(sectionIndex: number, productIndex: number) {
+		const product = weekDayDraft.sections[sectionIndex]?.products[productIndex];
+		const productErrors = weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex];
+		if (!product || !productErrors) return '';
+
+		return product.quantityMode === 'grams' ? productErrors.grams ?? '' : productErrors.units ?? '';
+	}
+
+	function catalogQuantityMode(productId: string | number | null | undefined) {
+		if (productId === null || productId === undefined || String(productId).trim() === '') {
+			return 'units' as const;
+		}
+
+		const numericId = Number(productId);
+		if (Number.isNaN(numericId) || numericId <= 0) {
+			return 'units' as const;
+		}
+
+		return productQuantityMode(data.products.find((product) => product.id === numericId) ?? null);
+	}
+
 	function openWeekDayModal(date: string) {
 		const day = data.proposedWeekMenu?.days.find((item) => item.date === date) ?? null;
 		editingWeekDayDate = date;
-		weekDayDraft = toProposedWeekMenuDayFormValues(day);
+		weekDayDraft = toProposedWeekMenuDayFormValues(day, data.products);
 		if (!day) {
 			weekDayDraft = {
 				...emptyProposedWeekMenuDayForm(date),
@@ -2021,7 +2259,6 @@
 	}
 
 	function removeWeekDaySection(index: number) {
-		if (weekDayDraft.sections.length <= 1) return;
 		weekDayDraft = {
 			...weekDayDraft,
 			sections: weekDayDraft.sections.filter((_, currentIndex) => currentIndex !== index)
@@ -2063,9 +2300,38 @@
 		};
 	}
 
+	function moveWeekDayProduct(sectionIndex: number, productIndex: number, direction: -1 | 1) {
+		const section = weekDayDraft.sections[sectionIndex];
+		if (!section) return;
+
+		const targetIndex = productIndex + direction;
+		if (targetIndex < 0 || targetIndex >= section.products.length) return;
+
+		const products = [...section.products];
+		const currentProduct = products[productIndex];
+		const targetProduct = products[targetIndex];
+		if (!currentProduct || !targetProduct) return;
+
+		products[productIndex] = {
+			...targetProduct,
+			sortOrder: currentProduct.sortOrder
+		};
+		products[targetIndex] = {
+			...currentProduct,
+			sortOrder: targetProduct.sortOrder
+		};
+
+		weekDayDraft = {
+			...weekDayDraft,
+			sections: weekDayDraft.sections.map((item, currentSectionIndex) =>
+				currentSectionIndex === sectionIndex ? { ...item, products } : item
+			)
+		};
+	}
+
 	function removeWeekDayProduct(sectionIndex: number, productIndex: number) {
 		const section = weekDayDraft.sections[sectionIndex];
-		if (!section || section.products.length === 0) return;
+		if (!section) return;
 
 		weekDayDraft = {
 			...weekDayDraft,
@@ -2081,6 +2347,8 @@
 	}
 
 	function openEditRecipeModal(recipe: Recipe) {
+		form = null;
+		resetRecipeEditDraft();
 		editingRecipeId = recipe.id;
 		recipeEditDraft = toRecipeFormValues(recipe);
 		modalMode = 'recipe-edit';
@@ -2098,8 +2366,15 @@
 	}
 
 	function openDerivedProductModal(recipe: Recipe) {
+		form = null;
+		resetRecipeDerivedProductDraft();
+		recipeDerivedProductDraft = {
+			name: recipe.derivedProduct?.name ?? recipe.name,
+			units: recipe.derivedProduct ? String(recipe.derivedProduct.unitsProduced) : '',
+			stockFromComposition: recipe.derivedProduct?.stockFromComposition ?? false
+		};
+		derivingRecipeHasDerivedProduct = recipe.derivedProduct !== null;
 		derivingRecipeId = recipe.id;
-		recipeDerivedProductDraft = data.createRecipeDerivedProductDefaults;
 		modalMode = 'recipe-derive';
 	}
 
@@ -2117,9 +2392,19 @@
 		}
 	}
 
+	function addRecipeIngredientAndOpenPicker(target: 'create' | 'edit') {
+		const productIndex = target === 'create' ? recipeCreateDraft.ingredients.length : recipeEditDraft.ingredients.length;
+		addRecipeIngredient(target);
+		openProductPicker({
+			type: target === 'create' ? 'recipe-create' : 'recipe-edit',
+			productIndex,
+			selectedProductId: ''
+		});
+	}
+
 	function removeRecipeIngredient(target: 'create' | 'edit', index: number) {
-		const minIngredients = 1;
 		const source = target === 'create' ? recipeCreateDraft.ingredients : recipeEditDraft.ingredients;
+		const minIngredients = target === 'create' ? 0 : 1;
 		if (source.length <= minIngredients) return;
 
 		const nextIngredients = source.filter((_, currentIndex) => currentIndex !== index);
@@ -2131,19 +2416,28 @@
 	}
 
 	function closeModal() {
+		form = null;
+		validationDialog = null;
 		modalMode = null;
+		productDetailRequestToken += 1;
+		productDetailLoading = false;
+		productDetailError = null;
 		productPickerTarget = null;
+		productPickerPreviousModalMode = null;
 		previewProduct = null;
 		detailProduct = null;
+		editingProduct = null;
 		detailRecipe = null;
 		deleteProduct = null;
 		stockProduct = null;
 		editingStockEntry = null;
 		deletingStockEntry = null;
 		deleteRecipeItem = null;
-		editingProductId = null;
-		editingRecipeId = null;
-		derivingRecipeId = null;
+		resetProductCreateDraft();
+		resetProductEditDraft();
+		resetRecipeCreateDraft();
+		resetRecipeEditDraft();
+		resetRecipeDerivedProductDraft();
 		resetDayPartForm();
 		editingWeekDayDate = null;
 		creatingWeekMenuDraft = emptyProposedWeekMenuCreateForm();
@@ -2173,8 +2467,7 @@
 	}
 
 	function currentEditingProduct() {
-		if (editingProductId === null) return null;
-		return data.products.find((product: Product) => product.id === editingProductId) ?? null;
+		return editingProduct;
 	}
 
 	async function setPhotoPreview(
@@ -2221,6 +2514,33 @@
 			editPhotoPreview = null;
 			if (editPhotoInput) editPhotoInput.value = '';
 		}
+	}
+
+	function resetProductCreateDraft() {
+		createDraft = emptyProductForm();
+		clearPhotoSelection('create');
+	}
+
+	function resetProductEditDraft() {
+		editDraft = emptyProductForm();
+		clearPhotoSelection('edit');
+		editingProductId = null;
+		editingProduct = null;
+	}
+
+	function resetRecipeCreateDraft() {
+		recipeCreateDraft = emptyRecipeForm();
+	}
+
+	function resetRecipeEditDraft() {
+		recipeEditDraft = emptyRecipeForm();
+		editingRecipeId = null;
+	}
+
+	function resetRecipeDerivedProductDraft() {
+		recipeDerivedProductDraft = emptyRecipeDerivedProductForm();
+		derivingRecipeId = null;
+		derivingRecipeHasDerivedProduct = false;
 	}
 
 	function openProductPreview(product: Product) {
@@ -2292,40 +2612,6 @@
 
 	function weekDateRangeLabel(startDate: string, endDate: string) {
 		return `${formatShortDate(startDate)} al ${formatShortDate(endDate)}`;
-	}
-
-	function weekRangesOverlap(leftStartDate: string, leftEndDate: string, rightStartDate: string, rightEndDate: string) {
-		return leftStartDate <= rightEndDate && rightStartDate <= leftEndDate;
-	}
-
-	function findWeekPublishConflict() {
-		const proposedWeekMenu = data.proposedWeekMenu;
-		if (!proposedWeekMenu) return null;
-
-		const activeMenuId = activeProposedWeekMenuId;
-		const planningConflict = planningMenus.find(
-			(menu) =>
-				menu.id !== activeMenuId &&
-				weekRangesOverlap(proposedWeekMenu.startDate, proposedWeekMenu.endDate, menu.startDate, menu.endDate)
-		);
-		if (planningConflict) {
-			return {
-				label: planningMenuLabel(planningConflict)
-			};
-		}
-
-		const establishedConflict = data.menus.find(
-			(menu) =>
-				menu.proposedWeekMenuId !== activeMenuId &&
-				weekRangesOverlap(proposedWeekMenu.startDate, proposedWeekMenu.endDate, menu.startDate, menu.endDate)
-		);
-		if (establishedConflict) {
-			return {
-				label: `#${establishedConflict.id} · ${weekDateRangeLabel(establishedConflict.startDate, establishedConflict.endDate)}`
-			};
-		}
-
-		return null;
 	}
 
 	function knownProposedWeekMenuLabel(menu: KnownProposedWeekMenu) {
@@ -2404,7 +2690,7 @@
 	}
 
 	function weekPlanningSummary() {
-		return buildWeekPlanningSummary(data.proposedWeekMenu, data.stockEntries, data.products);
+		return buildWeekPlanningSummary(data.proposedWeekMenu);
 	}
 
 	function menuDays(menu: EstablishedWeekMenu | null) {
@@ -2590,7 +2876,8 @@
 	function createWeekMenuRequestValues(values: ProposedWeekMenuCreateFormValues) {
 		return {
 			startDate: values.startDate,
-			endDate: values.endDate
+			endDate: values.endDate,
+			users: Number(values.users)
 		};
 	}
 
@@ -2603,8 +2890,12 @@
 					productId:
 						product.type === 'manual' || product.productId.trim() === '' ? null : Number(product.productId),
 					productName: product.type === 'manual' ? product.productName.trim() : undefined,
-					units: product.units ? Number(product.units) : undefined,
-					grams: product.grams ? Number(product.grams) : undefined,
+					...(product.type === 'manual'
+						? {}
+						: {
+								units: product.quantityMode === 'units' && product.units ? Number(product.units) : undefined,
+								grams: product.quantityMode === 'grams' && product.grams ? Number(product.grams) : undefined
+							}),
 					calories: product.type === 'manual' && product.calories.trim() !== '' ? Number(product.calories) : undefined,
 					carbohydrates:
 						product.type === 'manual' && product.carbohydrates.trim() !== ''
@@ -2623,15 +2914,96 @@
 		return {
 			name: values.name,
 			description: values.description,
-			sortOrder: Number(values.sortOrder)
+			sortOrder: Number.isFinite(Number(values.sortOrder)) ? Number(values.sortOrder) : nextDayPartSortOrder()
 		};
 	}
+
+	function orderedProposedWeekMenuDayParts() {
+		return [...data.proposedWeekMenuDayParts].sort(
+			(left, right) => left.sortOrder - right.sortOrder || left.name.localeCompare(right.name)
+		);
+	}
+
+	function nextDayPartSortOrder() {
+		const highestSortOrder = data.proposedWeekMenuDayParts.reduce((highest, dayPart) => {
+			if (!Number.isFinite(dayPart.sortOrder) || dayPart.sortOrder < 0) return highest;
+			return Math.max(highest, dayPart.sortOrder);
+		}, 0);
+
+		return highestSortOrder + 10;
+	}
+
+	async function persistDayPartSortOrders(nextDayParts: ProposedWeekMenuDayPart[]) {
+		if (!authSession) return;
+
+		dayPartOrderBusy = true;
+		try {
+			const authorization = authorizationHeader(authSession);
+			for (const dayPart of nextDayParts) {
+				await updateProposedWeekMenuDayPartRequest(
+					dayPart.id,
+					{
+						name: dayPart.name,
+						description: dayPart.description,
+						sortOrder: dayPart.sortOrder
+					},
+					authorization
+				);
+			}
+
+			invalidateWeekMenuCaches();
+			await refreshDayPartsView(authSession, true);
+			if (data.proposedWeekMenuLoaded) {
+				await loadProposedWeekMenu(authSession);
+			}
+			if (shouldRefreshMenusViewAfterMutation()) {
+				await refreshMenusView(authSession, true);
+			}
+		} catch (error) {
+			if (handleExpiredSession(error)) {
+				return;
+			}
+			if (error instanceof ApiError) {
+				form = {
+					type: 'day-part-update',
+					error: error.message,
+					values: { ...dayPartDraft },
+					id: editingDayPartId ?? undefined
+				};
+				return;
+			}
+			throw error;
+		} finally {
+			dayPartOrderBusy = false;
+		}
+	}
+
+		async function moveDayPart(index: number, direction: -1 | 1) {
+			const dayParts = orderedProposedWeekMenuDayParts();
+			const targetIndex = index + direction;
+			if (targetIndex < 0 || targetIndex >= dayParts.length || dayPartOrderBusy || !authSession) return;
+
+			const currentDayPart = dayParts[index];
+			const targetDayPart = dayParts[targetIndex];
+			if (!currentDayPart || !targetDayPart) return;
+
+			await persistDayPartSortOrders([
+				{ ...currentDayPart, sortOrder: nextDayPartSortOrder() },
+				{ ...targetDayPart, sortOrder: currentDayPart.sortOrder },
+				{ ...currentDayPart, sortOrder: targetDayPart.sortOrder }
+			]);
+		}
 
 	function validateProposedWeekCreate(values: ProposedWeekMenuCreateFormValues) {
 		const fieldErrors: ProposedWeekMenuCreateFormErrors = {};
 
 		if (!values.startDate) fieldErrors.startDate = 'La fecha de inicio es obligatoria';
 		if (!values.endDate) fieldErrors.endDate = 'La fecha de fin es obligatoria';
+		if (!values.users) {
+			fieldErrors.users = 'El número de personas es obligatorio';
+		} else if (!Number.isInteger(Number(values.users)) || Number(values.users) < 1) {
+			fieldErrors.users = 'Introduce al menos una persona';
+		}
 
 		if (values.startDate && Number.isNaN(Date.parse(values.startDate))) {
 			fieldErrors.startDate = 'La fecha de inicio no es valida';
@@ -2713,14 +3085,12 @@
 					}
 				} else if (!product.productId || Number.isNaN(Number(product.productId)) || Number(product.productId) <= 0) {
 					currentProductErrors.productId = 'Selecciona un producto valido';
-				}
-
-				if (product.units && (Number.isNaN(Number(product.units)) || Number(product.units) <= 0)) {
-					currentProductErrors.units = 'Las unidades deben ser mayores que 0';
-				}
-
-				if (product.grams && (Number.isNaN(Number(product.grams)) || Number(product.grams) <= 0)) {
-					currentProductErrors.grams = 'Los gramos deben ser mayores que 0';
+					if (product.units && (Number.isNaN(Number(product.units)) || Number(product.units) <= 0)) {
+						currentProductErrors.units = 'Las unidades deben ser mayores que 0';
+					}
+					if (product.grams && (Number.isNaN(Number(product.grams)) || Number(product.grams) <= 0)) {
+						currentProductErrors.grams = 'Los gramos deben ser mayores que 0';
+					}
 				}
 
 				if (!product.sortOrder || Number.isNaN(sortOrder) || sortOrder < 0) {
@@ -2774,14 +3144,14 @@
 			fieldErrors.description = 'La descripcion es obligatoria';
 		}
 
-		if (!values.sortOrder || Number.isNaN(Number(values.sortOrder)) || Number(values.sortOrder) < 0) {
-			fieldErrors.sortOrder = 'El orden debe ser un numero valido mayor o igual a 0';
-		}
-
 		return fieldErrors;
 	}
 
-	function formatNumber(value: number) {
+	function formatNumber(value: number | null | undefined) {
+		if (value === null || value === undefined || Number.isNaN(value)) {
+			return '—';
+		}
+
 		return Number.isInteger(value) ? String(value) : value.toFixed(1).replace(/\.0$/, '');
 	}
 
@@ -2839,7 +3209,7 @@
 	}
 
 	function recipesSectionLoading() {
-		return !data.recipesLoaded || !data.recipeStatsLoaded;
+		return !data.recipesLoaded;
 	}
 
 	function stockSectionLoading() {
@@ -3020,6 +3390,7 @@
 
 	async function submitLogin(event: SubmitEvent) {
 		event.preventDefault();
+		validationDialog = null;
 		clearLoginSuccessTimer();
 		form = null;
 
@@ -3032,6 +3403,10 @@
 				values: { username: values.username },
 				fieldErrors
 			};
+			openValidationDialog('No se pudo iniciar sesión', 'Corrige estos campos antes de continuar.', labeledValidationItems([
+				['Usuario', fieldErrors.username],
+				['Contraseña', fieldErrors.password]
+			]));
 			return;
 		}
 
@@ -3064,6 +3439,7 @@
 
 	async function submitRegister(event: SubmitEvent) {
 		event.preventDefault();
+		validationDialog = null;
 		registerResult = null;
 
 		const values = { ...registerDraft };
@@ -3075,6 +3451,11 @@
 				values,
 				fieldErrors
 			};
+			openValidationDialog('No se pudo registrar el usuario', 'Corrige estos campos antes de continuar.', labeledValidationItems([
+				['Usuario', fieldErrors.username],
+				['Contraseña', fieldErrors.password],
+				['Código de registro', fieldErrors.registrationCode]
+			]));
 			return;
 		}
 
@@ -3123,6 +3504,7 @@
 
 	async function submitCreateProduct(event: SubmitEvent) {
 		event.preventDefault();
+		validationDialog = null;
 
 		const values = { ...createDraft };
 		const fieldErrors = validateProductForm(values);
@@ -3133,6 +3515,16 @@
 				values,
 				fieldErrors
 			};
+			openValidationDialog('No se pudo guardar el producto', 'Corrige estos campos antes de continuar.', labeledValidationItems([
+				['Nombre', fieldErrors.name],
+				['Descripción', fieldErrors.description],
+				['Gr/unidad', fieldErrors.gramsPerUnit],
+				['Precio por defecto', fieldErrors.defaultPrice],
+				['Calorías', fieldErrors.calories],
+				['Carbohidratos', fieldErrors.carbohydrates],
+				['Proteínas', fieldErrors.proteins],
+				['Grasas', fieldErrors.fats]
+			]));
 			return;
 		}
 		if (!authSession) {
@@ -3148,8 +3540,7 @@
 				},
 				authorizationHeader(authSession)
 			);
-			createDraft = data.createDefaults;
-			clearPhotoSelection('create');
+			resetProductCreateDraft();
 			modalMode = null;
 			form = {
 				type: 'create',
@@ -3175,7 +3566,9 @@
 
 	async function submitUpdateProduct(event: SubmitEvent) {
 		event.preventDefault();
+		validationDialog = null;
 		if (editingProductId === null) return;
+		const updatedProductId = editingProductId;
 
 		const values = { ...editDraft };
 		const fieldErrors = validateProductForm(values);
@@ -3187,6 +3580,16 @@
 				values,
 				fieldErrors
 			};
+			openValidationDialog('No se pudo actualizar el producto', 'Corrige estos campos antes de continuar.', labeledValidationItems([
+				['Nombre', fieldErrors.name],
+				['Descripción', fieldErrors.description],
+				['Gr/unidad', fieldErrors.gramsPerUnit],
+				['Precio por defecto', fieldErrors.defaultPrice],
+				['Calorías', fieldErrors.calories],
+				['Carbohidratos', fieldErrors.carbohydrates],
+				['Proteínas', fieldErrors.proteins],
+				['Grasas', fieldErrors.fats]
+			]));
 			return;
 		}
 		if (!authSession) {
@@ -3196,19 +3599,19 @@
 
 		try {
 			await updateProductRequest(
-				editingProductId,
+				updatedProductId,
 				{
 					...values,
 					photo: await readPhotoUpload(editPhotoInput)
 				},
 				authorizationHeader(authSession)
 			);
-			clearPhotoSelection('edit');
+			resetProductEditDraft();
 			modalMode = null;
 			form = {
 				type: 'update',
 				success: 'Producto actualizado correctamente',
-				id: editingProductId
+				id: updatedProductId
 			};
 			await refreshProductsView(authSession, true);
 			if (data.recipesLoaded) {
@@ -3269,6 +3672,7 @@
 
 	async function submitCreateStock(event: SubmitEvent) {
 		event.preventDefault();
+		validationDialog = null;
 		if (!authSession) return;
 		const selectedStockEntry = editingStockEntry;
 		const selectedStockProduct = stockProduct;
@@ -3283,6 +3687,13 @@
 				values,
 				fieldErrors
 			};
+			openValidationDialog('No se pudo guardar el stock', 'Corrige estos campos antes de continuar.', labeledValidationItems([
+				['Producto', fieldErrors.productId],
+				['Cantidad', fieldErrors.quantity],
+				['Precio', fieldErrors.price],
+				['Caducidad', fieldErrors.expirationDate],
+				['Entrada', fieldErrors.entryDate]
+			]));
 			return;
 		}
 
@@ -3293,6 +3704,9 @@
 				values,
 				fieldErrors: { productId: 'Selecciona un producto' }
 			};
+			openValidationDialog('No se pudo guardar el stock', 'Selecciona un producto antes de continuar.', [
+				'Producto: selecciona un producto.'
+			]);
 			return;
 		}
 
@@ -3390,6 +3804,7 @@
 
 	async function submitCreateRecipe(event: SubmitEvent) {
 		event.preventDefault();
+		validationDialog = null;
 		if (!authSession) return;
 
 		const values = { ...recipeCreateDraft };
@@ -3401,6 +3816,7 @@
 				values,
 				fieldErrors
 			};
+			openValidationDialog('No se pudo guardar la receta', 'Corrige estos campos antes de continuar.', recipeValidationItems(fieldErrors));
 			return;
 		}
 
@@ -3414,7 +3830,8 @@
 				},
 				authorizationHeader(authSession)
 			);
-			recipeCreateDraft = data.createRecipeDefaults;
+			invalidateRecipesCache();
+			resetRecipeCreateDraft();
 			modalMode = null;
 			form = {
 				type: 'recipe-create',
@@ -3440,7 +3857,9 @@
 
 	async function submitUpdateRecipe(event: SubmitEvent) {
 		event.preventDefault();
+		validationDialog = null;
 		if (!authSession || editingRecipeId === null) return;
+		const updatedRecipeId = editingRecipeId;
 
 		const values = { ...recipeEditDraft };
 		const fieldErrors = validateRecipeForm(values);
@@ -3452,12 +3871,13 @@
 				values,
 				fieldErrors
 			};
+			openValidationDialog('No se pudo actualizar la receta', 'Corrige estos campos antes de continuar.', recipeValidationItems(fieldErrors));
 			return;
 		}
 
 		try {
 			await updateRecipeRequest(
-				editingRecipeId,
+				updatedRecipeId,
 				{
 					name: values.name,
 					description: values.description,
@@ -3466,11 +3886,13 @@
 				},
 				authorizationHeader(authSession)
 			);
+			invalidateRecipesCache();
+			resetRecipeEditDraft();
 			modalMode = null;
 			form = {
 				type: 'recipe-update',
 				success: 'Receta actualizada correctamente',
-				id: editingRecipeId
+				id: updatedRecipeId
 			};
 			await refreshRecipesView(authSession, true);
 		} catch (error) {
@@ -3497,6 +3919,7 @@
 
 		try {
 			await deleteRecipeRequest(deleteRecipeItem.id, authorizationHeader(authSession));
+			invalidateRecipesCache();
 			deleteRecipeItem = null;
 			modalMode = null;
 			form = {
@@ -3522,7 +3945,9 @@
 
 	async function submitCreateDerivedProduct(event: SubmitEvent) {
 		event.preventDefault();
+		validationDialog = null;
 		if (!authSession || derivingRecipeId === null) return;
+		const recipeId = derivingRecipeId;
 
 		const values = { ...recipeDerivedProductDraft };
 		const fieldErrors = validateRecipeDerivedProductForm(values);
@@ -3534,26 +3959,37 @@
 				values,
 				fieldErrors
 			};
+			openValidationDialog('No se pudo crear el producto derivado', 'Corrige estos campos antes de continuar.', labeledValidationItems([
+				['Nombre', fieldErrors.name],
+				['Unidades', fieldErrors.units]
+			]));
 			return;
 		}
 
 		try {
+			const wasEditingExistingDerivedProduct = derivingRecipeHasDerivedProduct;
 			await createDerivedProductRequest(
-				derivingRecipeId,
+				recipeId,
 				{
-					producedGrams: Number(values.producedGrams),
-					gramsPerUnit: Number(values.gramsPerUnit)
+					name: values.name,
+					units: Number(values.units),
+					stockFromComposition: values.stockFromComposition
 				},
 				authorizationHeader(authSession)
 			);
-			recipeDerivedProductDraft = data.createRecipeDerivedProductDefaults;
+			invalidateRecipesCache();
+			resetRecipeDerivedProductDraft();
 			modalMode = null;
 			form = {
 				type: 'recipe-derive',
-				success: 'Producto derivado creado correctamente',
-				id: derivingRecipeId
+				success: wasEditingExistingDerivedProduct
+					? 'Producto derivado actualizado correctamente'
+					: 'Producto derivado creado correctamente',
+				id: recipeId
 			};
 			await refreshRecipesView(authSession, true);
+			await loadProducts(authSession);
+			await loadProductStats(authSession);
 		} catch (error) {
 			if (handleExpiredSession(error)) {
 				return;
@@ -3574,6 +4010,7 @@
 
 	async function submitCreateWeekMenu(event: SubmitEvent) {
 		event.preventDefault();
+		validationDialog = null;
 		if (!authSession) return;
 
 		const values = { ...creatingWeekMenuDraft };
@@ -3585,6 +4022,11 @@
 				values,
 				fieldErrors
 			};
+			openValidationDialog('No se pudo crear la planificación', 'Corrige estos campos antes de continuar.', labeledValidationItems([
+				['Fecha de inicio', fieldErrors.startDate],
+				['Fecha de fin', fieldErrors.endDate],
+				['Personas', fieldErrors.users]
+			]));
 			return;
 		}
 
@@ -3621,6 +4063,7 @@
 
 	async function submitDayPart(event: SubmitEvent) {
 		event.preventDefault();
+		validationDialog = null;
 		if (!authSession) return;
 
 		const values = { ...dayPartDraft };
@@ -3634,8 +4077,16 @@
 				values,
 				fieldErrors
 			};
-			return;
-		}
+				openValidationDialog(
+					editingDayPartId === null ? 'No se pudo crear la parte del día' : 'No se pudo actualizar la parte del día',
+					'Corrige estos campos antes de continuar.',
+					labeledValidationItems([
+						['Nombre', fieldErrors.name],
+						['Descripción', fieldErrors.description]
+					])
+				);
+				return;
+			}
 
 		try {
 			if (editingDayPartId === null) {
@@ -3684,9 +4135,32 @@
 
 	async function submitUpsertWeekDay(event: SubmitEvent) {
 		event.preventDefault();
+		validationDialog = null;
 		if (!authSession || !activeProposedWeekMenuId) return;
 
 		const values = { ...weekDayDraft };
+		if (data.products.length === 0 || data.proposedWeekMenuDayParts.length === 0) {
+			form = {
+				type: 'week-day',
+				error:
+					data.products.length === 0
+						? 'Necesitas al menos un producto cargado para poder guardar el menu.'
+						: 'Necesitas al menos una parte del dia creada para poder guardar el menu.',
+				id: activeProposedWeekMenuId,
+				values
+			};
+			openValidationDialog(
+				'No se pudo guardar el menú diario',
+				'Faltan elementos previos para poder guardarlo.',
+				[
+					data.products.length === 0
+						? 'Necesitas al menos un producto cargado.'
+						: 'Necesitas al menos una parte del día creada.'
+				]
+			);
+			return;
+		}
+
 		const fieldErrors = validateProposedWeekDay(values);
 		if (Object.keys(fieldErrors).length > 0) {
 			form = {
@@ -3696,6 +4170,7 @@
 				values,
 				fieldErrors
 			};
+			openValidationDialog('No se pudo guardar el menú diario', 'Corrige estos campos antes de continuar.', weekDayValidationItems(fieldErrors));
 			return;
 		}
 
@@ -3741,21 +4216,15 @@
 
 	async function submitPublishWeekMenu(event: SubmitEvent) {
 		event.preventDefault();
+		validationDialog = null;
 		if (!authSession || !activeProposedWeekMenuId) return;
-
-		const conflict = findWeekPublishConflict();
-		if (conflict) {
-			form = {
-				type: 'week-publish',
-				error: `Ya existe una planificación que se solapa con este rango: ${conflict.label}.`,
-				id: activeProposedWeekMenuId
-			};
-			return;
-		}
 
 		const payerUserId = Number(publishPayerUserId);
 		if (!Number.isFinite(payerUserId) || payerUserId <= 0) {
 			form = { type: 'week-publish', error: 'Selecciona un pagador válido.', id: activeProposedWeekMenuId };
+			openValidationDialog('No se pudo establecer la semana', 'Corrige este campo antes de continuar.', [
+				'Pagador: selecciona un usuario válido.'
+			]);
 			return;
 		}
 
@@ -3767,6 +4236,9 @@
 
 		if (personIds.length === 0) {
 			form = { type: 'week-publish', error: 'Selecciona al menos una persona que consuma la semana.', id: activeProposedWeekMenuId };
+			openValidationDialog('No se pudo establecer la semana', 'Selecciona al menos una persona que consuma la semana.', [
+				'Personas consumidoras: selecciona al menos una.'
+			]);
 			return;
 		}
 
@@ -3801,13 +4273,9 @@
 			}
 
 			if (error instanceof ApiError) {
-				const overlapConflict = error.status === 400 ? findWeekPublishConflict() : null;
 				form = {
 					type: 'week-publish',
-					error:
-						overlapConflict
-							? `Ya existe una planificación que se solapa con este rango: ${overlapConflict.label}.`
-							: error.message,
+					error: error.message,
 					id: activeProposedWeekMenuId
 				};
 				return;
@@ -4453,6 +4921,13 @@
 					<span class="min-w-0 break-words">{form.error}</span>
 				</p>
 			{/if}
+			<ValidationDialog
+				open={validationDialog !== null}
+				title={validationDialog?.title ?? 'Validación pendiente'}
+				message={validationDialog?.message ?? 'Revisa el formulario antes de continuar.'}
+				items={validationDialog?.items ?? []}
+				onClose={closeValidationDialog}
+			/>
 			{#if currentSection === 'products'}
 				<section id="products" class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
 					<div class="min-w-0">
@@ -4652,7 +5127,7 @@
 					</div>
 				{:else}
 						<div data-testid="product-list">
-								<div class={productViewMode === 'list' ? 'overflow-x-auto' : 'hidden'}>
+								<div class={productViewMode === 'list' ? 'hidden overflow-x-auto sm:block' : 'hidden'}>
 								<table class="w-full table-fixed text-sm">
 									<colgroup>
 										<col class="w-[34%]" />
@@ -4666,12 +5141,14 @@
 									<thead class="bg-[hsl(var(--secondary))] text-xs text-[hsl(var(--muted-foreground))]">
 										<tr class="border-b border-[hsl(var(--border))]">
 											<th class="px-4 py-2.5 text-left font-medium">Producto</th>
-											<th class="px-3 py-2.5 text-right font-medium">Kcal</th>
-											<th class="px-3 py-2.5 text-right font-medium">Carbos</th>
-											<th class="px-3 py-2.5 text-right font-medium">Proteinas</th>
-											<th class="px-3 py-2.5 text-right font-medium">Grasas</th>
-											<th class="px-3 py-2.5 text-right font-medium">Precio</th>
-											<th class="px-4 py-2.5 text-right font-medium">Acciones</th>
+											<th class="hidden px-3 py-2.5 text-right font-medium sm:table-cell">Kcal</th>
+											<th class="hidden px-3 py-2.5 text-right font-medium sm:table-cell">Carbos</th>
+											<th class="hidden px-3 py-2.5 text-right font-medium sm:table-cell">Proteinas</th>
+											<th class="hidden px-3 py-2.5 text-right font-medium sm:table-cell">Grasas</th>
+											<th class="hidden px-3 py-2.5 text-right font-medium sm:table-cell">Precio</th>
+											<th class="px-4 py-2.5 text-right font-medium">
+												<span class="hidden sm:inline">Acciones</span>
+											</th>
 										</tr>
 								</thead>
 								<tbody class="divide-y divide-[hsl(var(--border))]">
@@ -4682,8 +5159,8 @@
 									{#if product.photo && !productPhotoIsBroken(product.photo)}
 										{@const productPhoto = product.photo}
 										<button
+															class="hidden sm:block group mt-0.5 overflow-hidden rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] shadow-sm transition hover:border-[hsl(var(--primary)/0.35)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))]"
 															type="button"
-															class="group mt-0.5 overflow-hidden rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] shadow-sm transition hover:border-[hsl(var(--primary)/0.35)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))]"
 															aria-label={`Ver imagen de ${product.name}`}
 															onclick={() => openProductPreview(product)}
 															data-testid={`product-photo-${product.id}`}
@@ -4697,10 +5174,10 @@
 												onload={() => clearProductPhotoBroken(productPhoto)}
 												onerror={() => markProductPhotoBroken(productPhoto)}
 											/>
-														</button>
-													{:else}
+											</button>
+														{:else}
 														<span
-															class="mt-0.5 grid size-12 shrink-0 place-items-center rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] text-[hsl(var(--muted-foreground))]"
+															class="hidden sm:grid mt-0.5 size-12 shrink-0 place-items-center rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] text-[hsl(var(--muted-foreground))]"
 															data-testid={`product-photo-fallback-${product.id}`}
 														>
 															<Package class="size-4" aria-hidden="true" />
@@ -4719,68 +5196,124 @@
 													</div>
 												</div>
 											</td>
-											<td class="px-3 py-3 text-right align-top font-medium tabular-nums">
+											<td class="hidden px-3 py-3 text-right align-top font-medium tabular-nums sm:table-cell">
 												{formatNumber(product.nutritionalValues.calories)}
 											</td>
-											<td class="px-3 py-3 text-right align-top tabular-nums">
+											<td class="hidden px-3 py-3 text-right align-top tabular-nums sm:table-cell">
 												{formatNumber(product.nutritionalValues.carbohydrates)}g
 											</td>
-											<td class="px-3 py-3 text-right align-top tabular-nums">
+											<td class="hidden px-3 py-3 text-right align-top tabular-nums sm:table-cell">
 												{formatNumber(product.nutritionalValues.proteins)}g
 											</td>
-											<td class="px-3 py-3 text-right align-top tabular-nums">
+											<td class="hidden px-3 py-3 text-right align-top tabular-nums sm:table-cell">
 												{formatNumber(product.nutritionalValues.fats)}g
 											</td>
-											<td class="px-3 py-3 text-right align-top">
+											<td class="hidden px-3 py-3 text-right align-top sm:table-cell">
 												<p class="font-medium tabular-nums">{productDefaultPriceLabel(product)}</p>
 											</td>
 											<td class="px-4 py-3 align-top">
-												<div class="flex justify-end gap-1">
-													<Button
-														variant="ghost"
-														size="icon"
-														type="button"
-														aria-label="Ver"
-														title="Ver"
-														onclick={() => openViewProductModal(product)}
-														data-testid={`view-button-${product.id}`}
-													>
-														<Eye class="size-4" aria-hidden="true" />
-													</Button>
-													<Button
-														variant="ghost"
-														size="icon"
-														type="button"
-														aria-label="Añadir stock"
-														title="Añadir stock"
-														onclick={() => openStockModal(product)}
-														data-testid={`stock-button-${product.id}`}
-													>
-														<Package class="size-4" aria-hidden="true" />
-													</Button>
-													<Button
-														variant="ghost"
-														size="icon"
-														type="button"
-														aria-label="Editar"
-														title="Editar"
-														onclick={() => openEditModal(product)}
-														data-testid={`edit-button-${product.id}`}
-													>
-														<Pencil class="size-4" aria-hidden="true" />
-													</Button>
-													<Button
-														variant="ghost"
-														size="icon"
-														type="button"
-														aria-label="Eliminar"
-														title="Eliminar"
-														class="text-[hsl(var(--destructive))] hover:bg-[hsl(var(--destructive)/0.08)] hover:text-[hsl(var(--destructive))]"
-														onclick={() => openDeleteModal(product)}
-														data-testid={`delete-button-${product.id}`}
-													>
-														<Trash2 class="size-4" aria-hidden="true" />
-													</Button>
+												<div class="flex justify-end">
+													<div class="hidden items-center gap-1 sm:flex">
+														<Button
+															variant="ghost"
+															size="icon"
+															type="button"
+															aria-label="Ver"
+															title="Ver"
+															onclick={() => openViewProductModal(product)}
+															data-testid={`view-button-${product.id}`}
+														>
+															<Eye class="size-4" aria-hidden="true" />
+														</Button>
+														<Button
+															variant="ghost"
+															size="icon"
+															type="button"
+															aria-label="Añadir stock"
+															title="Añadir stock"
+															onclick={() => openStockModal(product)}
+															data-testid={`stock-button-${product.id}`}
+														>
+															<Package class="size-4" aria-hidden="true" />
+														</Button>
+														<Button
+															variant="ghost"
+															size="icon"
+															type="button"
+															aria-label="Editar"
+															title="Editar"
+															onclick={() => openEditModal(product)}
+															data-testid={`edit-button-${product.id}`}
+														>
+															<Pencil class="size-4" aria-hidden="true" />
+														</Button>
+														<Button
+															variant="ghost"
+															size="icon"
+															type="button"
+															aria-label="Eliminar"
+															title="Eliminar"
+															class="text-[hsl(var(--destructive))] hover:bg-[hsl(var(--destructive)/0.08)] hover:text-[hsl(var(--destructive))]"
+															onclick={() => openDeleteModal(product)}
+															data-testid={`delete-button-${product.id}`}
+														>
+															<Trash2 class="size-4" aria-hidden="true" />
+														</Button>
+													</div>
+
+													<details class="relative ml-auto sm:hidden">
+														<summary
+															class="ml-auto flex list-none items-center rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-2 text-[hsl(var(--foreground))] shadow-sm outline-none transition hover:border-[hsl(var(--primary)/0.35)] focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))]"
+														>
+															<Settings class="size-4 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
+														</summary>
+														<div class="absolute right-0 z-10 mt-2 w-40 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-1 shadow-lg">
+															<Button
+																variant="ghost"
+																size="sm"
+																type="button"
+																class="w-full justify-start"
+																onclick={(event) => runProductAction(event, () => openViewProductModal(product))}
+																data-testid={`view-button-${product.id}`}
+															>
+																<Eye class="size-4" aria-hidden="true" />
+																Ver
+															</Button>
+															<Button
+																variant="ghost"
+																size="sm"
+																type="button"
+																class="w-full justify-start"
+																onclick={(event) => runProductAction(event, () => openStockModal(product))}
+																data-testid={`stock-button-${product.id}`}
+															>
+																<Package class="size-4" aria-hidden="true" />
+																Stock
+															</Button>
+															<Button
+																variant="ghost"
+																size="sm"
+																type="button"
+																class="w-full justify-start"
+																onclick={(event) => runProductAction(event, () => openEditModal(product))}
+																data-testid={`edit-button-${product.id}`}
+															>
+																<Pencil class="size-4" aria-hidden="true" />
+																Editar
+															</Button>
+															<Button
+																variant="ghost"
+																size="sm"
+																type="button"
+																class="w-full justify-start text-[hsl(var(--destructive))] hover:bg-[hsl(var(--destructive)/0.08)] hover:text-[hsl(var(--destructive))]"
+																onclick={(event) => runProductAction(event, () => openDeleteModal(product))}
+																data-testid={`delete-button-${product.id}`}
+															>
+																<Trash2 class="size-4" aria-hidden="true" />
+																Eliminar
+															</Button>
+														</div>
+													</details>
 												</div>
 											</td>
 										</tr>
@@ -4789,12 +5322,111 @@
 							</table>
 						</div>
 
+							<div class={productViewMode === 'list' ? 'divide-y divide-[hsl(var(--border))] sm:hidden' : 'hidden'}>
+								{#each filteredProducts() as product (product.id)}
+									<article class="space-y-3 p-4">
+										<div class="flex min-w-0 items-start gap-3">
+											<div class="min-w-0 flex-1">
+												<div class="flex min-w-0 items-center gap-2">
+													<p class="truncate font-medium text-[hsl(var(--foreground))]">{product.name}</p>
+													<span class="shrink-0 rounded-md bg-[hsl(var(--secondary))] px-1.5 py-0.5 text-xs text-[hsl(var(--muted-foreground))]">
+														#{product.id}
+													</span>
+												</div>
+												<p class="mt-1 line-clamp-2 break-words text-xs leading-5 text-[hsl(var(--muted-foreground))]">
+													{product.description}
+												</p>
+												<div class="mt-3 flex flex-wrap gap-2">
+													<div class="inline-flex items-center gap-1.5 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.2)] px-2 py-1 text-xs font-medium text-[hsl(var(--foreground))]">
+														<Flame class="size-3.5 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
+														{formatNumber(product.nutritionalValues.calories)} kcal
+													</div>
+													<div class="inline-flex items-center gap-1.5 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.2)] px-2 py-1 text-xs font-medium text-[hsl(var(--foreground))]">
+														<Wheat class="size-3.5 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
+														{formatNumber(product.nutritionalValues.carbohydrates)} g
+													</div>
+													<div class="inline-flex items-center gap-1.5 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.2)] px-2 py-1 text-xs font-medium text-[hsl(var(--foreground))]">
+														<Drumstick class="size-3.5 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
+														{formatNumber(product.nutritionalValues.proteins)} g
+													</div>
+													<div class="inline-flex items-center gap-1.5 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.2)] px-2 py-1 text-xs font-medium text-[hsl(var(--foreground))]">
+														<Droplets class="size-3.5 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
+														{formatNumber(product.nutritionalValues.fats)} g
+													</div>
+													{#if product.defaultPrice !== null}
+														<div class="inline-flex items-center gap-1.5 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.2)] px-2 py-1 text-xs font-medium text-[hsl(var(--foreground))]">
+															<PiggyBank class="size-3.5 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
+															{productDefaultPriceLabel(product)}
+														</div>
+													{/if}
+												</div>
+											</div>
+
+											<details class="relative ml-auto shrink-0">
+												<summary
+													class="ml-auto flex list-none items-center rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-2 text-[hsl(var(--foreground))] shadow-sm outline-none transition hover:border-[hsl(var(--primary)/0.35)] focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))]"
+												>
+													<Settings class="size-4 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
+												</summary>
+												<div class="absolute right-0 z-10 mt-2 w-40 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-1 shadow-lg">
+													<Button
+														variant="ghost"
+														size="sm"
+														type="button"
+														class="w-full justify-start"
+														onclick={(event) => runProductAction(event, () => openViewProductModal(product))}
+														data-testid={`view-button-${product.id}`}
+													>
+														<Eye class="size-4" aria-hidden="true" />
+														Ver
+													</Button>
+													<Button
+														variant="ghost"
+														size="sm"
+														type="button"
+														class="w-full justify-start"
+														onclick={(event) => runProductAction(event, () => openStockModal(product))}
+														data-testid={`stock-button-${product.id}`}
+													>
+														<Package class="size-4" aria-hidden="true" />
+														Stock
+													</Button>
+													<Button
+														variant="ghost"
+														size="sm"
+														type="button"
+														class="w-full justify-start"
+														onclick={(event) => runProductAction(event, () => openEditModal(product))}
+														data-testid={`edit-button-${product.id}`}
+													>
+														<Pencil class="size-4" aria-hidden="true" />
+														Editar
+													</Button>
+													<Button
+														variant="ghost"
+														size="sm"
+														type="button"
+														class="w-full justify-start text-[hsl(var(--destructive))] hover:bg-[hsl(var(--destructive)/0.08)] hover:text-[hsl(var(--destructive))]"
+														onclick={(event) => runProductAction(event, () => openDeleteModal(product))}
+														data-testid={`delete-button-${product.id}`}
+													>
+														<Trash2 class="size-4" aria-hidden="true" />
+														Eliminar
+													</Button>
+												</div>
+											</details>
+										</div>
+									</article>
+								{/each}
+							</div>
+
 							<div class={productViewMode === 'block' ? 'divide-y divide-[hsl(var(--border))]' : 'hidden'}>
 							{#each filteredProducts() as product (product.id)}
 								<article class="space-y-4 p-4">
 									<div class="flex min-w-0 items-start gap-3">
-									{#if product.photo && !productPhotoIsBroken(product.photo)}
-										{@const productPhoto = product.photo}
+										{#if product.photo && !productPhotoIsBroken(product.photo)}
+											{@const productPhoto = product.photo}
+											<div class="hidden sm:block">
 											<button
 												type="button"
 												class="group overflow-hidden rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] shadow-sm transition hover:border-[hsl(var(--primary)/0.35)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))]"
@@ -4812,9 +5444,10 @@
 												onerror={() => markProductPhotoBroken(productPhoto)}
 											/>
 											</button>
+											</div>
 										{:else}
 											<span
-												class="grid size-12 shrink-0 place-items-center rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] text-[hsl(var(--muted-foreground))]"
+												class="hidden size-12 shrink-0 place-items-center rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] text-[hsl(var(--muted-foreground))] sm:grid"
 												data-testid={`product-photo-fallback-${product.id}`}
 											>
 												<Package class="size-4" aria-hidden="true" />
@@ -4872,12 +5505,19 @@
 										</div>
 										</dl>
 
-										<div class="rounded-md border border-[hsl(var(--border))] p-3">
+										{#if product.defaultPrice !== null}
+											<div class="inline-flex items-center gap-1.5 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.2)] px-2 py-1 text-xs font-medium text-[hsl(var(--foreground))] sm:hidden">
+												<PiggyBank class="size-3.5 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
+												{productDefaultPriceLabel(product)}
+											</div>
+										{/if}
+
+										<div class="hidden rounded-md border border-[hsl(var(--border))] p-3 sm:block">
 											<p class="text-xs text-[hsl(var(--muted-foreground))]">Precio por defecto</p>
 											<p class="mt-1 text-sm font-medium tabular-nums">{productDefaultPriceLabel(product)}</p>
 										</div>
 
-											<div class="grid grid-cols-2 gap-2">
+											<div class="hidden items-center gap-2 sm:grid sm:grid-cols-2">
 											<Button
 												variant="secondary"
 												size="sm"
@@ -4916,6 +5556,55 @@
 												Eliminar
 											</Button>
 										</div>
+										<details class="relative ml-auto sm:hidden">
+											<summary
+												class="ml-auto flex list-none items-center rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-2 text-[hsl(var(--foreground))] shadow-sm outline-none transition hover:border-[hsl(var(--primary)/0.35)] focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))]"
+											>
+												<Settings class="size-4 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
+											</summary>
+											<div class="absolute right-0 z-10 mt-2 w-40 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-1 shadow-lg">
+												<Button
+													variant="ghost"
+													size="sm"
+													type="button"
+													class="w-full justify-start"
+													onclick={(event) => runProductAction(event, () => openViewProductModal(product))}
+												>
+													<Eye class="size-4" aria-hidden="true" />
+													Ver
+												</Button>
+												<Button
+													variant="ghost"
+													size="sm"
+													type="button"
+													class="w-full justify-start"
+													onclick={(event) => runProductAction(event, () => openStockModal(product))}
+												>
+													<Package class="size-4" aria-hidden="true" />
+													Stock
+												</Button>
+												<Button
+													variant="ghost"
+													size="sm"
+													type="button"
+													class="w-full justify-start"
+													onclick={(event) => runProductAction(event, () => openEditModal(product))}
+												>
+													<Pencil class="size-4" aria-hidden="true" />
+													Editar
+												</Button>
+												<Button
+													variant="ghost"
+													size="sm"
+													type="button"
+													class="w-full justify-start text-[hsl(var(--destructive))] hover:bg-[hsl(var(--destructive)/0.08)] hover:text-[hsl(var(--destructive))]"
+													onclick={(event) => runProductAction(event, () => openDeleteModal(product))}
+												>
+													<Trash2 class="size-4" aria-hidden="true" />
+													Eliminar
+												</Button>
+											</div>
+										</details>
 									</article>
 							{/each}
 						</div>
@@ -5476,25 +6165,28 @@
 														<MetricCard label="Grasas" value={formatNumber(day.nutritionalValues.fats)} hint="Total del dia"><Droplets class="size-4" aria-hidden="true" /></MetricCard>
 													</div>
 												{/if}
-												<div class="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
+												<div class="grid items-start gap-3 lg:grid-cols-2 xl:grid-cols-3">
 													{#each day.sections as section}
-														<div class="flex min-h-[14rem] flex-col overflow-hidden rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.35)] p-3 lg:aspect-square">
+														<div class="flex h-fit flex-col overflow-hidden rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.35)] p-3">
 															<div class="flex items-start justify-between gap-3">
 																<div>
 																	<p class="text-sm font-medium text-[hsl(var(--foreground))]">{section.name}</p>
 																</div>
 																<p class="text-xs text-[hsl(var(--muted-foreground))]">{section.products.length} productos</p>
 															</div>
-															<div class="mt-3 min-h-0 flex-1 space-y-2 overflow-auto pr-1">
+															<div class="mt-3 space-y-2">
 																{#each section.products as product}
-																	<div class="flex items-center justify-between gap-3 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-2.5 py-2">
-																		<p class="min-w-0 truncate text-xs font-medium text-[hsl(var(--foreground))]">{product.productName}</p>
-																		<p class="shrink-0 text-xs tabular-nums text-[hsl(var(--muted-foreground))]">
-																			{product.units} uds
-																			{#if product.grams}
-																				· {formatNumber(product.grams)} g
+																		<div class="flex items-center justify-between gap-3 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-2.5 py-2">
+																			<p class="min-w-0 truncate text-xs font-medium text-[hsl(var(--foreground))]">{product.productName}</p>
+																			{#if product.productId !== null}
+																				<p class="shrink-0 text-xs tabular-nums text-[hsl(var(--muted-foreground))]">
+																					{#if catalogQuantityMode(product.productId) === 'units'}
+																						{formatNumber(product.units ?? 0)} uds
+																					{:else}
+																						{formatNumber(product.grams ?? 0)} g
+																					{/if}
+																				</p>
 																			{/if}
-																		</p>
 																	</div>
 																{/each}
 															</div>
@@ -5730,27 +6422,48 @@
 												<colgroup>
 													<col class="w-[22%]" />
 													<col class="w-[46%]" />
-													<col class="w-[12%]" />
 													<col class="w-[20%]" />
 												</colgroup>
 												<thead class="bg-[hsl(var(--secondary))] text-xs text-[hsl(var(--muted-foreground))]">
 													<tr class="border-b border-[hsl(var(--border))]">
 														<th class="px-4 py-2.5 text-left font-medium">Nombre</th>
 														<th class="px-3 py-2.5 text-left font-medium">Descripcion</th>
-														<th class="px-3 py-2.5 text-right font-medium">Orden</th>
 														<th class="px-4 py-2.5 text-right font-medium">Acciones</th>
 													</tr>
 												</thead>
 												<tbody class="divide-y divide-[hsl(var(--border))]">
-													{#each data.proposedWeekMenuDayParts as dayPart (dayPart.id)}
+													{#each orderedProposedWeekMenuDayParts() as dayPart, dayPartIndex (dayPart.id)}
 														<tr class="transition-colors hover:bg-[hsl(var(--secondary)/0.55)]" data-testid={`day-part-row-${dayPart.id}`}>
 															<td class="px-4 py-3 align-top font-medium text-[hsl(var(--foreground))]">{dayPart.name}</td>
 															<td class="px-3 py-3 align-top text-[hsl(var(--muted-foreground))]">
 																<p class="line-clamp-2 break-words">{dayPart.description}</p>
 															</td>
-															<td class="px-3 py-3 text-right align-top tabular-nums">{dayPart.sortOrder}</td>
 															<td class="px-4 py-3 align-top">
-																<div class="flex justify-end">
+																<div class="flex justify-end gap-1">
+																	<Button
+																		variant="ghost"
+																		size="icon"
+																		type="button"
+																		aria-label="Subir parte del dia"
+																		title="Subir parte del dia"
+																		onclick={() => moveDayPart(dayPartIndex, -1)}
+																		disabled={dayPartOrderBusy || dayPartIndex === 0}
+																		data-testid={`day-part-move-up-${dayPart.id}`}
+																	>
+																		<ChevronUp class="size-4" aria-hidden="true" />
+																	</Button>
+																	<Button
+																		variant="ghost"
+																		size="icon"
+																		type="button"
+																		aria-label="Bajar parte del dia"
+																		title="Bajar parte del dia"
+																		onclick={() => moveDayPart(dayPartIndex, 1)}
+																		disabled={dayPartOrderBusy || dayPartIndex === orderedProposedWeekMenuDayParts().length - 1}
+																		data-testid={`day-part-move-down-${dayPart.id}`}
+																	>
+																		<ChevronDown class="size-4" aria-hidden="true" />
+																	</Button>
 																	<Button
 																		variant="ghost"
 																		size="icon"
@@ -5770,8 +6483,8 @@
 											</table>
 										</div>
 
-										<div class="divide-y divide-[hsl(var(--border))] md:hidden">
-											{#each data.proposedWeekMenuDayParts as dayPart (dayPart.id)}
+												<div class="divide-y divide-[hsl(var(--border))] md:hidden">
+											{#each orderedProposedWeekMenuDayParts() as dayPart, dayPartIndex (dayPart.id)}
 												<article class="space-y-3 p-4" data-testid={`day-part-card-${dayPart.id}`}>
 													<div class="flex items-start justify-between gap-3">
 														<div class="min-w-0">
@@ -5780,6 +6493,32 @@
 																{dayPart.description}
 															</p>
 														</div>
+													</div>
+													<div class="flex items-center justify-end gap-1">
+														<Button
+															variant="ghost"
+															size="icon"
+															type="button"
+															aria-label="Subir parte del dia"
+															title="Subir parte del dia"
+															onclick={() => moveDayPart(dayPartIndex, -1)}
+															disabled={dayPartOrderBusy || dayPartIndex === 0}
+															data-testid={`day-part-card-move-up-${dayPart.id}`}
+														>
+															<ChevronUp class="size-4" aria-hidden="true" />
+														</Button>
+														<Button
+															variant="ghost"
+															size="icon"
+															type="button"
+															aria-label="Bajar parte del dia"
+															title="Bajar parte del dia"
+															onclick={() => moveDayPart(dayPartIndex, 1)}
+															disabled={dayPartOrderBusy || dayPartIndex === orderedProposedWeekMenuDayParts().length - 1}
+															data-testid={`day-part-card-move-down-${dayPart.id}`}
+														>
+															<ChevronDown class="size-4" aria-hidden="true" />
+														</Button>
 														<Button
 															variant="ghost"
 															size="icon"
@@ -5787,11 +6526,11 @@
 															aria-label="Editar"
 															title="Editar"
 															onclick={() => openEditDayPartModal(dayPart)}
+															disabled={dayPartOrderBusy}
 														>
 															<Pencil class="size-4" aria-hidden="true" />
 														</Button>
 													</div>
-													<p class="text-xs text-[hsl(var(--muted-foreground))]">Orden {dayPart.sortOrder}</p>
 												</article>
 											{/each}
 									</div>
@@ -5938,23 +6677,7 @@
 									Estamos esperando al backend para mostrar la biblioteca.
 								</p>
 							</div>
-							{:else if data.recipes.length === 0}
-							<div class="p-8 text-center">
-								<div class="mx-auto grid size-10 place-items-center rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
-									<BookOpen class="size-5 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
-								</div>
-								<h3 class="mt-3 text-sm font-semibold text-[hsl(var(--foreground))]">No hay recetas</h3>
-								<p class="mx-auto mt-1 max-w-sm text-sm text-[hsl(var(--muted-foreground))]">
-									Crea la primera receta para empezar a generar preparaciones reutilizables.
-								</p>
-								<div class="mt-4">
-									<Button type="button" onclick={openCreateRecipeModal} disabled={!data.backendAvailable}>
-										<Plus class="size-4" aria-hidden="true" />
-										Añadir receta
-									</Button>
-								</div>
-							</div>
-						{:else if filteredRecipes().length === 0}
+							{:else if hasActiveRecipeFilters(recipeFilters) && filteredRecipes().length === 0}
 							<div class="grid place-items-center px-8 py-16 text-center">
 								<div class="grid size-12 place-items-center rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
 									<Search class="size-5 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
@@ -5979,6 +6702,22 @@
 											Cargar más
 										</Button>
 									{/if}
+								</div>
+							</div>
+						{:else if data.recipes.length === 0}
+							<div class="p-8 text-center">
+								<div class="mx-auto grid size-10 place-items-center rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
+									<BookOpen class="size-5 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
+								</div>
+								<h3 class="mt-3 text-sm font-semibold text-[hsl(var(--foreground))]">No hay recetas</h3>
+								<p class="mx-auto mt-1 max-w-sm text-sm text-[hsl(var(--muted-foreground))]">
+									Crea la primera receta para empezar a generar preparaciones reutilizables.
+								</p>
+								<div class="mt-4">
+									<Button type="button" onclick={openCreateRecipeModal} disabled={!data.backendAvailable}>
+										<Plus class="size-4" aria-hidden="true" />
+										Añadir receta
+									</Button>
 								</div>
 							</div>
 						{:else}
@@ -6048,8 +6787,8 @@
 																variant="ghost"
 																size="icon"
 																type="button"
-																aria-label="Crear producto derivado"
-																title="Crear producto derivado"
+																aria-label={recipe.derivedProduct ? 'Editar producto derivado' : 'Crear producto derivado'}
+																title={recipe.derivedProduct ? 'Editar producto derivado' : 'Crear producto derivado'}
 																onclick={() => openDerivedProductModal(recipe)}
 																data-testid={`derive-button-${recipe.id}`}
 															>
@@ -6479,7 +7218,7 @@
 		</div>
 	{/if}
 
-	{#if modalMode === 'product-edit' && editingProductId !== null}
+	{#if modalMode === 'product-edit' && (editingProductId !== null || productDetailLoading || productDetailError)}
 		<div class="fixed inset-0 z-30 flex items-start justify-center overflow-y-auto bg-black/30 p-3 backdrop-blur-sm sm:p-4" role="presentation">
 			<div
 				class="max-h-[calc(100vh-2rem)] w-full max-w-3xl overflow-y-auto rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-xl"
@@ -6502,243 +7241,270 @@
 					</Button>
 				</div>
 
-				<form
-					enctype="multipart/form-data"
-					class="space-y-6 p-5"
-					onsubmit={submitUpdateProduct}
-					data-testid="edit-form"
-				>
-					<fieldset class="space-y-6" disabled={!data.backendAvailable}>
-						<input type="hidden" name="id" value={editingProductId} />
+				{#if productDetailError}
+					<div class="space-y-4 p-5">
+						<div class="rounded-lg border border-[hsl(var(--destructive)/0.2)] bg-[hsl(var(--destructive)/0.06)] p-4">
+							<p class="text-sm font-medium text-[hsl(var(--destructive))]">No se pudo cargar el producto</p>
+							<p class="mt-1 text-sm text-[hsl(var(--foreground))]">{productDetailError}</p>
+						</div>
+						<div class="flex justify-end">
+							<Button variant="secondary" type="button" onclick={closeModal}>Cerrar</Button>
+						</div>
+					</div>
+				{:else if productDetailLoading && !editingProduct}
+					<div class="grid min-h-64 place-items-center p-8 text-center">
+						<div class="space-y-2">
+							<div class="mx-auto size-10 animate-pulse rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--secondary))]"></div>
+							<p class="text-sm font-medium text-[hsl(var(--foreground))]">Cargando producto...</p>
+							<p class="text-xs text-[hsl(var(--muted-foreground))]">Consultando la ficha completa en el servidor.</p>
+						</div>
+					</div>
+				{:else if editingProduct}
+					<form
+						enctype="multipart/form-data"
+						class="space-y-6 p-5"
+						onsubmit={submitUpdateProduct}
+						data-testid="edit-form"
+					>
+						<fieldset class="space-y-6" disabled={!data.backendAvailable}>
+							<input type="hidden" name="id" value={editingProductId} />
 
-						<section class="space-y-4">
-							<div>
-								<h3 class="text-sm font-semibold text-[hsl(var(--foreground))]">Informacion basica</h3>
-								<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
-									Nombre visible y descripcion corta del alimento.
-								</p>
-							</div>
-							<div class="grid gap-4 md:grid-cols-2">
-								<label class="block min-w-0">
-									<span class={fieldLabelClass}>Nombre</span>
-									<input
-										class={inputClass}
-										name="name"
-										bind:value={editDraft.name}
-										data-testid="edit-name"
-									/>
-									{#if updateErrors().name}
-										<small class={fieldErrorClass}>{updateErrors().name}</small>
-									{/if}
-								</label>
-
-								<label class="block min-w-0">
-									<span class={fieldLabelClass}>Por defecto gr/unidad</span>
-									<input
-										class={inputClass}
-										name="gramsPerUnit"
-										type="number"
-										min="0.01"
-										step="any"
-										inputmode="decimal"
-										bind:value={editDraft.gramsPerUnit}
-										data-testid="edit-grams-per-unit"
-									/>
-									{#if updateErrors().gramsPerUnit}
-										<small class={fieldErrorClass}>{updateErrors().gramsPerUnit}</small>
-									{/if}
-								</label>
-
-								<label class="block min-w-0">
-									<span class={fieldLabelClass}>Precio por defecto</span>
-									<input
-										class={inputClass}
-										name="defaultPrice"
-										type="number"
-										min="0"
-										step="any"
-										inputmode="decimal"
-										bind:value={editDraft.defaultPrice}
-										data-testid="edit-default-price"
-									/>
-									{#if updateErrors().defaultPrice}
-										<small class={fieldErrorClass}>{updateErrors().defaultPrice}</small>
-									{/if}
-								</label>
-
-								<label class="block min-w-0 md:col-span-2">
-									<span class={fieldLabelClass}>Descripcion</span>
-									<textarea
-										class={textareaClass}
-										name="description"
-										rows="4"
-										bind:value={editDraft.description}
-										data-testid="edit-description"
-									></textarea>
-									{#if updateErrors().description}
-										<small class={fieldErrorClass}>{updateErrors().description}</small>
-									{/if}
-								</label>
-							</div>
-						</section>
-
-						<section class="space-y-4 border-t border-[hsl(var(--border))] pt-5">
-							<div>
-								<h3 class="text-sm font-semibold text-[hsl(var(--foreground))]">Imagen del producto</h3>
-								<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
-									Sube una nueva foto si quieres reemplazar la miniatura actual.
-								</p>
-							</div>
-							<div class="space-y-3 border-b border-[hsl(var(--border))] pb-5">
-								<div><h3 class="text-sm font-semibold">Supermercados</h3><p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Actualiza los comercios donde está disponible.</p></div>
-								{#if data.supermarkets.length === 0}<p class="text-sm text-[hsl(var(--muted-foreground))]">No hay supermercados configurados.</p>{:else}<div class="grid gap-2 sm:grid-cols-2">{#each data.supermarkets as supermarket (supermarket.id)}<label class="flex items-center gap-2 rounded-md border p-3 text-sm"><input type="checkbox" value={String(supermarket.id)} bind:group={editDraft.supermarketIds} /><span class="min-w-0 truncate">{supermarket.name}</span></label>{/each}</div>{/if}
-							</div>
-							<label class="block min-w-0">
-								<span class={fieldLabelClass}>Cambiar imagen</span>
-								<input
-									bind:this={editPhotoInput}
-									class={fileInputClass}
-									name="photo"
-									type="file"
-									accept="image/*"
-									onchange={(event) => setPhotoPreview(event, 'edit')}
-									data-testid="edit-photo"
-								/>
-							</label>
-
-							{#if editPhotoPreview}
-								<div class="flex items-start gap-3 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.35)] p-3">
-									<img
-										src={editPhotoPreview.previewUrl}
-										alt={`Vista previa de ${editPhotoPreview.fileName}`}
-										class="size-24 shrink-0 rounded-md border border-[hsl(var(--border))] object-cover"
-										loading="lazy"
-										decoding="async"
-									/>
-									<div class="min-w-0 flex-1">
-										<p class="truncate text-sm font-medium">{editPhotoPreview.fileName}</p>
-										<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
-											{editPhotoPreview.contentType}
-										</p>
-										<Button
-											type="button"
-											variant="ghost"
-											size="sm"
-											class="mt-3"
-											onclick={() => clearPhotoSelection('edit')}
-										>
-											Quitar imagen
-										</Button>
-									</div>
+							<section class="space-y-4">
+								<div>
+									<h3 class="text-sm font-semibold text-[hsl(var(--foreground))]">Informacion basica</h3>
+									<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
+										Nombre visible y descripcion corta del alimento.
+									</p>
 								</div>
-			{:else if currentEditingProduct()?.photo && !productPhotoIsBroken(currentEditingProduct()!.photo)}
-				{@const editingProduct = currentEditingProduct()}
-				{@const editingPhoto = editingProduct!.photo!}
-				<div class="flex items-start gap-3 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.25)] p-3">
-					<img
-						src={productPhotoUrl(editingPhoto)}
-						alt={`Imagen actual de ${editingProduct!.name}`}
-						class="size-24 shrink-0 rounded-md border border-[hsl(var(--border))] object-cover"
-						loading="lazy"
-						decoding="async"
-						onload={() => clearProductPhotoBroken(editingPhoto)}
-						onerror={() => markProductPhotoBroken(editingPhoto)}
-					/>
-					<div class="min-w-0">
-						<p class="text-sm font-medium">{editingProduct!.name}</p>
-						<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
-							Imagen temporal firmada. Se mantendra si no subes una nueva.
-						</p>
-					</div>
-				</div>
-			{:else if currentEditingProduct()?.photo}
-				{@const editingProduct = currentEditingProduct()}
-				<div class="flex items-start gap-3 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.25)] p-3">
-					<span class="grid size-24 shrink-0 place-items-center rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] text-[hsl(var(--muted-foreground))]">
-						<Package class="size-5" aria-hidden="true" />
-					</span>
-					<div class="min-w-0">
-						<p class="text-sm font-medium">{editingProduct!.name}</p>
-						<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
-							La imagen temporal no se pudo cargar. Se mantendra si no subes una nueva.
-						</p>
-					</div>
-				</div>
-							{/if}
-						</section>
+								<div class="grid gap-4 md:grid-cols-2">
+									<label class="block min-w-0">
+										<span class={fieldLabelClass}>Nombre</span>
+										<input
+											class={inputClass}
+											name="name"
+											bind:value={editDraft.name}
+											data-testid="edit-name"
+										/>
+										{#if updateErrors().name}
+											<small class={fieldErrorClass}>{updateErrors().name}</small>
+										{/if}
+									</label>
 
-						<section class="space-y-4 border-t border-[hsl(var(--border))] pt-5">
-							<div>
-								<h3 class="text-sm font-semibold text-[hsl(var(--foreground))]">Valores nutricionales por 100g</h3>
-								<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
-									Usa decimales cuando el producto lo necesite.
-								</p>
-							</div>
-							<div class="grid gap-4 md:grid-cols-2">
-								<label class="block min-w-0">
-									<span class={fieldLabelClass}>Calorias</span>
-									<input
-										class={inputClass}
-										name="calories"
-										inputmode="decimal"
-										bind:value={editDraft.calories}
-										data-testid="edit-calories"
-									/>
-									{#if updateErrors().calories}
-										<small class={fieldErrorClass}>{updateErrors().calories}</small>
-									{/if}
-								</label>
-								<label class="block min-w-0">
-									<span class={fieldLabelClass}>Carbohidratos</span>
-									<input
-										class={inputClass}
-										name="carbohydrates"
-										inputmode="decimal"
-										bind:value={editDraft.carbohydrates}
-										data-testid="edit-carbohydrates"
-									/>
-									{#if updateErrors().carbohydrates}
-										<small class={fieldErrorClass}>{updateErrors().carbohydrates}</small>
-									{/if}
-								</label>
-								<label class="block min-w-0">
-									<span class={fieldLabelClass}>Proteinas</span>
-									<input
-										class={inputClass}
-										name="proteins"
-										inputmode="decimal"
-										bind:value={editDraft.proteins}
-										data-testid="edit-proteins"
-									/>
-									{#if updateErrors().proteins}
-										<small class={fieldErrorClass}>{updateErrors().proteins}</small>
-									{/if}
-								</label>
-								<label class="block min-w-0">
-									<span class={fieldLabelClass}>Grasas</span>
-									<input
-										class={inputClass}
-										name="fats"
-										inputmode="decimal"
-										bind:value={editDraft.fats}
-										data-testid="edit-fats"
-									/>
-									{#if updateErrors().fats}
-										<small class={fieldErrorClass}>{updateErrors().fats}</small>
-									{/if}
-								</label>
-							</div>
-						</section>
-					</fieldset>
+									<label class="block min-w-0">
+										<span class={fieldLabelClass}>Por defecto gr/unidad</span>
+										<input
+											class={inputClass}
+											name="gramsPerUnit"
+											type="number"
+											min="0.01"
+											step="any"
+											inputmode="decimal"
+											bind:value={editDraft.gramsPerUnit}
+											data-testid="edit-grams-per-unit"
+										/>
+										{#if updateErrors().gramsPerUnit}
+											<small class={fieldErrorClass}>{updateErrors().gramsPerUnit}</small>
+										{/if}
+									</label>
 
-					<div class="flex flex-col-reverse gap-2 border-t border-[hsl(var(--border))] pt-5 sm:flex-row sm:justify-end">
-						<Button variant="secondary" type="button" onclick={closeModal}>Cancelar</Button>
-						<Button type="submit" disabled={!data.backendAvailable}>
-							<Save class="size-4" aria-hidden="true" />
-							Actualizar producto
-						</Button>
-					</div>
-				</form>
+									<label class="block min-w-0">
+										<span class={fieldLabelClass}>Precio por defecto</span>
+										<input
+											class={inputClass}
+											name="defaultPrice"
+											type="number"
+											min="0"
+											step="any"
+											inputmode="decimal"
+											bind:value={editDraft.defaultPrice}
+											data-testid="edit-default-price"
+										/>
+										{#if updateErrors().defaultPrice}
+											<small class={fieldErrorClass}>{updateErrors().defaultPrice}</small>
+										{/if}
+									</label>
+
+									<label class="block min-w-0 md:col-span-2">
+										<span class={fieldLabelClass}>Descripcion</span>
+										<textarea
+											class={textareaClass}
+											name="description"
+											rows="4"
+											bind:value={editDraft.description}
+											data-testid="edit-description"
+										></textarea>
+										{#if updateErrors().description}
+											<small class={fieldErrorClass}>{updateErrors().description}</small>
+										{/if}
+									</label>
+								</div>
+							</section>
+
+							<section class="space-y-4 border-t border-[hsl(var(--border))] pt-5">
+								<div>
+									<h3 class="text-sm font-semibold text-[hsl(var(--foreground))]">Imagen del producto</h3>
+									<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
+										Sube una nueva foto si quieres reemplazar la miniatura actual.
+									</p>
+								</div>
+								<div class="space-y-3 border-b border-[hsl(var(--border))] pb-5">
+									<div><h3 class="text-sm font-semibold">Supermercados</h3><p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Actualiza los comercios donde está disponible.</p></div>
+									{#if data.supermarkets.length === 0}<p class="text-sm text-[hsl(var(--muted-foreground))]">No hay supermercados configurados.</p>{:else}<div class="grid gap-2 sm:grid-cols-2">{#each data.supermarkets as supermarket (supermarket.id)}<label class="flex items-center gap-2 rounded-md border p-3 text-sm"><input type="checkbox" value={String(supermarket.id)} bind:group={editDraft.supermarketIds} /><span class="min-w-0 truncate">{supermarket.name}</span></label>{/each}</div>{/if}
+								</div>
+								<label class="block min-w-0">
+									<span class={fieldLabelClass}>Cambiar imagen</span>
+									<input
+										bind:this={editPhotoInput}
+										class={fileInputClass}
+										name="photo"
+										type="file"
+										accept="image/*"
+										onchange={(event) => setPhotoPreview(event, 'edit')}
+										data-testid="edit-photo"
+									/>
+								</label>
+
+								{#if editPhotoPreview}
+									<div class="flex items-start gap-3 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.35)] p-3">
+										<img
+											src={editPhotoPreview.previewUrl}
+											alt={`Vista previa de ${editPhotoPreview.fileName}`}
+											class="size-24 shrink-0 rounded-md border border-[hsl(var(--border))] object-cover"
+											loading="lazy"
+											decoding="async"
+										/>
+										<div class="min-w-0 flex-1">
+											<p class="truncate text-sm font-medium">{editPhotoPreview.fileName}</p>
+											<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
+												{editPhotoPreview.contentType}
+											</p>
+											<Button
+												type="button"
+												variant="ghost"
+												size="sm"
+												class="mt-3"
+												onclick={() => clearPhotoSelection('edit')}
+											>
+												Quitar imagen
+											</Button>
+										</div>
+									</div>
+								{:else if currentEditingProduct()?.photo && !productPhotoIsBroken(currentEditingProduct()!.photo)}
+									{@const editingProductDetail = currentEditingProduct()}
+									{@const editingPhoto = editingProductDetail!.photo!}
+									<div class="flex items-start gap-3 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.25)] p-3">
+										<img
+											src={productPhotoUrl(editingPhoto)}
+											alt={`Imagen actual de ${editingProductDetail!.name}`}
+											class="size-24 shrink-0 rounded-md border border-[hsl(var(--border))] object-cover"
+											loading="lazy"
+											decoding="async"
+											onload={() => clearProductPhotoBroken(editingPhoto)}
+											onerror={() => markProductPhotoBroken(editingPhoto)}
+										/>
+										<div class="min-w-0">
+											<p class="text-sm font-medium">{editingProductDetail!.name}</p>
+											<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
+												Imagen temporal firmada. Se mantendra si no subes una nueva.
+											</p>
+										</div>
+									</div>
+								{:else if currentEditingProduct()?.photo}
+									{@const editingProductDetail = currentEditingProduct()}
+									<div class="flex items-start gap-3 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.25)] p-3">
+										<span class="grid size-24 shrink-0 place-items-center rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] text-[hsl(var(--muted-foreground))]">
+											<Package class="size-5" aria-hidden="true" />
+										</span>
+										<div class="min-w-0">
+											<p class="text-sm font-medium">{editingProductDetail!.name}</p>
+											<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
+												La imagen temporal no se pudo cargar. Se mantendra si no subes una nueva.
+											</p>
+										</div>
+									</div>
+								{/if}
+
+								{#if productStockSourceLabel(editingProduct)}
+									<div class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.18)] p-3">
+										<p class="text-xs text-[hsl(var(--muted-foreground))]">Origen del stock</p>
+										<p class="mt-1 text-sm font-medium">{productStockSourceLabel(editingProduct)}</p>
+									</div>
+								{/if}
+							</section>
+
+							<section class="space-y-4 border-t border-[hsl(var(--border))] pt-5">
+								<div>
+									<h3 class="text-sm font-semibold text-[hsl(var(--foreground))]">Valores nutricionales por 100g</h3>
+									<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
+										Usa decimales cuando el producto lo necesite.
+									</p>
+								</div>
+								<div class="grid gap-4 md:grid-cols-2">
+									<label class="block min-w-0">
+										<span class={fieldLabelClass}>Calorias</span>
+										<input
+											class={inputClass}
+											name="calories"
+											inputmode="decimal"
+											bind:value={editDraft.calories}
+											data-testid="edit-calories"
+										/>
+										{#if updateErrors().calories}
+											<small class={fieldErrorClass}>{updateErrors().calories}</small>
+										{/if}
+									</label>
+									<label class="block min-w-0">
+										<span class={fieldLabelClass}>Carbohidratos</span>
+										<input
+											class={inputClass}
+											name="carbohydrates"
+											inputmode="decimal"
+											bind:value={editDraft.carbohydrates}
+											data-testid="edit-carbohydrates"
+										/>
+										{#if updateErrors().carbohydrates}
+											<small class={fieldErrorClass}>{updateErrors().carbohydrates}</small>
+										{/if}
+									</label>
+									<label class="block min-w-0">
+										<span class={fieldLabelClass}>Proteinas</span>
+										<input
+											class={inputClass}
+											name="proteins"
+											inputmode="decimal"
+											bind:value={editDraft.proteins}
+											data-testid="edit-proteins"
+										/>
+										{#if updateErrors().proteins}
+											<small class={fieldErrorClass}>{updateErrors().proteins}</small>
+										{/if}
+									</label>
+									<label class="block min-w-0">
+										<span class={fieldLabelClass}>Grasas</span>
+										<input
+											class={inputClass}
+											name="fats"
+											inputmode="decimal"
+											bind:value={editDraft.fats}
+											data-testid="edit-fats"
+										/>
+										{#if updateErrors().fats}
+											<small class={fieldErrorClass}>{updateErrors().fats}</small>
+										{/if}
+									</label>
+								</div>
+							</section>
+						</fieldset>
+
+						<div class="flex flex-col-reverse gap-2 border-t border-[hsl(var(--border))] pt-5 sm:flex-row sm:justify-end">
+							<Button variant="secondary" type="button" onclick={closeModal}>Cancelar</Button>
+							<Button type="submit" disabled={!data.backendAvailable}>
+								<Save class="size-4" aria-hidden="true" />
+								Actualizar producto
+							</Button>
+						</div>
+					</form>
+				{/if}
 			</div>
 		</div>
 	{/if}
@@ -7037,9 +7803,15 @@
 										Selecciona productos y los gramos asignados a cada uno.
 									</p>
 								</div>
-								<Button type="button" variant="secondary" size="sm" onclick={() => addRecipeIngredient('create')}>
+								<Button
+									type="button"
+									variant="secondary"
+									size="sm"
+									onclick={() => addRecipeIngredientAndOpenPicker('create')}
+									data-testid="create-recipe-add-ingredient"
+								>
 									<Plus class="size-4" aria-hidden="true" />
-									Añadir fila
+									Añadir
 								</Button>
 							</div>
 
@@ -7047,56 +7819,71 @@
 								<p class={fieldErrorClass}>{recipeCreateErrors().ingredients}</p>
 							{/if}
 
-							<div class="space-y-3">
-								{#each recipeCreateDraft.ingredients as ingredient, index}
-									<div class="grid gap-3 md:grid-cols-[minmax(0,1fr)_160px_auto]">
-										<label class="block min-w-0">
-											<span class={fieldLabelClass}>Producto</span>
-											<input type="hidden" name="ingredientProductId" value={ingredient.productId} />
-											<Button
-												type="button"
-												variant="secondary"
-												class="w-full justify-between"
-												onclick={() =>
-													openProductPicker({
-														type: 'recipe-create',
-														productIndex: index,
-														selectedProductId: ingredient.productId
-													})
-												}
-												data-testid={`create-recipe-product-${index}`}
-											>
-												<span class="min-w-0 truncate text-left">{productLabel(ingredient.productId)}</span>
-												<Search class="size-4 shrink-0" aria-hidden="true" />
-											</Button>
-											{#if recipeCreateErrors().ingredientProductId?.[index]}
-												<small class={fieldErrorClass}>{recipeCreateErrors().ingredientProductId?.[index]}</small>
-											{/if}
-										</label>
-
-										<label class="block min-w-0">
-											<span class={fieldLabelClass}>Gramos</span>
-											<input class={inputClass} name="ingredientGrams" inputmode="decimal" step="any" bind:value={ingredient.grams} data-testid={`create-recipe-grams-${index}`} />
-											{#if recipeCreateErrors().ingredientGrams?.[index]}
-												<small class={fieldErrorClass}>{recipeCreateErrors().ingredientGrams?.[index]}</small>
-											{/if}
-										</label>
-
-										<div class="flex items-end">
-											<Button
-												type="button"
-												variant="ghost"
-												size="icon"
-												disabled={recipeCreateDraft.ingredients.length <= 1}
-												onclick={() => removeRecipeIngredient('create', index)}
-												aria-label="Eliminar ingrediente"
-											>
-												<Trash2 class="size-4" aria-hidden="true" />
-											</Button>
-										</div>
+							{#if recipeCreateDraft.ingredients.length === 0}
+								<div class="rounded-lg border border-dashed border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.2)] p-5">
+									<p class="text-sm font-medium text-[hsl(var(--foreground))]">Todavia no has añadido ingredientes</p>
+									<p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">
+										Pulsa en "Añadir" para escoger el primer producto y completar los gramos.
+									</p>
+									<div class="mt-4">
+										<Button type="button" variant="secondary" size="sm" onclick={() => addRecipeIngredientAndOpenPicker('create')} data-testid="create-recipe-add-first-ingredient">
+											<Plus class="size-4" aria-hidden="true" />
+											Añadir primer ingrediente
+										</Button>
 									</div>
-								{/each}
-							</div>
+								</div>
+							{:else}
+								<div class="space-y-3">
+									{#each recipeCreateDraft.ingredients as ingredient, index}
+										<div class="grid gap-3 md:grid-cols-[minmax(0,1fr)_160px_auto]">
+											<label class="block min-w-0">
+												<span class={fieldLabelClass}>Producto</span>
+												<input type="hidden" name="ingredientProductId" value={ingredient.productId} />
+												<Button
+													type="button"
+													variant="secondary"
+													class="w-full justify-between"
+													onclick={() =>
+														openProductPicker({
+															type: 'recipe-create',
+															productIndex: index,
+															selectedProductId: ingredient.productId
+														})
+													}
+													data-testid={`create-recipe-product-${index}`}
+												>
+													<span class="min-w-0 truncate text-left">{productLabel(ingredient.productId)}</span>
+													<Search class="size-4 shrink-0" aria-hidden="true" />
+												</Button>
+												{#if recipeCreateErrors().ingredientProductId?.[index]}
+													<small class={fieldErrorClass}>{recipeCreateErrors().ingredientProductId?.[index]}</small>
+												{/if}
+											</label>
+
+											<label class="block min-w-0">
+												<span class={fieldLabelClass}>Gramos</span>
+												<input class={inputClass} name="ingredientGrams" inputmode="decimal" step="any" bind:value={ingredient.grams} data-testid={`create-recipe-grams-${index}`} />
+												{#if recipeCreateErrors().ingredientGrams?.[index]}
+													<small class={fieldErrorClass}>{recipeCreateErrors().ingredientGrams?.[index]}</small>
+												{/if}
+											</label>
+
+											<div class="flex items-end">
+												<Button
+													type="button"
+													variant="ghost"
+													size="icon"
+													disabled={recipeCreateDraft.ingredients.length <= 0}
+													onclick={() => removeRecipeIngredient('create', index)}
+													aria-label="Eliminar ingrediente"
+												>
+													<Trash2 class="size-4" aria-hidden="true" />
+												</Button>
+											</div>
+										</div>
+									{/each}
+								</div>
+							{/if}
 						</section>
 					</fieldset>
 
@@ -7181,9 +7968,15 @@
 										Selecciona productos y corrige los gramos si es necesario.
 									</p>
 								</div>
-								<Button type="button" variant="secondary" size="sm" onclick={() => addRecipeIngredient('edit')}>
+								<Button
+									type="button"
+									variant="secondary"
+									size="sm"
+									onclick={() => addRecipeIngredientAndOpenPicker('edit')}
+									data-testid="edit-recipe-add-ingredient"
+								>
 									<Plus class="size-4" aria-hidden="true" />
-									Añadir fila
+									Añadir
 								</Button>
 							</div>
 
@@ -7314,10 +8107,10 @@
 				<div class="flex items-start justify-between gap-4 border-b border-[hsl(var(--border))] p-5">
 					<div class="min-w-0">
 						<h2 id="derive-recipe-title" class="text-lg font-semibold text-[hsl(var(--foreground))]">
-							Crear producto derivado
+							{derivingRecipeHasDerivedProduct ? 'Editar producto derivado' : 'Crear producto derivado'}
 						</h2>
 						<p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">
-							Define el rendimiento final de la receta en gramos y unidades.
+							Define el nombre, el rendimiento y cómo se gestionará el stock del producto derivado.
 						</p>
 					</div>
 					<Button variant="ghost" size="icon" type="button" onclick={closeModal} aria-label="Cerrar modal">
@@ -7330,25 +8123,69 @@
 						<input type="hidden" name="id" value={derivingRecipeId} />
 
 						<section class="space-y-4">
+							<div class="max-w-lg">
+								<label class="block min-w-0">
+									<span class={fieldLabelClass}>Nombre del producto</span>
+									<input class={inputClass} name="name" maxlength="150" bind:value={recipeDerivedProductDraft.name} data-testid="derive-name" />
+									{#if recipeDerivedProductErrors().name}
+										<small class={fieldErrorClass}>{recipeDerivedProductErrors().name}</small>
+									{/if}
+								</label>
+							</div>
+							<div class="space-y-3">
+								<div>
+									<h3 class="text-sm font-semibold text-[hsl(var(--foreground))]">Origen del stock</h3>
+									<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
+										Selecciona si el stock se contabiliza como producto o se reparte entre los ingredientes de la receta.
+									</p>
+								</div>
+								<div class="grid gap-3 sm:grid-cols-2">
+									<label class="flex cursor-pointer items-start gap-3 rounded-lg border border-[hsl(var(--border))] p-3 transition hover:border-[hsl(var(--primary)/0.35)]">
+											<input
+												class="mt-1"
+												type="radio"
+												name="stockFromComposition"
+												checked={!recipeDerivedProductDraft.stockFromComposition}
+												onchange={() => (recipeDerivedProductDraft.stockFromComposition = false)}
+												data-testid="derive-stock-product"
+											/>
+										<span class="min-w-0">
+											<span class="block text-sm font-medium text-[hsl(var(--foreground))]">Producto propio</span>
+											<span class="mt-1 block text-xs text-[hsl(var(--muted-foreground))]">
+												El stock se gestiona como cualquier otro producto.
+											</span>
+										</span>
+									</label>
+									<label class="flex cursor-pointer items-start gap-3 rounded-lg border border-[hsl(var(--border))] p-3 transition hover:border-[hsl(var(--primary)/0.35)]">
+											<input
+												class="mt-1"
+												type="radio"
+												name="stockFromComposition"
+												checked={recipeDerivedProductDraft.stockFromComposition}
+												onchange={() => (recipeDerivedProductDraft.stockFromComposition = true)}
+												data-testid="derive-stock-composition"
+											/>
+										<span class="min-w-0">
+											<span class="block text-sm font-medium text-[hsl(var(--foreground))]">Composición</span>
+											<span class="mt-1 block text-xs text-[hsl(var(--muted-foreground))]">
+												El stock se expande sobre los ingredientes de la receta.
+											</span>
+										</span>
+									</label>
+								</div>
+							</div>
 							<div>
 								<h3 class="text-sm font-semibold text-[hsl(var(--foreground))]">Rendimiento</h3>
 								<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
 									La API lo usa para calcular las unidades producidas.
 								</p>
 							</div>
-							<div class="grid gap-4 md:grid-cols-2">
+							<div class="max-w-xs">
 								<label class="block min-w-0">
-									<span class={fieldLabelClass}>Gramos producidos</span>
-									<input class={inputClass} name="producedGrams" inputmode="decimal" step="any" bind:value={recipeDerivedProductDraft.producedGrams} data-testid="derive-produced-grams" />
-									{#if recipeDerivedProductErrors().producedGrams}
-										<small class={fieldErrorClass}>{recipeDerivedProductErrors().producedGrams}</small>
-									{/if}
-								</label>
-								<label class="block min-w-0">
-									<span class={fieldLabelClass}>Gramos por unidad</span>
-									<input class={inputClass} name="gramsPerUnit" inputmode="decimal" step="any" bind:value={recipeDerivedProductDraft.gramsPerUnit} data-testid="derive-grams-per-unit" />
-									{#if recipeDerivedProductErrors().gramsPerUnit}
-										<small class={fieldErrorClass}>{recipeDerivedProductErrors().gramsPerUnit}</small>
+									<span class={fieldLabelClass}>Unidades producidas</span>
+									<input class={inputClass} name="units" inputmode="decimal" step="any" bind:value={recipeDerivedProductDraft.units} data-testid="derive-units" />
+									{#if recipeDerivedProductErrors().units}
+										<small class={fieldErrorClass}>{recipeDerivedProductErrors().units}</small>
 									{/if}
 								</label>
 							</div>
@@ -7359,7 +8196,7 @@
 						<Button variant="secondary" type="button" onclick={closeModal}>Cancelar</Button>
 						<Button type="submit" disabled={!data.backendAvailable}>
 							<Save class="size-4" aria-hidden="true" />
-							Crear producto derivado
+							{derivingRecipeHasDerivedProduct ? 'Actualizar producto derivado' : 'Crear producto derivado'}
 						</Button>
 					</div>
 				</form>
@@ -7413,19 +8250,9 @@
 							{/if}
 						</label>
 
-						<label class="block min-w-0">
-							<span class={fieldLabelClass}>Orden</span>
-							<input
-								class={inputClass}
-								name="sortOrder"
-								inputmode="numeric"
-								bind:value={dayPartDraft.sortOrder}
-								data-testid="day-part-sort"
-							/>
-							{#if dayPartErrors().sortOrder}
-								<small class={fieldErrorClass}>{dayPartErrors().sortOrder}</small>
-							{/if}
-						</label>
+						<p class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.2)] px-3 py-2 text-sm text-[hsl(var(--muted-foreground))]">
+							El orden se gestiona con las flechas de la lista.
+						</p>
 					</fieldset>
 
 					<div class="flex flex-col-reverse gap-2 border-t border-[hsl(var(--border))] pt-5 sm:flex-row sm:justify-end">
@@ -7455,7 +8282,7 @@
 							Crear planificación
 						</h2>
 						<p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">
-							Elige un rango de hasta 16 dias incluidos para empezar a planificar menus diarios.
+							Elige el rango y cuántas personas seguirán la planificación.
 						</p>
 					</div>
 					<Button variant="ghost" size="icon" type="button" onclick={closeModal} aria-label="Cerrar modal">
@@ -7502,6 +8329,21 @@
 									{/if}
 								</label>
 							</div>
+							<label class="block max-w-xs min-w-0">
+								<span class={fieldLabelClass}>Número de personas</span>
+								<input
+									class={inputClass}
+									type="number"
+									name="users"
+									min="1"
+									step="1"
+									bind:value={creatingWeekMenuDraft.users}
+									data-testid="week-users"
+								/>
+								{#if weekCreateErrors().users}
+									<small class={fieldErrorClass}>{weekCreateErrors().users}</small>
+								{/if}
+							</label>
 						</section>
 					</fieldset>
 
@@ -7612,7 +8454,7 @@
 													data-testid={`week-section-day-part-${sectionIndex}`}
 												>
 													<option value="">Selecciona una parte del dia</option>
-													{#each data.proposedWeekMenuDayParts as dayPart}
+													{#each orderedProposedWeekMenuDayParts() as dayPart}
 														<option value={String(dayPart.id)}>{dayPart.name}</option>
 													{/each}
 												</select>
@@ -7624,7 +8466,6 @@
 												type="button"
 												variant="ghost"
 												size="sm"
-												disabled={weekDayDraft.sections.length <= 1}
 												onclick={() => removeWeekDaySection(sectionIndex)}
 												class="shrink-0"
 											>
@@ -7659,247 +8500,201 @@
 												</p>
 											{/if}
 
-											<div class="space-y-3">
-												{#each section.products as product, productIndex}
-													<div
-														class={`grid gap-4 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4 ${
-															product.type === 'catalog'
-																? 'lg:grid-cols-[minmax(0,1.3fr)_repeat(4,minmax(0,0.55fr))_auto]'
-																: 'lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.35fr)_minmax(0,1.35fr)_repeat(4,minmax(0,0.58fr))_minmax(0,0.6fr)_auto]'
-														}`}
-													>
-														<div class="block min-w-0">
-															<span class={fieldLabelClass}>Tipo</span>
-															<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.22)] px-3 py-2 text-sm text-[hsl(var(--foreground))]">
-																{product.type === 'manual' ? 'Manual' : 'Catálogo'}
-															</div>
-														</div>
-
-														{#if product.type === 'catalog'}
-															<label class="block min-w-0">
-																<span class={fieldLabelClass}>Producto</span>
-																<input type="hidden" name="productId" value={product.productId} />
-																<Button
-																	type="button"
-																	variant="secondary"
-																	class="w-full justify-between"
-																	onclick={() =>
-																		openProductPicker({
-																			type: 'week-day',
-																			sectionIndex,
-																			productIndex,
-																			selectedProductId: product.productId
-																		})
-																	}
-																	data-testid={`week-product-id-${sectionIndex}-${productIndex}`}
+														<div class="space-y-3">
+															{#each section.products as product, productIndex}
+																<div
+																	class={`grid gap-4 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4 ${
+																		product.type === 'catalog'
+																			? 'lg:grid-cols-[minmax(0,1.5fr)_minmax(0,0.9fr)_auto]'
+																			: 'lg:grid-cols-[minmax(0,1.2fr)_repeat(4,minmax(0,0.72fr))_auto]'
+																	}`}
 																>
-																	<span class="min-w-0 truncate text-left">{productLabel(product.productId)}</span>
-																	<Search class="size-4 shrink-0" aria-hidden="true" />
-																</Button>
-																{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.productId}
-																	<small class={fieldErrorClass}>
-																		{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.productId}
-																	</small>
-																{/if}
-															</label>
-														{:else}
-															<label class="block min-w-0">
-																<span class={fieldLabelClass}>Nombre</span>
-																<input
-																	class={inputClass}
-																	name="productName"
-																	bind:value={product.productName}
-																	placeholder="Producto puntual"
-																	data-testid={`week-product-name-${sectionIndex}-${productIndex}`}
-																/>
-																{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.productName}
-																	<small class={fieldErrorClass}>
-																		{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.productName}
-																	</small>
-																{/if}
-															</label>
-														{/if}
+																	{#if product.type === 'catalog'}
+																		<label class="block min-w-0">
+																			<span class={fieldLabelClass}>Producto</span>
+																			<input type="hidden" name="productId" value={product.productId} />
+																			<Button
+																				type="button"
+																				variant="secondary"
+																				class="w-full justify-between"
+																				onclick={() =>
+																					openProductPicker({
+																						type: 'week-day',
+																						sectionIndex,
+																						productIndex,
+																						selectedProductId: product.productId
+																					})
+																				}
+																				data-testid={`week-product-id-${sectionIndex}-${productIndex}`}
+																			>
+																				<span class="min-w-0 truncate text-left">{productLabel(product.productId)}</span>
+																				<Search class="size-4 shrink-0" aria-hidden="true" />
+																			</Button>
+																			{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.productId}
+																				<small class={fieldErrorClass}>
+																					{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.productId}
+																				</small>
+																			{/if}
+																		</label>
+																		<div class="space-y-2">
+																			<span class={fieldLabelClass}>Cantidad</span>
+																			{#if product.quantityMode === 'units'}
+																				<input
+																					class={inputClass}
+																					name="units"
+																					inputmode="decimal"
+																					step="any"
+																					bind:value={product.units}
+																					placeholder="Unidades"
+																					data-testid={`week-product-quantity-value-${sectionIndex}-${productIndex}`}
+																				/>
+																			{:else}
+																				<input
+																					class={inputClass}
+																					name="grams"
+																					inputmode="decimal"
+																					step="any"
+																					bind:value={product.grams}
+																					placeholder="Gramos"
+																					data-testid={`week-product-quantity-value-${sectionIndex}-${productIndex}`}
+																				/>
+																			{/if}
+																			{#if weekDayProductQuantityError(sectionIndex, productIndex)}
+																				<small class={fieldErrorClass}>{weekDayProductQuantityError(sectionIndex, productIndex)}</small>
+																			{/if}
+																		</div>
+																	{:else}
+																		<label class="block min-w-0">
+																			<span class={fieldLabelClass}>Nombre</span>
+																			<input
+																				class={inputClass}
+																				name="productName"
+																				bind:value={product.productName}
+																				placeholder="Producto puntual"
+																				data-testid={`week-product-name-${sectionIndex}-${productIndex}`}
+																			/>
+																			{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.productName}
+																				<small class={fieldErrorClass}>
+																					{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.productName}
+																				</small>
+																			{/if}
+																		</label>
+																		<label class="block min-w-0">
+																			<span class={fieldLabelClass}>Calorias</span>
+																			<input
+																				class={inputClass}
+																				name="calories"
+																				inputmode="decimal"
+																				step="any"
+																				bind:value={product.calories}
+																				data-testid={`week-product-calories-${sectionIndex}-${productIndex}`}
+																			/>
+																			{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.calories}
+																				<small class={fieldErrorClass}>
+																					{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.calories}
+																				</small>
+																			{/if}
+																		</label>
+																		<label class="block min-w-0">
+																			<span class={fieldLabelClass}>Carbos</span>
+																			<input
+																				class={inputClass}
+																				name="carbohydrates"
+																				inputmode="decimal"
+																				step="any"
+																				bind:value={product.carbohydrates}
+																				data-testid={`week-product-carbohydrates-${sectionIndex}-${productIndex}`}
+																			/>
+																			{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.carbohydrates}
+																				<small class={fieldErrorClass}>
+																					{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.carbohydrates}
+																				</small>
+																			{/if}
+																		</label>
+																		<label class="block min-w-0">
+																			<span class={fieldLabelClass}>Proteinas</span>
+																			<input
+																				class={inputClass}
+																				name="proteins"
+																				inputmode="decimal"
+																				step="any"
+																				bind:value={product.proteins}
+																				data-testid={`week-product-proteins-${sectionIndex}-${productIndex}`}
+																			/>
+																			{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.proteins}
+																				<small class={fieldErrorClass}>
+																					{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.proteins}
+																				</small>
+																			{/if}
+																		</label>
+																		<label class="block min-w-0">
+																			<span class={fieldLabelClass}>Grasas</span>
+																			<input
+																				class={inputClass}
+																				name="fats"
+																				inputmode="decimal"
+																				step="any"
+																				bind:value={product.fats}
+																				data-testid={`week-product-fats-${sectionIndex}-${productIndex}`}
+																			/>
+																			{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.fats}
+																				<small class={fieldErrorClass}>
+																					{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.fats}
+																				</small>
+																			{/if}
+																		</label>
+																	{/if}
 
-														{#if product.type === 'catalog'}
-															<label class="block min-w-0">
-																<span class={fieldLabelClass}>Unidades</span>
-																<input
-																	class={inputClass}
-																	name="units"
-																	inputmode="decimal"
-																	step="any"
-																	bind:value={product.units}
-																	data-testid={`week-product-units-${sectionIndex}-${productIndex}`}
-																/>
-																{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.units}
-																	<small class={fieldErrorClass}>
-																		{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.units}
-																	</small>
-																{/if}
-															</label>
-
-															<label class="block min-w-0">
-																<span class={fieldLabelClass}>Gramos</span>
-																<input
-																	class={inputClass}
-																	name="grams"
-																	inputmode="decimal"
-																	step="any"
-																	bind:value={product.grams}
-																	data-testid={`week-product-grams-${sectionIndex}-${productIndex}`}
-																/>
-																{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.grams}
-																	<small class={fieldErrorClass}>
-																		{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.grams}
-																	</small>
-																{/if}
-															</label>
-														{/if}
-
-														{#if product.type === 'manual'}
-															<div class="space-y-2 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.18)] p-3">
-																<p class="text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted-foreground))]">
-																	Cantidad
-																</p>
-																<div class="grid gap-3 sm:grid-cols-2">
-																	<label class="block min-w-0">
-																		<span class={fieldLabelClass}>Unidades</span>
-																		<input
-																			class={inputClass}
-																			name="units"
-																			inputmode="decimal"
-																			step="any"
-																			bind:value={product.units}
-																			data-testid={`week-product-units-${sectionIndex}-${productIndex}`}
-																		/>
-																		{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.units}
-																			<small class={fieldErrorClass}>
-																				{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.units}
-																			</small>
+																	<div class="flex items-start justify-end gap-1 pt-5">
+																		{#if section.products.length > 1}
+																			{#if productIndex > 0}
+																				<Button
+																					type="button"
+																					variant="ghost"
+																					size="icon"
+																					onclick={() => moveWeekDayProduct(sectionIndex, productIndex, -1)}
+																					aria-label="Subir producto"
+																					title="Subir producto"
+																					data-testid={`week-product-move-up-${sectionIndex}-${productIndex}`}
+																				>
+																					<ChevronUp class="size-4" aria-hidden="true" />
+																				</Button>
+																			{/if}
+																			{#if productIndex < section.products.length - 1}
+																				<Button
+																					type="button"
+																					variant="ghost"
+																					size="icon"
+																					onclick={() => moveWeekDayProduct(sectionIndex, productIndex, 1)}
+																					aria-label="Bajar producto"
+																					title="Bajar producto"
+																					data-testid={`week-product-move-down-${sectionIndex}-${productIndex}`}
+																				>
+																					<ChevronDown class="size-4" aria-hidden="true" />
+																				</Button>
+																			{/if}
 																		{/if}
-																	</label>
-																	<label class="block min-w-0">
-																		<span class={fieldLabelClass}>Gramos</span>
-																		<input
-																			class={inputClass}
-																			name="grams"
-																			inputmode="decimal"
-																			step="any"
-																			bind:value={product.grams}
-																			data-testid={`week-product-grams-${sectionIndex}-${productIndex}`}
-																		/>
-																		{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.grams}
-																			<small class={fieldErrorClass}>
-																				{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.grams}
-																			</small>
-																		{/if}
-																	</label>
+																		<Button
+																			type="button"
+																			variant="ghost"
+																			size="icon"
+																			onclick={() => removeWeekDayProduct(sectionIndex, productIndex)}
+																			aria-label="Eliminar producto"
+																			title="Eliminar producto"
+																		>
+																			<Trash2 class="size-4" aria-hidden="true" />
+																		</Button>
+																	</div>
 																</div>
-															</div>
-															<label class="block min-w-0">
-																<span class={fieldLabelClass}>Calorias</span>
-																<input
-																	class={inputClass}
-																	name="calories"
-																	inputmode="decimal"
-																	step="any"
-																	bind:value={product.calories}
-																	data-testid={`week-product-calories-${sectionIndex}-${productIndex}`}
-																/>
-																{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.calories}
-																	<small class={fieldErrorClass}>
-																		{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.calories}
-																	</small>
-																{/if}
-															</label>
-															<label class="block min-w-0">
-																<span class={fieldLabelClass}>Carbos</span>
-																<input
-																	class={inputClass}
-																	name="carbohydrates"
-																	inputmode="decimal"
-																	step="any"
-																	bind:value={product.carbohydrates}
-																	data-testid={`week-product-carbohydrates-${sectionIndex}-${productIndex}`}
-																/>
-																{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.carbohydrates}
-																	<small class={fieldErrorClass}>
-																		{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.carbohydrates}
-																	</small>
-																{/if}
-															</label>
-															<label class="block min-w-0">
-																<span class={fieldLabelClass}>Proteinas</span>
-																<input
-																	class={inputClass}
-																	name="proteins"
-																	inputmode="decimal"
-																	step="any"
-																	bind:value={product.proteins}
-																	data-testid={`week-product-proteins-${sectionIndex}-${productIndex}`}
-																/>
-																{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.proteins}
-																	<small class={fieldErrorClass}>
-																		{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.proteins}
-																	</small>
-																{/if}
-															</label>
-															<label class="block min-w-0">
-																<span class={fieldLabelClass}>Grasas</span>
-																<input
-																	class={inputClass}
-																	name="fats"
-																	inputmode="decimal"
-																	step="any"
-																	bind:value={product.fats}
-																	data-testid={`week-product-fats-${sectionIndex}-${productIndex}`}
-																/>
-																{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.fats}
-																	<small class={fieldErrorClass}>
-																		{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.fats}
-																	</small>
-																{/if}
-															</label>
-														{/if}
-
-														<label class="block min-w-0">
-															<span class={fieldLabelClass}>Orden</span>
-															<input
-																class={inputClass}
-																name="productSortOrder"
-																inputmode="numeric"
-																bind:value={product.sortOrder}
-																data-testid={`week-product-sort-${sectionIndex}-${productIndex}`}
-															/>
-															{#if weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.sortOrder}
-																<small class={fieldErrorClass}>
-																	{weekDayErrors().sectionErrors?.[sectionIndex]?.productErrors?.[productIndex]?.sortOrder}
-																</small>
-															{/if}
-														</label>
-
-														<div class="flex items-start pt-6">
-															<Button
-																type="button"
-																variant="ghost"
-																size="icon"
-																disabled={section.products.length <= 1}
-																onclick={() => removeWeekDayProduct(sectionIndex, productIndex)}
-																aria-label="Eliminar producto"
-															>
-																<Trash2 class="size-4" aria-hidden="true" />
-															</Button>
+															{/each}
 														</div>
 													</div>
-												{/each}
-											</div>
-										</div>
 									</div>
 								{/each}
 							</div>
 
 							<div class="flex justify-start">
-								<Button type="button" variant="secondary" onclick={addWeekDaySection}>
+								<Button type="button" variant="secondary" onclick={addWeekDaySection} data-testid="week-day-add-section">
 									<Plus class="size-4" aria-hidden="true" />
 									Añadir seccion
 								</Button>
@@ -7909,10 +8704,10 @@
 
 					<div class="flex flex-col-reverse gap-2 border-t border-[hsl(var(--border))] pt-5 sm:flex-row sm:justify-end">
 						<Button variant="secondary" type="button" onclick={closeModal}>Cancelar</Button>
-						<Button
-							type="submit"
-							disabled={!data.backendAvailable || data.products.length === 0 || data.proposedWeekMenuDayParts.length === 0}
-						>
+					<Button
+						type="submit"
+						disabled={!data.backendAvailable}
+					>
 							<Save class="size-4" aria-hidden="true" />
 							Guardar menu
 						</Button>
@@ -7936,18 +8731,6 @@
 				</div>
 				<form class="space-y-6 p-5" onsubmit={submitPublishWeekMenu} data-testid="week-publish-form">
 					<fieldset class="space-y-6" disabled={!data.backendAvailable}>
-						{#if publishWeekMenuConflict}
-							<p
-								class="flex items-start gap-2 rounded-lg border border-[hsl(var(--destructive)/0.2)] bg-[hsl(var(--destructive)/0.06)] px-3 py-2.5 text-sm text-[hsl(var(--destructive))]"
-								role="alert"
-								data-testid="week-publish-overlap-warning"
-							>
-								<CircleAlert class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-								<span class="min-w-0 break-words">
-									Ya existe una planificación que se solapa con este rango: {publishWeekMenuConflict.label}.
-								</span>
-							</p>
-						{/if}
 						<section class="grid gap-4 md:grid-cols-2">
 							<label class="block min-w-0">
 								<span class={fieldLabelClass}>Pagador</span>
@@ -7999,7 +8782,7 @@
 					</fieldset>
 					<div class="flex flex-col-reverse gap-2 border-t border-[hsl(var(--border))] pt-5 sm:flex-row sm:justify-end">
 						<Button variant="secondary" type="button" onclick={closeModal}>Cancelar</Button>
-						<Button type="submit" disabled={!data.backendAvailable || Boolean(publishWeekMenuConflict)}>
+						<Button type="submit" disabled={!data.backendAvailable}>
 							<CircleCheck class="size-4" aria-hidden="true" />
 							Establecer semana
 						</Button>
@@ -8156,14 +8939,14 @@
 			title="Seleccionar producto"
 			description="Busca por nombre o usa los filtros avanzados para encontrar el producto exacto."
 			authorization={authorizationHeader(authSession)}
-			products={data.products}
+			products={productPickerProducts()}
 			selectedProductId={productPickerTarget.selectedProductId}
 			onSelect={selectProductFromPicker}
 			onClose={closeProductPicker}
 		/>
 	{/if}
 
-	{#if modalMode === 'product-view' && detailProduct}
+	{#if modalMode === 'product-view' && (detailProduct || productDetailLoading || productDetailError)}
 		<div class="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/40 p-3 backdrop-blur-sm sm:p-4" role="presentation">
 			<div
 				class="max-h-[calc(100vh-2rem)] w-full max-w-3xl overflow-y-auto rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-2xl"
@@ -8187,86 +8970,107 @@
 				</div>
 
 				<div class="space-y-5 p-5">
-					<div class="flex flex-col gap-4 md:flex-row md:items-start">
-						{#if detailProduct.photo && !productPhotoIsBroken(detailProduct.photo)}
-							{@const detailPhoto = detailProduct.photo}
-							<img
-								src={productPhotoUrl(detailPhoto)}
-								alt={`Imagen de ${detailProduct.name}`}
-								class="h-40 w-full rounded-lg border border-[hsl(var(--border))] object-cover md:w-48"
-								loading="lazy"
-								decoding="async"
-								onload={() => clearProductPhotoBroken(detailPhoto)}
-								onerror={() => markProductPhotoBroken(detailPhoto)}
-							/>
-						{:else}
-							<div class="grid h-40 w-full place-items-center rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))] md:w-48">
-								<Package class="size-8" aria-hidden="true" />
+					{#if productDetailError}
+						<div class="rounded-lg border border-[hsl(var(--destructive)/0.2)] bg-[hsl(var(--destructive)/0.06)] p-4">
+							<p class="text-sm font-medium text-[hsl(var(--destructive))]">No se pudo cargar el producto</p>
+							<p class="mt-1 text-sm text-[hsl(var(--foreground))]">{productDetailError}</p>
+						</div>
+					{:else if productDetailLoading && !detailProduct}
+						<div class="grid min-h-64 place-items-center rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.2)] p-8 text-center">
+							<div class="space-y-2">
+								<div class="mx-auto size-10 animate-pulse rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--secondary))]"></div>
+								<p class="text-sm font-medium text-[hsl(var(--foreground))]">Cargando producto...</p>
+								<p class="text-xs text-[hsl(var(--muted-foreground))]">Consultando la ficha completa en el servidor.</p>
 							</div>
-						{/if}
-
-						<div class="min-w-0 flex-1 space-y-3">
-							<div>
-								<div class="flex flex-wrap items-center gap-2">
-									<h3 class="text-xl font-semibold text-[hsl(var(--foreground))]">{detailProduct.name}</h3>
-									<span class="rounded-md bg-[hsl(var(--secondary))] px-1.5 py-0.5 text-xs text-[hsl(var(--muted-foreground))]">
-										#{detailProduct.id}
-									</span>
+						</div>
+					{:else if detailProduct}
+						<div class="flex flex-col gap-4 md:flex-row md:items-start">
+							{#if detailProduct.photo && !productPhotoIsBroken(detailProduct.photo)}
+								{@const detailPhoto = detailProduct.photo}
+								<img
+									src={productPhotoUrl(detailPhoto)}
+									alt={`Imagen de ${detailProduct.name}`}
+									class="h-40 w-full rounded-lg border border-[hsl(var(--border))] object-cover md:w-48"
+									loading="lazy"
+									decoding="async"
+									onload={() => clearProductPhotoBroken(detailPhoto)}
+									onerror={() => markProductPhotoBroken(detailPhoto)}
+								/>
+							{:else}
+								<div class="grid h-40 w-full place-items-center rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))] md:w-48">
+									<Package class="size-8" aria-hidden="true" />
 								</div>
-								<p class="mt-2 whitespace-pre-wrap text-sm leading-6 text-[hsl(var(--muted-foreground))]">
-									{detailProduct.description}
-								</p>
-							</div>
+							{/if}
 
-							<div class="grid gap-3 sm:grid-cols-2">
-								<div class="rounded-md border border-[hsl(var(--border))] p-3">
-									<p class="text-xs text-[hsl(var(--muted-foreground))]">Precio por defecto</p>
-									<p class="mt-1 text-sm font-medium">
-										{detailProduct.defaultPrice === null ? 'Sin precio' : formatCurrency(detailProduct.defaultPrice)}
+							<div class="min-w-0 flex-1 space-y-3">
+								<div>
+									<div class="flex flex-wrap items-center gap-2">
+										<h3 class="text-xl font-semibold text-[hsl(var(--foreground))]">{detailProduct.name}</h3>
+										<span class="rounded-md bg-[hsl(var(--secondary))] px-1.5 py-0.5 text-xs text-[hsl(var(--muted-foreground))]">
+											#{detailProduct.id}
+										</span>
+									</div>
+									<p class="mt-2 whitespace-pre-wrap text-sm leading-6 text-[hsl(var(--muted-foreground))]">
+										{detailProduct.description}
 									</p>
 								</div>
-								<div class="rounded-md border border-[hsl(var(--border))] p-3">
-									<p class="text-xs text-[hsl(var(--muted-foreground))]">Stock disponible</p>
-									<p class="mt-1 text-lg font-semibold tabular-nums">{formatNumber(productStockQuantity(detailProduct.id))}</p>
-								</div>
-								<div class="rounded-md border border-[hsl(var(--border))] p-3">
-									<p class="text-xs text-[hsl(var(--muted-foreground))]">Caducidad mas cercana</p>
-									<p class="mt-1 text-sm font-medium">
-										{nearestExpirationForProduct(detailProduct.id)
-											? formatDate(nearestExpirationForProduct(detailProduct.id))
-											: 'Sin lotes'}
-									</p>
-								</div>
-								<div class="rounded-md border border-[hsl(var(--border))] p-3">
-									<p class="text-xs text-[hsl(var(--muted-foreground))]">Lotes</p>
-									<p class="mt-1 text-lg font-semibold tabular-nums">{formatNumber(productStockSummary(detailProduct.id)?.batchCount ?? 0)}</p>
+
+								<div class="grid gap-3 sm:grid-cols-2">
+									<div class="rounded-md border border-[hsl(var(--border))] p-3">
+										<p class="text-xs text-[hsl(var(--muted-foreground))]">Precio por defecto</p>
+										<p class="mt-1 text-sm font-medium">
+											{detailProduct.defaultPrice === null ? 'Sin precio' : formatCurrency(detailProduct.defaultPrice)}
+										</p>
+									</div>
+									<div class="rounded-md border border-[hsl(var(--border))] p-3">
+										<p class="text-xs text-[hsl(var(--muted-foreground))]">Stock disponible</p>
+										<p class="mt-1 text-lg font-semibold tabular-nums">{formatNumber(productStockQuantity(detailProduct.id))}</p>
+									</div>
+									<div class="rounded-md border border-[hsl(var(--border))] p-3">
+										<p class="text-xs text-[hsl(var(--muted-foreground))]">Caducidad mas cercana</p>
+										<p class="mt-1 text-sm font-medium">
+											{nearestExpirationForProduct(detailProduct.id)
+												? formatDate(nearestExpirationForProduct(detailProduct.id))
+												: 'Sin lotes'}
+										</p>
+									</div>
+									<div class="rounded-md border border-[hsl(var(--border))] p-3">
+										<p class="text-xs text-[hsl(var(--muted-foreground))]">Lotes</p>
+										<p class="mt-1 text-lg font-semibold tabular-nums">{formatNumber(productStockSummary(detailProduct.id)?.batchCount ?? 0)}</p>
+									</div>
+									{#if productStockSourceLabel(detailProduct)}
+										<div class="rounded-md border border-[hsl(var(--border))] p-3 sm:col-span-2">
+											<p class="text-xs text-[hsl(var(--muted-foreground))]">Origen del stock</p>
+											<p class="mt-1 text-sm font-medium">{productStockSourceLabel(detailProduct)}</p>
+										</div>
+									{/if}
 								</div>
 							</div>
 						</div>
-					</div>
 
-					<section class="grid gap-3 sm:grid-cols-2">
-						<div class="rounded-md border border-[hsl(var(--border))] p-3">
-							<p class="text-xs text-[hsl(var(--muted-foreground))]">Calorias</p>
-							<p class="mt-1 text-lg font-semibold tabular-nums">{formatNumber(detailProduct.nutritionalValues.calories)}</p>
-						</div>
-						<div class="rounded-md border border-[hsl(var(--border))] p-3">
-							<p class="text-xs text-[hsl(var(--muted-foreground))]">Carbohidratos</p>
-							<p class="mt-1 text-lg font-semibold tabular-nums">{formatNumber(detailProduct.nutritionalValues.carbohydrates)}g</p>
-						</div>
-						<div class="rounded-md border border-[hsl(var(--border))] p-3">
-							<p class="text-xs text-[hsl(var(--muted-foreground))]">Proteinas</p>
-							<p class="mt-1 text-lg font-semibold tabular-nums">{formatNumber(detailProduct.nutritionalValues.proteins)}g</p>
-						</div>
-						<div class="rounded-md border border-[hsl(var(--border))] p-3">
-							<p class="text-xs text-[hsl(var(--muted-foreground))]">Grasas</p>
-							<p class="mt-1 text-lg font-semibold tabular-nums">{formatNumber(detailProduct.nutritionalValues.fats)}g</p>
-						</div>
-					</section>
+						<section class="grid gap-3 sm:grid-cols-2">
+							<div class="rounded-md border border-[hsl(var(--border))] p-3">
+								<p class="text-xs text-[hsl(var(--muted-foreground))]">Calorias</p>
+								<p class="mt-1 text-lg font-semibold tabular-nums">{formatNumber(detailProduct.nutritionalValues.calories)}</p>
+							</div>
+							<div class="rounded-md border border-[hsl(var(--border))] p-3">
+								<p class="text-xs text-[hsl(var(--muted-foreground))]">Carbohidratos</p>
+								<p class="mt-1 text-lg font-semibold tabular-nums">{formatNumber(detailProduct.nutritionalValues.carbohydrates)}g</p>
+							</div>
+							<div class="rounded-md border border-[hsl(var(--border))] p-3">
+								<p class="text-xs text-[hsl(var(--muted-foreground))]">Proteinas</p>
+								<p class="mt-1 text-lg font-semibold tabular-nums">{formatNumber(detailProduct.nutritionalValues.proteins)}g</p>
+							</div>
+							<div class="rounded-md border border-[hsl(var(--border))] p-3">
+								<p class="text-xs text-[hsl(var(--muted-foreground))]">Grasas</p>
+								<p class="mt-1 text-lg font-semibold tabular-nums">{formatNumber(detailProduct.nutritionalValues.fats)}g</p>
+							</div>
+						</section>
 
-					<div class="flex flex-col-reverse gap-2 border-t border-[hsl(var(--border))] pt-5 sm:flex-row sm:justify-end">
-						<Button variant="secondary" type="button" onclick={closeModal}>Cerrar</Button>
-					</div>
+						<div class="flex flex-col-reverse gap-2 border-t border-[hsl(var(--border))] pt-5 sm:flex-row sm:justify-end">
+							<Button variant="secondary" type="button" onclick={closeModal}>Cerrar</Button>
+						</div>
+					{/if}
 				</div>
 			</div>
 		</div>
@@ -8342,6 +9146,14 @@
 										{detailRecipe.derivedProduct ? `${formatNumber(detailRecipe.derivedProduct.unitsProduced)} u` : 'No'}
 									</p>
 								</div>
+								{#if detailRecipe.derivedProduct}
+									<div class="rounded-md border border-[hsl(var(--border))] p-3">
+										<p class="text-xs text-[hsl(var(--muted-foreground))]">Stock</p>
+										<p class="mt-1 text-lg font-semibold tabular-nums">
+											{detailRecipe.derivedProduct.stockFromComposition ? 'Composición' : 'Producto propio'}
+										</p>
+									</div>
+								{/if}
 							</div>
 						</div>
 					</div>
@@ -8361,7 +9173,9 @@
 											<p class="truncate font-medium text-[hsl(var(--foreground))]">{ingredient.productName}</p>
 											<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Producto #{ingredient.productId}</p>
 										</div>
-										<p class="shrink-0 font-medium tabular-nums">{formatNumber(ingredient.grams)} g</p>
+										<p class="shrink-0 font-medium tabular-nums">
+											{formatNumber(ingredient.quantity)} {ingredient.quantityType === 'GRAMS' ? 'g' : ingredient.quantityType}
+										</p>
 									</div>
 								</div>
 							{/each}

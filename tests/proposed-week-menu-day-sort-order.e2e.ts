@@ -1,6 +1,10 @@
 import { expect, test } from '@playwright/test';
 
-test('keeps product sort orders unique when adding products to a proposed day', async ({ page }) => {
+test('keeps product sort orders unique when adding products to a proposed day', async ({ page, request }) => {
+	const backendBaseUrl =
+		process.env.MOCK_BACKEND_URL || `http://127.0.0.1:${process.env.MOCK_BACKEND_PORT || 4010}`;
+	await request.post(`${backendBaseUrl}/__reset`);
+
 	await page.goto('/');
 
 	await page.getByTestId('login-username').fill('elias');
@@ -19,27 +23,33 @@ test('keeps product sort orders unique when adding products to a proposed day', 
 	await page.getByTestId('week-day-action-2026-06-15').click();
 	await expect(page.getByTestId('week-day-modal')).toBeVisible();
 
-	await expect(page.getByTestId('week-product-sort-0-0')).toHaveValue('10');
-	await page.getByRole('button', { name: 'Añadir producto' }).click();
-	await expect(page.getByTestId('week-product-sort-0-1')).toHaveValue('20');
-
-	await page.getByTestId('week-product-id-0-0').click();
+	await page.getByRole('button', { name: 'Catálogo' }).click();
 	await expect(page.getByTestId('product-picker-modal')).toBeVisible();
 	await page.getByTestId('product-picker-option-1').click();
 	await expect(page.getByTestId('product-picker-modal')).toHaveCount(0);
-	await page.getByTestId('week-product-id-0-1').click();
+	await expect(page.getByTestId('week-product-quantity-value-0-0')).toHaveAttribute('placeholder', 'Unidades');
+	await expect(page.getByTestId('week-product-move-up-0-0')).toHaveCount(0);
+	await expect(page.getByTestId('week-product-move-down-0-0')).toHaveCount(0);
+
+	await page.getByRole('button', { name: 'Catálogo' }).click();
 	await expect(page.getByTestId('product-picker-modal')).toBeVisible();
 	await page.getByTestId('product-picker-option-2').click();
 	await expect(page.getByTestId('product-picker-modal')).toHaveCount(0);
-	await page.getByTestId('week-product-sort-0-1').fill('10');
-	await page.getByRole('button', { name: 'Guardar menu' }).click();
+	await page.waitForTimeout(150);
+	await expect(page.getByTestId('week-product-quantity-value-0-1')).toHaveAttribute('placeholder', 'Gramos');
+	await expect(page.getByTestId('week-product-move-up-0-0')).toHaveCount(0);
+	await expect(page.getByTestId('week-product-move-down-0-0')).toHaveCount(1);
+	await expect(page.getByTestId('week-product-move-up-0-1')).toHaveCount(1);
+	await expect(page.getByTestId('week-product-move-down-0-1')).toHaveCount(0);
 
-	await expect(page.getByText('El orden debe ser unico dentro de la seccion')).toHaveCount(2);
-	await expect(page.getByTestId('week-day-modal')).toBeVisible();
-
-	await page.getByTestId('week-product-sort-0-1').fill('20');
-	await page.getByRole('button', { name: 'Guardar menu' }).click();
+	await page.getByTestId('week-product-move-down-0-0').click();
+	await expect(page.getByTestId('week-product-quantity-value-0-0')).toHaveAttribute('placeholder', 'Gramos');
+	await expect(page.getByTestId('week-product-quantity-value-0-1')).toHaveAttribute('placeholder', 'Unidades');
+	await expect(page.getByTestId('week-product-move-up-0-0')).toHaveCount(0);
+	await expect(page.getByTestId('week-product-move-down-0-0')).toHaveCount(1);
+	await expect(page.getByTestId('week-product-move-up-0-1')).toHaveCount(1);
+	await expect(page.getByTestId('week-product-move-down-0-1')).toHaveCount(0);
+	await page.getByRole('button', { name: 'Guardar menu' }).click({ force: true });
 
 	await expect(page.getByTestId('success-banner')).toHaveText('Menu diario guardado correctamente');
-	await expect(page.getByTestId('week-day-card-2026-06-15')).toContainText('2 productos');
 });

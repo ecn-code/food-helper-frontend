@@ -35,8 +35,9 @@ export type Recipe = {
 };
 
 export type RecipeDerivedProductFormValues = {
-	producedGrams: string;
-	gramsPerUnit: string;
+	name: string;
+	units: string;
+	stockFromComposition: boolean;
 };
 
 export type RecipeDerivedProductFormErrors = Partial<Record<keyof RecipeDerivedProductFormValues, string>>;
@@ -50,12 +51,13 @@ export const emptyRecipeForm = (): RecipeFormValues => ({
 	name: '',
 	description: '',
 	instructions: '',
-	ingredients: [emptyRecipeIngredient()]
+	ingredients: []
 });
 
 export const emptyRecipeDerivedProductForm = (): RecipeDerivedProductFormValues => ({
-	producedGrams: '',
-	gramsPerUnit: ''
+	name: '',
+	units: '',
+	stockFromComposition: false
 });
 
 export const toRecipeFormValues = (recipe: RecipePayload | Recipe): RecipeFormValues => ({
@@ -64,7 +66,7 @@ export const toRecipeFormValues = (recipe: RecipePayload | Recipe): RecipeFormVa
 	instructions: recipe.instructions,
 	ingredients: ('products' in recipe ? recipe.products : recipe.ingredients).map((product) => ({
 		productId: String(product.productId),
-		grams: String(product.grams)
+		grams: String(product.quantity)
 	}))
 });
 
@@ -84,5 +86,6 @@ export const toRecipeIngredientAssignments = (
 ): RecipeIngredientAssignment[] =>
 	ingredients.map((ingredient) => ({
 		productId: Number(ingredient.productId),
-		grams: Number(ingredient.grams)
+		quantity: Number(ingredient.grams),
+		quantityType: 'GRAMS'
 	}));

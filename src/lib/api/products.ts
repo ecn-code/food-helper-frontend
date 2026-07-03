@@ -17,6 +17,7 @@ type ProductPayload = {
 	name: string;
 	description: string;
 	gramsPerUnit: number;
+	nutritionBasis: 'PER_100_GRAMS' | 'PER_UNIT';
 	defaultPrice: number | null;
 	nutritionalValues: {
 		calories: number;
@@ -26,6 +27,9 @@ type ProductPayload = {
 	};
 	photo: string | null;
 	supermarkets: { id: number; name: string }[];
+	derivedProduct?: {
+		stockFromComposition: boolean;
+	} | null;
 };
 
 export type PaginatedResponse<T> = {
@@ -77,10 +81,12 @@ function fromPayload(product: ProductPayload): Product {
 		name: product.name,
 		description: product.description,
 		gramsPerUnit: product.gramsPerUnit,
+		nutritionBasis: product.nutritionBasis,
 		defaultPrice: product.defaultPrice,
 		nutritionalValues: product.nutritionalValues,
 		photo: product.photo,
-		supermarkets: product.supermarkets ?? []
+		supermarkets: product.supermarkets ?? [],
+		derivedProduct: product.derivedProduct ?? null
 	};
 }
 
@@ -164,4 +170,12 @@ export async function deleteProduct(id: number, authorization: string) {
 			'content-type': 'application/json'
 		}
 	});
+}
+
+export async function getProduct(id: number, authorization: string) {
+	const response = await request<ProductPayload>(`/api/v1/products/${id}`, {
+		headers: authHeaders(authorization)
+	});
+
+	return fromPayload(response);
 }

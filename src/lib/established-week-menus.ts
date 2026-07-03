@@ -9,6 +9,7 @@ import type { ProposedWeekMenuDay, ProposedWeekMenuSection, ProposedWeekMenuProd
 import { toProposedWeekMenuDayModel } from '$lib/proposed-week-menus';
 import type { NutritionalValues } from '$lib/products';
 import type { NutritionalRulesEvaluation } from '$lib/api/proposed-week-menus';
+import { normalizeNutritionalRulesEvaluation } from '$lib/nutritional-rules';
 
 export type EstablishedWeekMenuDay = ProposedWeekMenuDay;
 export type EstablishedWeekMenuSection = ProposedWeekMenuSection;
@@ -49,6 +50,6 @@ export function toEstablishedWeekMenuModel(menu: EstablishedWeekMenuResponse): E
 		usedStock: menu.usedStock,
 		weekStock: menu.weekStock,
 		shoppingList: menu.shoppingList,
-		nutritionalRules: menu.nutritionalRules
+		nutritionalRules: normalizeNutritionalRulesEvaluation(menu.nutritionalRules)
 	};
 }

@@ -3,6 +3,7 @@
 	import { ArrowDown, ArrowUp, PiggyBank, Plus, Trash2, UserRound, WalletCards } from '@lucide/svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import { ApiError, isSessionExpiredError } from '$lib/api/backend';
+	import ValidationDialog from '$lib/components/ui/ValidationDialog.svelte';
 	import {
 		addMoneyBoxMovement,
 		createManualMoneyBox,
@@ -26,6 +27,7 @@
 	let deletingMovementId = $state<number | null>(null);
 	let error = $state('');
 	let message = $state('');
+	let validationDialog = $state<{ title: string; message: string; items: string[] } | null>(null);
 	let initialized = $state(false);
 	let selectedBox = $derived(boxes.find((box) => box.id === selectedId) ?? null);
 
@@ -55,7 +57,19 @@
 
 	async function createBox(event: SubmitEvent) {
 		event.preventDefault();
-		if (!newBoxName.trim() || creating) return;
+		validationDialog = null;
+		if (creating) return;
+		if (!newBoxName.trim()) {
+			error = 'Escribe un nombre para la hucha.';
+			message = '';
+			validationDialog = {
+				title: 'No se pudo crear la hucha',
+				message: 'Corrige este campo antes de continuar.',
+				items: ['Nombre: escribe un nombre para la hucha.']
+			};
+			return;
+		}
+
 		creating = true;
 		error = '';
 		message = '';
@@ -75,10 +89,16 @@
 
 	async function addMovement(event: SubmitEvent) {
 		event.preventDefault();
+		validationDialog = null;
 		const parsed = Number(amount);
 		if (!selectedBox || savingMovement) return;
 		if (!Number.isFinite(parsed) || parsed === 0) {
 			error = 'Introduce una cantidad distinta de cero.';
+			validationDialog = {
+				title: 'No se pudo registrar el movimiento',
+				message: 'Corrige este campo antes de continuar.',
+				items: ['Cantidad: introduce un valor distinto de cero.']
+			};
 			return;
 		}
 
@@ -181,7 +201,7 @@
 		</p>
 	</div>
 
-	<form class="flex max-w-xl flex-col gap-3 rounded-lg border bg-[hsl(var(--card))] p-4 sm:flex-row" onsubmit={createBox}>
+	<form class="flex max-w-xl flex-col gap-3 rounded-lg border bg-[hsl(var(--card))] p-4 sm:flex-row" onsubmit={createBox} novalidate>
 		<label class="min-w-0 flex-1 space-y-2">
 			<span class="text-sm font-medium">Nueva hucha compartida</span>
 			<input
@@ -194,7 +214,7 @@
 			/>
 		</label>
 		<div class="flex items-end">
-			<Button type="submit" disabled={creating || !newBoxName.trim()}>
+			<Button type="submit" disabled={creating}>
 				<Plus class="size-4" aria-hidden="true" /> Crear hucha
 			</Button>
 		</div>
@@ -202,6 +222,13 @@
 
 	{#if error}<p class="text-sm text-[hsl(var(--destructive))]" role="alert">{error}</p>{/if}
 	{#if message}<p class="text-sm text-[hsl(var(--primary))]" role="status">{message}</p>{/if}
+	<ValidationDialog
+		open={validationDialog !== null}
+		title={validationDialog?.title ?? 'Validación pendiente'}
+		message={validationDialog?.message ?? 'Revisa el formulario antes de continuar.'}
+		items={validationDialog?.items ?? []}
+		onClose={() => (validationDialog = null)}
+	/>
 
 	<div class="grid min-w-0 gap-4 lg:grid-cols-[18rem_minmax(0,1fr)] lg:items-start">
 		<div class="overflow-hidden rounded-lg border bg-[hsl(var(--card))]">

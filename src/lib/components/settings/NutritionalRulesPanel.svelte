@@ -3,6 +3,7 @@
 	import { Save } from '@lucide/svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import { ApiError, isSessionExpiredError } from '$lib/api/backend';
+	import ValidationDialog from '$lib/components/ui/ValidationDialog.svelte';
 	import {
 		getNutritionalRules,
 		saveNutritionalRules,
@@ -53,6 +54,7 @@
 	let saving = $state(false);
 	let error = $state('');
 	let message = $state('');
+	let validationDialog = $state<{ title: string; message: string; items: string[] } | null>(null);
 
 	function setValues(values: NutritionalRules) {
 		for (const scope of scopes) {
@@ -80,6 +82,7 @@
 
 	async function submit(event: SubmitEvent) {
 		event.preventDefault();
+		validationDialog = null;
 		saving = true;
 		error = '';
 		message = '';
@@ -88,6 +91,7 @@
 			daily: emptyRuleSet(),
 			weekly: emptyRuleSet()
 		};
+		const validationItems: string[] = [];
 
 		for (const scope of scopes) {
 			for (const field of nutritionalMetricFields) {
@@ -99,13 +103,23 @@
 					(maximum !== null && maximum < 0) ||
 					(minimum !== null && maximum !== null && minimum > maximum)
 				) {
-					error = `Revisa los límites de ${field.label.toLowerCase()} en ${scope.title.toLowerCase()}.`;
-					saving = false;
-					return;
+					validationItems.push(`Ámbito ${scope.title.toLowerCase()}, ${field.label.toLowerCase()}: mínimo y máximo deben ser válidos y coherentes.`);
+					continue;
 				}
 
 				payload[scope.key][field.key] = { minimum, maximum };
 			}
+		}
+
+		if (validationItems.length > 0) {
+			error = 'Revisa los límites marcados.';
+			validationDialog = {
+				title: 'No se pudieron guardar las reglas',
+				message: 'Corrige estos campos antes de continuar.',
+				items: validationItems
+			};
+			saving = false;
+			return;
 		}
 
 		try {
@@ -191,14 +205,21 @@
 				</section>
 			{/each}
 
-			{#if error}
-				<p class="text-sm text-[hsl(var(--destructive))]" role="alert">{error}</p>
-			{/if}
-			{#if message}
-				<p class="text-sm text-[hsl(var(--primary))]" role="status">{message}</p>
-			{/if}
+	{#if error}
+		<p class="text-sm text-[hsl(var(--destructive))]" role="alert">{error}</p>
+	{/if}
+	{#if message}
+		<p class="text-sm text-[hsl(var(--primary))]" role="status">{message}</p>
+	{/if}
+	<ValidationDialog
+		open={validationDialog !== null}
+		title={validationDialog?.title ?? 'Validación pendiente'}
+		message={validationDialog?.message ?? 'Revisa el formulario antes de continuar.'}
+		items={validationDialog?.items ?? []}
+		onClose={() => (validationDialog = null)}
+	/>
 
-			<div class="flex justify-end">
+	<div class="flex justify-end">
 				<Button type="submit" disabled={saving}>
 					<Save class="size-4" />
 					Guardar reglas

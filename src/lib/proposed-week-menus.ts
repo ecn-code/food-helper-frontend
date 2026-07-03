@@ -6,11 +6,14 @@ import type {
 	NutritionalRulesEvaluation,
 	ProposedWeekMenuSectionResponse
 } from '$lib/api/proposed-week-menus';
-import type { NutritionalValues } from '$lib/products';
+import type { EstablishedWeekMenuStockSummaryResponse } from '$lib/api/established-week-menus';
+import { normalizeNutritionalRulesEvaluation } from '$lib/nutritional-rules';
+import { productQuantityMode, type NutritionalValues, type Product } from '$lib/products';
 
 export type ProposedWeekMenuCreateFormValues = {
 	startDate: string;
 	endDate: string;
+	users: string;
 };
 
 export type ProposedWeekMenuDayPartFormValues = {
@@ -21,6 +24,7 @@ export type ProposedWeekMenuDayPartFormValues = {
 
 export type ProposedWeekMenuDayProductFormValues = {
 	type: 'catalog' | 'manual';
+	quantityMode: 'units' | 'grams';
 	productId: string;
 	productName: string;
 	units: string;
@@ -42,7 +46,7 @@ export type ProposedWeekMenuDayFormValues = {
 	sections: ProposedWeekMenuSectionFormValues[];
 };
 
-export type ProposedWeekMenuCreateFormErrors = Partial<Record<'startDate' | 'endDate', string>>;
+export type ProposedWeekMenuCreateFormErrors = Partial<Record<'startDate' | 'endDate' | 'users', string>>;
 export type ProposedWeekMenuDayPartFormErrors = Partial<Record<'name' | 'description' | 'sortOrder', string>>;
 
 export type ProposedWeekMenuDayProductFormErrors = Partial<
@@ -98,8 +102,10 @@ export type ProposedWeekMenu = {
 	endDate: string;
 	days: ProposedWeekMenuDay[];
 	nutritionalValues: NutritionalValues;
+	stockSummary?: ProposedWeekMenuStockSummary;
 	nutritionalRules?: NutritionalRulesEvaluation;
 };
+export type ProposedWeekMenuStockSummary = EstablishedWeekMenuStockSummaryResponse;
 
 function sortBySortOrder<T extends { sortOrder: number }>(items: T[]) {
 	return [...items].sort((left, right) => {
@@ -115,7 +121,8 @@ function sortByDate<T extends { date: string }>(items: T[]) {
 export function emptyProposedWeekMenuCreateForm(): ProposedWeekMenuCreateFormValues {
 	return {
 		startDate: '',
-		endDate: ''
+		endDate: '',
+		users: '1'
 	};
 }
 
@@ -130,6 +137,7 @@ export function emptyProposedWeekMenuDayPartForm(): ProposedWeekMenuDayPartFormV
 export function emptyProposedWeekMenuDayProductForm(): ProposedWeekMenuDayProductFormValues {
 	return {
 		type: 'catalog',
+		quantityMode: 'units',
 		productId: '',
 		productName: '',
 		units: '',
@@ -163,7 +171,8 @@ export function toProposedWeekMenuModel(menu: ProposedWeekMenuResponse): Propose
 		endDate: menu.endDate,
 		days: sortByDate(menu.days).map(toProposedWeekMenuDayModel),
 		nutritionalValues: menu.nutritionalValues,
-		nutritionalRules: menu.nutritionalRules
+		stockSummary: menu.stockSummary as ProposedWeekMenuStockSummary | undefined,
+		nutritionalRules: normalizeNutritionalRulesEvaluation(menu.nutritionalRules)
 	};
 }
 
@@ -204,9 +213,11 @@ export function toProposedWeekMenuProductModel(
 }
 
 export function toProposedWeekMenuDayFormValues(
-	day: ProposedWeekMenuDay | null | undefined
+	day: ProposedWeekMenuDay | null | undefined,
+	catalogProducts: Product[] = []
 ): ProposedWeekMenuDayFormValues {
 	if (!day) return emptyProposedWeekMenuDayForm();
+	const catalogProductsById = new Map(catalogProducts.map((product) => [product.id, product]));
 
 	return {
 		date: day.date,
@@ -214,6 +225,10 @@ export function toProposedWeekMenuDayFormValues(
 			dayPartId: String(section.dayPartId),
 			products: sortBySortOrder(section.products).map((product) => ({
 				type: (product.productId === null ? 'manual' : 'catalog') as 'manual' | 'catalog',
+				quantityMode:
+					product.productId === null
+						? 'units'
+						: productQuantityMode(catalogProductsById.get(product.productId) ?? null),
 				productId: product.productId === null ? '' : String(product.productId),
 				productName: product.productName,
 				units: String(product.units ?? ''),

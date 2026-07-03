@@ -24,6 +24,7 @@ test('shows menu stats in comidas header with table and calendar views', async (
 	const planningResponse = await request.post(`${backendBaseUrl}/api/v1/planning`, {
 		headers,
 		data: {
+			users: 1,
 			startDate,
 			endDate
 		}
@@ -71,8 +72,15 @@ test('shows menu stats in comidas header with table and calendar views', async (
 	await expect(page.getByTestId('menu-calendar-view')).toBeVisible();
 	await expect(page.getByTestId('menu-calendar-grid')).toContainText('Sin comida');
 
+	await page.getByTestId('menu-filter-mode-dates').click();
+	await page.getByTestId('menu-date-from').fill(startDate);
+	await page.getByTestId('menu-date-to').fill(endDate);
+	await expect(page.getByTestId('menu-stats-panel')).toBeVisible();
+	await expect(page.getByTestId('menu-stats-panel')).toContainText('Días visibles');
+
+	await page.getByTestId('menu-filter-mode-menu').click();
 	await page.getByTestId('menu-edit-button').click();
-	await expect(page.getByRole('heading', { name: 'Menú' })).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Menú', exact: true })).toBeVisible();
 	await expect(page.getByRole('heading', { name: /^Planificación$/ })).toHaveCount(0);
 	await expect(page.getByTestId('week-day-modal')).toBeVisible();
 	await expect(page.getByTestId('week-day-form')).toBeVisible();

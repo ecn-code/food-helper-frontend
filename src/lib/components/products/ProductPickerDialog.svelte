@@ -24,7 +24,7 @@
 		authorization: string;
 		products: Product[];
 		selectedProductId?: number | string | null;
-		onSelect: (productId: number) => void;
+		onSelect: (product: Product) => void;
 		onClose: () => void;
 		testId?: string;
 	} = $props();
@@ -64,7 +64,7 @@
 	}
 
 	function selectProduct(product: Product) {
-		onSelect(product.id);
+		onSelect(product);
 	}
 
 	function cancelVisibleProductsRefresh() {

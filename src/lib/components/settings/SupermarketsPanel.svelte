@@ -3,6 +3,7 @@
 	import { Pencil, Plus, Save, Store, Trash2, X } from '@lucide/svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import { ApiError, isSessionExpiredError } from '$lib/api/backend';
+	import ValidationDialog from '$lib/components/ui/ValidationDialog.svelte';
 	import {
 		createSupermarket,
 		deleteSupermarket,
@@ -19,6 +20,7 @@
 	let editingId = $state<number | null>(null);
 	let message = $state('');
 	let error = $state('');
+	let validationDialog = $state<{ title: string; message: string; items: string[] } | null>(null);
 
 	async function load() {
 		try {
@@ -40,7 +42,19 @@
 
 	async function submit(event: SubmitEvent) {
 		event.preventDefault();
-		if (!name.trim() || saving) return;
+		validationDialog = null;
+		if (saving) return;
+		if (!name.trim()) {
+			error = 'Escribe un nombre para el supermercado.';
+			message = '';
+			validationDialog = {
+				title: 'No se pudo guardar el supermercado',
+				message: 'Corrige este campo antes de continuar.',
+				items: ['Nombre: escribe un nombre para el supermercado.']
+			};
+			return;
+		}
+
 		saving = true;
 		error = '';
 		message = '';
@@ -88,13 +102,13 @@
 		</div>
 	</div>
 
-	<form class="flex max-w-xl flex-col gap-3 rounded-lg border bg-[hsl(var(--card))] p-4 sm:flex-row" onsubmit={submit}>
+	<form class="flex max-w-xl flex-col gap-3 rounded-lg border bg-[hsl(var(--card))] p-4 sm:flex-row" onsubmit={submit} novalidate>
 		<label class="min-w-0 flex-1 space-y-2">
 			<span class="text-sm font-medium">Nombre</span>
 			<input class="h-10 w-full rounded-md border bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-[hsl(var(--ring))]" bind:value={name} maxlength="150" required data-testid="supermarket-name" />
 		</label>
 		<div class="flex items-end gap-2">
-			<Button type="submit" disabled={saving || !name.trim()}>
+			<Button type="submit" disabled={saving}>
 				{#if editingId === null}<Plus class="size-4" /> Añadir{:else}<Save class="size-4" /> Guardar{/if}
 			</Button>
 			{#if editingId !== null}<Button type="button" variant="secondary" size="icon" aria-label="Cancelar edición" onclick={resetForm}><X class="size-4" /></Button>{/if}
@@ -103,6 +117,13 @@
 
 	{#if error}<p class="text-sm text-[hsl(var(--destructive))]" role="alert">{error}</p>{/if}
 	{#if message}<p class="text-sm text-[hsl(var(--primary))]" role="status">{message}</p>{/if}
+	<ValidationDialog
+		open={validationDialog !== null}
+		title={validationDialog?.title ?? 'Validación pendiente'}
+		message={validationDialog?.message ?? 'Revisa el formulario antes de continuar.'}
+		items={validationDialog?.items ?? []}
+		onClose={() => (validationDialog = null)}
+	/>
 
 	<div class="overflow-hidden rounded-lg border bg-[hsl(var(--card))]">
 		{#if !loaded}

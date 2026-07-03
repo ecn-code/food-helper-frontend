@@ -24,54 +24,74 @@ async function login(page: Page) {
 	await expect(page.getByRole('heading', { level: 1, name: 'Productos' })).toBeVisible();
 }
 
-async function chooseProductFromPicker(page: Page, triggerTestId: string, productId: number, search = '') {
-	await page.getByTestId(triggerTestId).click();
-	await expect(page.getByTestId('product-picker-modal')).toBeVisible();
-	if (search) {
-		await page.getByTestId('product-picker-filter-search').fill(search);
-	}
-	await page.getByTestId(`product-picker-option-${productId}`).click();
-	await expect(page.getByTestId('product-picker-modal')).toHaveCount(0);
+async function authHeaders(page: Page) {
+	const session = await page.evaluate(() => JSON.parse(localStorage.getItem('foodhelper_session') ?? 'null'));
+	return {
+		Authorization: `${session.tokenType} ${session.accessToken}`
+	};
 }
 
-async function createPublishedWeek(page: Page, startDate: string, endDate: string, productId: number) {
-	await page.getByRole('link', { name: 'Planificación' }).click();
-	await page.getByRole('button', { name: 'Nueva semana' }).click();
-
-	await page.getByTestId('week-start-date').fill(startDate);
-	await page.getByTestId('week-end-date').fill(endDate);
-	await page.getByTestId('week-create-form').getByRole('button', { name: 'Crear semana' }).click();
-
-	await page.getByTestId(`week-day-action-${startDate}`).click();
-	await chooseProductFromPicker(page, 'week-product-id-0-0', productId);
-	await page.getByRole('button', { name: 'Guardar menu' }).click();
-
-	await page.getByRole('button', { name: 'Establecer semana' }).click();
-	await expect(page.getByTestId('week-publish-modal')).toBeVisible();
-	await page.getByTestId('week-publish-payer').selectOption('1');
-	await page.getByTestId('week-publish-person-1').check();
-	await page.getByTestId('week-publish-form').getByRole('button', { name: 'Establecer semana' }).click();
-	await expect(page.getByTestId('week-publish-modal')).toHaveCount(0);
+async function seedProposedWeek(page: Page, startDate: string, endDate: string) {
+	const headers = await authHeaders(page);
+	const createResponse = await page.request.post(`${mockBackendUrl}/api/v1/proposed-week-menus`, {
+		headers,
+		data: { startDate, endDate, users: 1 }
+	});
+	expect(createResponse.ok()).toBeTruthy();
+	return await createResponse.json();
 }
 
-test('bloquea el establecimiento cuando la semana se solapa con otra planificación', async ({ page }) => {
+async function seedProposedWeekDay(page: Page, weekId: number, startDate: string) {
+	const headers = await authHeaders(page);
+	const dayResponse = await page.request.put(`${mockBackendUrl}/api/v1/proposed-week-menus/${weekId}/days`, {
+		headers: { ...headers, 'content-type': 'application/json' },
+		data: {
+			date: startDate,
+			sections: [
+				{
+					dayPartId: 1,
+					products: [{ productId: 1, sortOrder: 0 }]
+				}
+			]
+		}
+	});
+	expect(dayResponse.ok()).toBeTruthy();
+}
+
+async function publishProposedWeek(page: Page, weekId: number) {
+	const headers = await authHeaders(page);
+	const publishResponse = await page.request.post(`${mockBackendUrl}/api/v1/planning/${weekId}/menu`, {
+		headers: { ...headers, 'content-type': 'application/json' },
+		data: { payerUserId: 1, personIds: [1] }
+	});
+	expect(publishResponse.ok()).toBeTruthy();
+}
+
+test('muestra el error del backend cuando la semana se solapa con otra planificación', async ({ page }) => {
 	await login(page);
 
-	await createPublishedWeek(page, '2026-06-15', '2026-06-21', 1);
+	const firstWeek = await seedProposedWeek(page, '2026-06-15', '2026-06-21');
+	await seedProposedWeekDay(page, firstWeek.id, '2026-06-15');
+	await publishProposedWeek(page, firstWeek.id);
+
+	const secondWeek = await seedProposedWeek(page, '2026-06-18', '2026-06-24');
+	await seedProposedWeekDay(page, secondWeek.id, '2026-06-18');
 
 	await page.getByRole('link', { name: 'Planificación' }).click();
-	await page.getByRole('button', { name: 'Nueva semana' }).click();
-
-	await page.getByTestId('week-start-date').fill('2026-06-18');
-	await page.getByTestId('week-end-date').fill('2026-06-24');
-	await page.getByTestId('week-create-form').getByRole('button', { name: 'Crear semana' }).click();
-
-	await page.getByTestId('week-day-action-2026-06-18').click();
-	await chooseProductFromPicker(page, 'week-product-id-0-0', 2);
-	await page.getByRole('button', { name: 'Guardar menu' }).click();
-
 	await page.getByRole('button', { name: 'Establecer semana' }).click();
 	await expect(page.getByTestId('week-publish-modal')).toBeVisible();
-	await expect(page.getByTestId('week-publish-overlap-warning')).toBeVisible();
-	await expect(page.getByTestId('week-publish-form').getByRole('button', { name: 'Establecer semana' })).toBeDisabled();
+	await expect(page.getByTestId('week-publish-form').getByRole('button', { name: 'Establecer semana' })).toBeEnabled();
+	await Promise.all([
+		page.waitForResponse((response) =>
+			response.request().method() === 'POST' &&
+			response.url().includes('/api/v1/planning/') &&
+			response.url().endsWith('/menu') &&
+			response.status() === 400
+		),
+		page.getByTestId('week-publish-form').getByRole('button', { name: 'Establecer semana' }).click()
+	]);
+	await expect(page.getByTestId('error-banner')).toContainText(
+		'Ya existe una planificación que se solapa con este rango: #1 · 15/06/2026 al 21/06/2026.'
+	);
+	await expect(page.getByTestId('week-publish-modal')).toBeVisible();
 });

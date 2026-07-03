@@ -7,6 +7,12 @@
 	type FilterMode = 'menu' | 'dates';
 	type ViewMode = 'table' | 'calendar';
 	type PlanningState = 'DRAFT' | 'ESTABLISHED' | 'CLOSED';
+	type MenuStatsCard = {
+		label: string;
+		value: string;
+		hint: string;
+		tone: 'default' | 'primary' | 'accent';
+	};
 	type MealRow = {
 		key: string;
 		date: string;
@@ -64,32 +70,8 @@
 	const calendarDates = $derived(buildCalendarDates(rows, filterMode, selectedMenu, dateFrom, dateTo));
 	const calendarDayParts = $derived(buildCalendarDayParts(rows, filterMode, selectedMenu));
 	const calendarCells = $derived(buildCalendarCells(rows));
-	const selectedMenuStats = $derived(
-		selectedMenu
-			? [
-					{
-						label: 'Días planificados',
-						value: String(selectedMenu.stockSummary.plannedDays),
-						hint: 'Días ya guardados'
-					},
-					{
-						label: 'Calorías',
-						value: formatNumber(selectedMenu.nutritionalValues.calories),
-						hint: 'Total del menú'
-					},
-					{
-						label: 'Productos distintos',
-						value: String(selectedMenu.stockSummary.distinctProducts),
-						hint: 'Variedad de productos'
-					},
-					{
-						label: 'Coste estimado',
-						value: formatCurrency(selectedMenu.stockSummary.estimatedCost),
-						hint: 'Stock aplicado y coste real'
-					}
-				]
-			: []
-	);
+	const statsCards = $derived(buildStatsCards(filterMode, selectedMenu, orderedMenus, dateFrom, dateTo));
+	const statsSummaryLabel = $derived(buildStatsSummaryLabel(filterMode, selectedMenu, dateFrom, dateTo));
 
 	$effect(() => {
 		if (orderedMenus.length === 0) {
@@ -212,6 +194,138 @@
 		return cells;
 	}
 
+	function buildStatsCards(
+		mode: FilterMode,
+		selectedMenuValue: EstablishedWeekMenu | null,
+		availableMenus: EstablishedWeekMenu[],
+		from: string,
+		to: string
+	): MenuStatsCard[] {
+		if (mode === 'menu') {
+			if (!selectedMenuValue) return [];
+
+			return [
+				{
+					label: 'Días planificados',
+					value: String(selectedMenuValue.stockSummary.plannedDays),
+					hint: 'Días ya guardados',
+					tone: 'default'
+				},
+				{
+					label: 'Calorías',
+					value: formatNumber(selectedMenuValue.nutritionalValues.calories),
+					hint: 'Total del menú',
+					tone: 'primary'
+				},
+				{
+					label: 'Productos distintos',
+					value: String(selectedMenuValue.stockSummary.distinctProducts),
+					hint: 'Variedad de productos',
+					tone: 'accent'
+				},
+				{
+					label: 'Coste estimado',
+					value: formatCurrency(selectedMenuValue.stockSummary.estimatedCost),
+					hint: 'Stock aplicado y coste real',
+					tone: 'default'
+				}
+			];
+		}
+
+		const stats = aggregateRangeStats(availableMenus, from, to);
+		return [
+			{
+				label: 'Días visibles',
+				value: String(stats.plannedDays),
+				hint: stats.rangeLabel,
+				tone: 'default'
+			},
+			{
+				label: 'Calorías',
+				value: formatNumber(stats.calories),
+				hint: 'Suma de los días filtrados',
+				tone: 'primary'
+			},
+			{
+				label: 'Productos distintos',
+				value: String(stats.distinctProducts),
+				hint: 'Productos únicos del rango',
+				tone: 'accent'
+			},
+			{
+				label: 'Coste estimado',
+				value: formatCurrency(stats.estimatedCost),
+				hint: 'Estimación proporcional al rango',
+				tone: 'default'
+			}
+		];
+	}
+
+	function aggregateRangeStats(availableMenus: EstablishedWeekMenu[], from: string, to: string) {
+		let plannedDays = 0;
+		let calories = 0;
+		let estimatedCost = 0;
+		const productIds = new Set<string>();
+		const dates = new Set<string>();
+
+		for (const menu of availableMenus) {
+			const includedDays = menu.days.filter((day) => isDateWithinRange(day.date, from, to));
+			if (includedDays.length === 0) continue;
+
+			plannedDays += includedDays.length;
+			calories += includedDays.reduce((sum, day) => sum + Number(day.nutritionalValues.calories ?? 0), 0);
+			estimatedCost += Number(menu.stockSummary.estimatedCost ?? 0) * (includedDays.length / Math.max(menu.days.length, 1));
+
+			for (const day of includedDays) {
+				dates.add(day.date);
+				for (const section of day.sections) {
+					for (const product of section.products) {
+						const key = product.productId === null ? `name:${product.productName}` : `id:${product.productId}`;
+						productIds.add(key);
+					}
+				}
+			}
+		}
+
+		const sortedDates = [...dates].sort((left, right) => left.localeCompare(right));
+		const lastDate = sortedDates[sortedDates.length - 1] ?? sortedDates[0];
+		const rangeLabel =
+			sortedDates.length === 0
+				? 'Sin días en el rango seleccionado'
+				: sortedDates.length === 1
+					? `Día filtrado: ${formatShortDate(sortedDates[0])}`
+					: `Rango filtrado: ${formatShortDate(sortedDates[0])} – ${formatShortDate(lastDate)}`;
+
+		return {
+			plannedDays,
+			calories,
+			distinctProducts: productIds.size,
+			estimatedCost,
+			rangeLabel
+		};
+	}
+
+	function isDateWithinRange(date: string, from: string, to: string) {
+		if (from && date < from) return false;
+		if (to && date > to) return false;
+		return true;
+	}
+
+	function buildStatsSummaryLabel(mode: FilterMode, selectedMenuValue: EstablishedWeekMenu | null, from: string, to: string) {
+		if (mode === 'menu') {
+			if (!selectedMenuValue) return 'Sin menú seleccionado';
+			return `Menú #${selectedMenuValue.id} · ${menuLabel(selectedMenuValue)}`;
+		}
+
+		if (from && to) {
+			return `Rango ${formatShortDate(from)} – ${formatShortDate(to)}`;
+		}
+
+		if (from) return `Desde ${formatShortDate(from)}`;
+		if (to) return `Hasta ${formatShortDate(to)}`;
+		return 'Rango de fechas';
+	}
+
 	function menuLabel(menu: EstablishedWeekMenu) {
 		return `${formatShortDate(menu.startDate)} – ${formatShortDate(menu.endDate)}`;
 	}
@@ -292,85 +406,104 @@
 
 <section class="space-y-4" data-testid="menu-meals-table">
 	<div class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4">
-		<div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-			<div class="min-w-0">
-				<h3 class="text-base font-semibold text-[hsl(var(--foreground))]">Filtrar comidas</h3>
-				<p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">
-					Consulta un período completo o acota el historial por fechas.
-				</p>
-			</div>
-			<div class="flex flex-wrap items-center gap-2">
-				<div class="inline-flex w-fit rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.35)] p-1" aria-label="Tipo de filtro">
-					<Button
-						type="button"
-						size="sm"
-						variant={filterMode === 'menu' ? 'primary' : 'ghost'}
-						onclick={() => (filterMode = 'menu')}
-						aria-pressed={filterMode === 'menu'}
-						data-testid="menu-filter-mode-menu"
-					>
-						<CalendarDays class="size-4" aria-hidden="true" />
-						Período de menú
-					</Button>
-					<Button
-						type="button"
-						size="sm"
-						variant={filterMode === 'dates' ? 'primary' : 'ghost'}
-						onclick={() => (filterMode = 'dates')}
-						aria-pressed={filterMode === 'dates'}
-						data-testid="menu-filter-mode-dates"
-					>
-						<CalendarRange class="size-4" aria-hidden="true" />
-						Rango de fechas
-					</Button>
+		<div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+			<div class="min-w-0 space-y-3">
+				<div>
+					<h3 class="text-base font-semibold text-[hsl(var(--foreground))]">Filtrar comidas</h3>
+					<p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">
+						Consulta un período completo o acota el historial por fechas.
+					</p>
 				</div>
-				<div class="inline-flex w-fit rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.35)] p-1" aria-label="Modo de visualizacion">
-					<Button
-						type="button"
-						size="sm"
-						variant={viewMode === 'table' ? 'primary' : 'ghost'}
-						onclick={() => (viewMode = 'table')}
-						aria-pressed={viewMode === 'table'}
-						data-testid="menu-view-mode-table"
-					>
-						<LayoutList class="size-4" aria-hidden="true" />
-						Tabla
-					</Button>
-					<Button
-						type="button"
-						size="sm"
-						variant={viewMode === 'calendar' ? 'primary' : 'ghost'}
-						onclick={() => (viewMode = 'calendar')}
-						aria-pressed={viewMode === 'calendar'}
-						data-testid="menu-view-mode-calendar"
-					>
-						<CalendarDays class="size-4" aria-hidden="true" />
-						Calendario
-					</Button>
-				</div>
-			</div>
-		</div>
-
-		{#if selectedMenu && filterMode === 'menu'}
-			<div class="mt-4 flex flex-col gap-4 border-t border-[hsl(var(--border))] pt-4 lg:flex-row lg:items-center lg:justify-between" data-testid="menu-selected-week">
-				<div class="min-w-0">
-					<div class="flex flex-wrap items-center gap-2">
-						<h4 class="text-sm font-semibold text-[hsl(var(--foreground))]">Menú #{selectedMenu.id}</h4>
-						<span class="inline-flex w-fit items-center gap-1.5 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.4)] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]">
-							<Utensils class="size-3.5" aria-hidden="true" />
-							{menuLabel(selectedMenu)}
+				<div class="flex flex-wrap items-center gap-2">
+					<span class="inline-flex w-fit items-center gap-1.5 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.35)] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]">
+						<Utensils class="size-3.5" aria-hidden="true" />
+						{statsSummaryLabel}
+					</span>
+					{#if selectedMenu && filterMode === 'menu'}
+						<span class="inline-flex w-fit items-center gap-1.5 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]" data-testid="menu-selected-week">
+							<CalendarDays class="size-3.5" aria-hidden="true" />
+							{selectedMenu.days.length} días · {selectedMenu.stockSummary.plannedDays} planificados · {rows.length} secciones
 						</span>
 						{#if selectedMenuState}
 							<span class="inline-flex w-fit rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]">
 								{selectedMenuState === 'DRAFT' ? 'Borrador' : selectedMenuState === 'ESTABLISHED' ? 'En curso' : 'Cerrado'}
 							</span>
 						{/if}
-					</div>
-					<p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">
-						{selectedMenu.days.length} días · {selectedMenu.stockSummary.plannedDays} planificados · {rows.length} secciones
-					</p>
+					{/if}
 				</div>
-				<div class="flex flex-wrap gap-2">
+			</div>
+			{#if statsCards.length > 0}
+				<div class="w-full min-w-0 xl:max-w-5xl" aria-label="Metricas del menu" data-testid="menu-stats-panel">
+					<div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+						{#each statsCards as stat, index (stat.label)}
+							<MetricCard label={stat.label} value={stat.value} hint={stat.hint} tone={stat.tone}>
+								{#if index === 0}
+									<LayoutList class="size-4" aria-hidden="true" />
+								{:else if index === 1}
+									<Flame class="size-4" aria-hidden="true" />
+								{:else if index === 2}
+									<Utensils class="size-4" aria-hidden="true" />
+								{:else}
+									<CalendarDays class="size-4" aria-hidden="true" />
+								{/if}
+							</MetricCard>
+						{/each}
+					</div>
+				</div>
+			{/if}
+		</div>
+
+		<div class="mt-4 flex flex-wrap items-center gap-2">
+			<div class="inline-flex w-fit rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.35)] p-1" aria-label="Tipo de filtro">
+				<Button
+					type="button"
+					size="sm"
+					variant={filterMode === 'menu' ? 'primary' : 'ghost'}
+					onclick={() => (filterMode = 'menu')}
+					aria-pressed={filterMode === 'menu'}
+					data-testid="menu-filter-mode-menu"
+				>
+					<CalendarDays class="size-4" aria-hidden="true" />
+					Período de menú
+				</Button>
+				<Button
+					type="button"
+					size="sm"
+					variant={filterMode === 'dates' ? 'primary' : 'ghost'}
+					onclick={() => (filterMode = 'dates')}
+					aria-pressed={filterMode === 'dates'}
+					data-testid="menu-filter-mode-dates"
+				>
+					<CalendarRange class="size-4" aria-hidden="true" />
+					Rango de fechas
+				</Button>
+			</div>
+			<div class="inline-flex w-fit rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.35)] p-1" aria-label="Modo de visualizacion">
+				<Button
+					type="button"
+					size="sm"
+					variant={viewMode === 'table' ? 'primary' : 'ghost'}
+					onclick={() => (viewMode = 'table')}
+					aria-pressed={viewMode === 'table'}
+					data-testid="menu-view-mode-table"
+				>
+					<LayoutList class="size-4" aria-hidden="true" />
+					Tabla
+				</Button>
+				<Button
+					type="button"
+					size="sm"
+					variant={viewMode === 'calendar' ? 'primary' : 'ghost'}
+					onclick={() => (viewMode = 'calendar')}
+					aria-pressed={viewMode === 'calendar'}
+					data-testid="menu-view-mode-calendar"
+				>
+					<CalendarDays class="size-4" aria-hidden="true" />
+					Calendario
+				</Button>
+			</div>
+			{#if selectedMenu && filterMode === 'menu'}
+				<div class="flex flex-wrap gap-2 sm:ml-auto">
 					<Button
 						type="button"
 						variant="secondary"
@@ -396,24 +529,8 @@
 						<Trash2 class="size-4" aria-hidden="true" />
 					</Button>
 				</div>
-			</div>
-
-			<div class="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4" aria-label="Metricas del menu" data-testid="menu-stats-panel">
-				{#each selectedMenuStats as stat, index (stat.label)}
-					<MetricCard label={stat.label} value={stat.value} hint={stat.hint}>
-						{#if index === 0}
-							<LayoutList class="size-4" aria-hidden="true" />
-						{:else if index === 1}
-							<Flame class="size-4" aria-hidden="true" />
-						{:else if index === 2}
-							<Utensils class="size-4" aria-hidden="true" />
-						{:else}
-							<CalendarDays class="size-4" aria-hidden="true" />
-						{/if}
-					</MetricCard>
-				{/each}
-			</div>
-		{/if}
+			{/if}
+		</div>
 
 		<div class="mt-4 border-t border-[hsl(var(--border))] pt-4">
 			{#if filterMode === 'menu'}

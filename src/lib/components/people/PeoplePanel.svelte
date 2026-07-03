@@ -4,6 +4,7 @@
 	import Button from '$lib/components/ui/Button.svelte';
 	import MetricCard from '$lib/components/ui/MetricCard.svelte';
 	import { ApiError, isSessionExpiredError } from '$lib/api/backend';
+	import ValidationDialog from '$lib/components/ui/ValidationDialog.svelte';
 	import {
 		createUserWeight,
 		deleteUserWeight,
@@ -54,6 +55,7 @@
 	let range = $state<DateRangeRequest>(defaultRange('weights'));
 	let editingWeightId = $state<number | null>(null);
 	let weightDraft = $state({ weight: '', recordedAt: '', notes: '' });
+	let validationDialog = $state<{ title: string; message: string; items: string[] } | null>(null);
 
 	const currentUser = $derived(users.find((user) => user.id === Number(selectedUserId)) ?? null);
 	const weightsSummary = $derived(weightSummary(weights));
@@ -272,6 +274,11 @@
 		if (!Number.isFinite(userId) || userId <= 0) return;
 		if (!isValidRange()) {
 			error = 'Selecciona un rango válido.';
+			validationDialog = {
+				title: 'No se pudo cargar la información',
+				message: 'Corrige estos campos antes de continuar.',
+				items: ['Rango: selecciona una fecha de inicio y fin válidas.']
+			};
 			return;
 		}
 
@@ -340,6 +347,7 @@
 
 	async function applyRange(event: SubmitEvent) {
 		event.preventDefault();
+		validationDialog = null;
 		editingWeightId = null;
 		weightDraft = { weight: '', recordedAt: '', notes: '' };
 		await loadModeData();
@@ -361,6 +369,7 @@
 
 	async function saveWeight(event: SubmitEvent) {
 		event.preventDefault();
+		validationDialog = null;
 		const userId = Number(selectedUserId);
 		if (!Number.isFinite(userId) || userId <= 0) return;
 
@@ -371,6 +380,14 @@
 		};
 		if (!Number.isFinite(payload.weight) || payload.weight <= 0 || !payload.recordedAt) {
 			error = 'Completa un peso y una fecha válidos.';
+			validationDialog = {
+				title: 'No se pudo guardar el peso',
+				message: 'Corrige estos campos antes de continuar.',
+				items: [
+					!Number.isFinite(payload.weight) || payload.weight <= 0 ? 'Peso: introduce un valor mayor que cero.' : '',
+					!payload.recordedAt ? 'Fecha: selecciona una fecha válida.' : ''
+				].filter(Boolean)
+			};
 			return;
 		}
 
@@ -452,6 +469,13 @@
 	{#if error}
 		<p class="rounded-md border border-[hsl(var(--destructive)/0.2)] bg-[hsl(var(--destructive)/0.06)] px-3 py-2 text-sm text-[hsl(var(--destructive))]">{error}</p>
 	{/if}
+	<ValidationDialog
+		open={validationDialog !== null}
+		title={validationDialog?.title ?? 'Validación pendiente'}
+		message={validationDialog?.message ?? 'Revisa el formulario antes de continuar.'}
+		items={validationDialog?.items ?? []}
+		onClose={() => (validationDialog = null)}
+	/>
 
 	<form class="space-y-4 rounded-lg border bg-[hsl(var(--card))] p-4 shadow-sm" onsubmit={applyRange}>
 		<div class="grid gap-3 md:grid-cols-3">

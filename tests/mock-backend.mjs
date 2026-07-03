@@ -58,6 +58,7 @@ let products = [
 		name: 'Apple',
 		description: 'Fresh apple',
 		gramsPerUnit: 150,
+		nutritionBasis: 'PER_UNIT',
 		defaultPrice: null,
 		nutritionalValues: {
 			calories: 52,
@@ -72,6 +73,7 @@ let products = [
 		name: 'Rice',
 		description: 'Dry white rice',
 		gramsPerUnit: 1000,
+		nutritionBasis: 'PER_100_GRAMS',
 		defaultPrice: null,
 		nutritionalValues: {
 			calories: 130,
@@ -258,6 +260,52 @@ function toDateInputValue(date) {
 	return date.toISOString().slice(0, 10);
 }
 
+function formatDateLabel(value) {
+	const date = parseDateInput(value);
+	if (!date) return String(value);
+	return new Intl.DateTimeFormat('es-ES', {
+		day: '2-digit',
+		month: '2-digit',
+		year: 'numeric',
+		timeZone: 'UTC'
+	}).format(date);
+}
+
+function weekDateRangeLabel(startDate, endDate) {
+	return `${formatDateLabel(startDate)} al ${formatDateLabel(endDate)}`;
+}
+
+function rangesOverlap(leftStartDate, leftEndDate, rightStartDate, rightEndDate) {
+	return leftStartDate <= rightEndDate && rightStartDate <= leftEndDate;
+}
+
+function planningOverlapConflict(menu) {
+	const planningConflict = proposedWeekMenus.find(
+		(item) =>
+			item.id !== menu.id && rangesOverlap(menu.startDate, menu.endDate, item.startDate, item.endDate)
+	);
+	if (planningConflict) {
+		return {
+			id: planningConflict.id,
+			label: `#${planningConflict.id} · ${weekDateRangeLabel(planningConflict.startDate, planningConflict.endDate)}`
+		};
+	}
+
+	const establishedConflict = establishedWeekMenus.find(
+		(item) =>
+			item.proposedWeekMenuId !== menu.id &&
+			rangesOverlap(menu.startDate, menu.endDate, item.startDate, item.endDate)
+	);
+	if (establishedConflict) {
+		return {
+			id: establishedConflict.id,
+			label: `#${establishedConflict.id} · ${weekDateRangeLabel(establishedConflict.startDate, establishedConflict.endDate)}`
+		};
+	}
+
+	return null;
+}
+
 function dateDifferenceInDays(startDate, endDate) {
 	const start = parseDateInput(startDate);
 	const end = parseDateInput(endDate);
@@ -356,7 +404,7 @@ function normalizeNutritionalRulesPayload(payload) {
 	};
 }
 
-function normalizeMenuProduct(product) {
+function normalizeCatalogMenuProduct(product) {
 	const sourceProduct = productById(Number(product.productId));
 	if (!sourceProduct) return null;
 
@@ -379,6 +427,32 @@ function normalizeMenuProduct(product) {
 	};
 }
 
+function normalizeManualMenuProduct(product) {
+	const nutrition = product.nutritionalValues ?? {};
+	if (
+		nutrition.calories === undefined ||
+		nutrition.carbohydrates === undefined ||
+		nutrition.proteins === undefined ||
+		nutrition.fats === undefined
+	) {
+		return null;
+	}
+
+	return {
+		productId: null,
+		productName: String(product.productName ?? '').trim(),
+		units: null,
+		grams: null,
+		sortOrder: Number(product.sortOrder),
+		nutritionalValues: {
+			calories: Number(nutrition.calories),
+			carbohydrates: Number(nutrition.carbohydrates),
+			proteins: Number(nutrition.proteins),
+			fats: Number(nutrition.fats)
+		}
+	};
+}
+
 function proposedWeekMenuResponse(menu) {
 	const days = [...menu.days]
 		.sort((left, right) => left.date.localeCompare(right.date))
@@ -388,7 +462,7 @@ function proposedWeekMenuResponse(menu) {
 				.map((section) => {
 					const products = [...section.products]
 						.sort((left, right) => left.sortOrder - right.sortOrder)
-						.map((product) => normalizeMenuProduct(product))
+						.map((product) => (product.productId === null ? normalizeManualMenuProduct(product) : normalizeCatalogMenuProduct(product)))
 						.filter(Boolean);
 					const sectionTotals = products.reduce(
 						(totals, product) => addNutrition(totals, product.nutritionalValues),
@@ -440,7 +514,7 @@ function calculateMenuCoverage(menu, stockSnapshot) {
 				.map((section) => {
 					const products = [...section.products]
 						.sort((left, right) => left.sortOrder - right.sortOrder)
-						.map((product) => normalizeMenuProduct(product))
+						.map((product) => (product.productId === null ? normalizeManualMenuProduct(product) : normalizeCatalogMenuProduct(product)))
 						.filter(Boolean);
 					const sectionTotals = products.reduce(
 						(totals, product) => addNutrition(totals, product.nutritionalValues),
@@ -814,6 +888,7 @@ function menuStatsResponse(menu) {
 }
 
 function validateProposedWeekMenuPayload(payload) {
+	if (!Number.isInteger(Number(payload.users)) || Number(payload.users) < 1) return 'users must be greater than 0';
 	if (!payload.startDate || !payload.endDate) return 'startDate and endDate are required';
 	if (Number.isNaN(Date.parse(payload.startDate)) || Number.isNaN(Date.parse(payload.endDate))) {
 		return 'startDate and endDate must be valid dates';
@@ -852,7 +927,6 @@ function validateProposedDayPayload(payload, menu) {
 		}
 		const productSortOrders = new Set();
 		for (const product of section.products) {
-			if (!productById(Number(product.productId))) return 'proposed week product not found';
 			if (Number.isNaN(Number(product.sortOrder)) || Number(product.sortOrder) < 0) {
 				return 'product sortOrder must be greater than or equal to 0';
 			}
@@ -860,6 +934,24 @@ function validateProposedDayPayload(payload, menu) {
 				return 'Day parts and product sort orders must be unique within their parent';
 			}
 			productSortOrders.add(Number(product.sortOrder));
+			if (product.productId === null) {
+				if (!product.productName || String(product.productName).trim() === '') {
+					return 'productName must not be blank';
+				}
+				for (const key of ['calories', 'carbohydrates', 'proteins', 'fats']) {
+					if (product[key] === undefined || product[key] === null || String(product[key]).trim() === '') {
+						return `${key} must not be blank`;
+					}
+					const numeric = Number(product[key]);
+					if (Number.isNaN(numeric)) return `${key} must be a number`;
+					if (numeric < 0) return `${key} must be greater than or equal to 0`;
+				}
+				if (product.units !== undefined || product.grams !== undefined) {
+					return 'manual products must not include quantity';
+				}
+				continue;
+			}
+			if (!productById(Number(product.productId))) return 'proposed week product not found';
 			if (product.units !== undefined && product.units !== null && (Number.isNaN(Number(product.units)) || Number(product.units) <= 0)) {
 				return 'product units must be greater than 0';
 			}
@@ -1029,10 +1121,10 @@ function validateRecipePayload(payload) {
 }
 
 function validateDerivedProductPayload(payload) {
-	const producedGrams = Number(payload.producedGrams);
-	const gramsPerUnit = Number(payload.gramsPerUnit);
-	if (Number.isNaN(producedGrams) || producedGrams <= 0) return 'producedGrams must be greater than 0';
-	if (Number.isNaN(gramsPerUnit) || gramsPerUnit <= 0) return 'gramsPerUnit must be greater than 0';
+	if (!payload.name || String(payload.name).trim() === '') return 'name must not be blank';
+	const units = Number(payload.units);
+	if (Number.isNaN(units) || units <= 0) return 'units must be greater than 0';
+	if (typeof payload.stockFromComposition !== 'boolean') return 'stockFromComposition must be a boolean';
 	return null;
 }
 
@@ -1205,6 +1297,7 @@ function reset() {
 			name: 'Apple',
 			description: 'Fresh apple',
 			gramsPerUnit: 150,
+			nutritionBasis: 'PER_UNIT',
 			defaultPrice: null,
 			nutritionalValues: {
 				calories: 52,
@@ -1219,6 +1312,7 @@ function reset() {
 			name: 'Rice',
 			description: 'Dry white rice',
 			gramsPerUnit: 1000,
+			nutritionBasis: 'PER_100_GRAMS',
 			defaultPrice: null,
 			nutritionalValues: {
 				calories: 130,
@@ -1719,6 +1813,12 @@ const server = http.createServer(async (req, res) => {
 				productId: Number(ingredient.productId),
 				grams: Number(ingredient.grams)
 			}));
+			if (typeof payload.stockFromComposition === 'boolean' && recipe.derivedProduct) {
+				recipe.derivedProduct = {
+					...recipe.derivedProduct,
+					stockFromComposition: payload.stockFromComposition
+				};
+			}
 			sendJson(res, 200, recipeResponse(recipe));
 			return;
 		}
@@ -1758,9 +1858,10 @@ const server = http.createServer(async (req, res) => {
 
 		const created = {
 			productId: recipe.derivedProduct?.productId ?? nextId++,
-			producedGrams: Number(payload.producedGrams),
-			gramsPerUnit: Number(payload.gramsPerUnit),
-			unitsProduced: Number((Number(payload.producedGrams) / Number(payload.gramsPerUnit)).toFixed(2))
+			name: String(payload.name).trim(),
+			unitsProduced: Number(payload.units),
+			stockFromComposition: Boolean(payload.stockFromComposition),
+			ingredients: recipeResponse(recipe).products
 		};
 		recipe.derivedProduct = created;
 		sendJson(res, 201, created);
@@ -1782,6 +1883,7 @@ const server = http.createServer(async (req, res) => {
 
 		const created = {
 			id: nextProposedWeekMenuId++,
+			users: Number(payload.users),
 			startDate: String(payload.startDate),
 			endDate: String(payload.endDate),
 			days: []
@@ -1923,9 +2025,18 @@ const server = http.createServer(async (req, res) => {
 				id: nextProposedWeekMenuSectionId++,
 				dayPartId: Number(section.dayPartId),
 				products: section.products.map((product) => ({
-					productId: Number(product.productId),
-					units: product.units === undefined || product.units === null ? undefined : Number(product.units),
-					grams: product.grams === undefined || product.grams === null ? undefined : Number(product.grams),
+					productId: product.productId === null ? null : Number(product.productId),
+					productName: product.productId === null ? String(product.productName ?? '').trim() : null,
+					units: product.productId === null ? null : (product.units === undefined || product.units === null ? undefined : Number(product.units)),
+					grams: product.productId === null ? null : (product.grams === undefined || product.grams === null ? undefined : Number(product.grams)),
+					nutritionalValues: product.productId === null
+						? {
+								calories: Number(product.calories),
+								carbohydrates: Number(product.carbohydrates),
+								proteins: Number(product.proteins),
+								fats: Number(product.fats)
+							}
+						: undefined,
 					sortOrder: Number(product.sortOrder)
 				}))
 			}))
@@ -1948,6 +2059,21 @@ const server = http.createServer(async (req, res) => {
 		const menu = proposedWeekMenuById(id);
 		if (!menu) {
 			sendJson(res, 404, errorBody(404, 'Not Found', 'Proposed week menu not found', url.pathname));
+			return;
+		}
+
+		const conflict = planningOverlapConflict(menu);
+		if (conflict) {
+			sendJson(
+				res,
+				400,
+				errorBody(
+					400,
+					'Bad Request',
+					`Ya existe una planificación que se solapa con este rango: ${conflict.label}.`,
+					url.pathname
+				)
+			);
 			return;
 		}
 
@@ -1996,6 +2122,13 @@ const server = http.createServer(async (req, res) => {
 	}
 
 	const establishedWeekMenuMatch = url.pathname.match(/^\/api\/v1\/(?:established-week-menus|menus)\/(\d+)$/);
+	if (req.method === 'GET' && url.pathname === '/api/v1/menus') {
+		const menus = [...establishedWeekMenus]
+			.sort((left, right) => right.startDate.localeCompare(left.startDate) || right.id - left.id)
+			.map((menu) => establishedWeekMenuResponse(menu));
+		sendJson(res, 200, menus);
+		return;
+	}
 	if (establishedWeekMenuMatch && req.method === 'GET') {
 		const id = Number(establishedWeekMenuMatch[1]);
 		const menu = establishedWeekMenuById(id);
@@ -2293,6 +2426,7 @@ const server = http.createServer(async (req, res) => {
 				name: String(payload.name).trim(),
 				description: String(payload.description).trim(),
 				gramsPerUnit: Number(payload.gramsPerUnit),
+				nutritionBasis: 'PER_100_GRAMS',
 				defaultPrice:
 					payload.defaultPrice === undefined || payload.defaultPrice === null || String(payload.defaultPrice).trim() === ''
 						? null
@@ -2347,6 +2481,7 @@ const server = http.createServer(async (req, res) => {
 			product.name = String(payload.name).trim();
 			product.description = String(payload.description).trim();
 			product.gramsPerUnit = Number(payload.gramsPerUnit);
+			product.nutritionBasis = product.nutritionBasis ?? 'PER_100_GRAMS';
 			product.defaultPrice =
 				payload.defaultPrice === undefined || payload.defaultPrice === null || String(payload.defaultPrice).trim() === ''
 					? null

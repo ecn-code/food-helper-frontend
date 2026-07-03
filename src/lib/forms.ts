@@ -65,8 +65,9 @@ export function readRecipeValues(formData: FormData): RecipeFormValues {
 
 export function readRecipeDerivedProductValues(formData: FormData): RecipeDerivedProductFormValues {
 	return {
-		producedGrams: readString(formData, 'producedGrams'),
-		gramsPerUnit: readString(formData, 'gramsPerUnit')
+		name: readString(formData, 'name'),
+		units: readString(formData, 'units'),
+		stockFromComposition: String(formData.get('stockFromComposition') ?? 'false') === 'true'
 	};
 }
 
@@ -210,7 +211,9 @@ export function validateRecipeForm(values: RecipeFormValues) {
 
 export function validateRecipeDerivedProductForm(values: RecipeDerivedProductFormValues) {
 	const fieldErrors: RecipeDerivedProductFormErrors = {};
-	for (const field of ['producedGrams', 'gramsPerUnit'] as const) {
+	if (!values.name) fieldErrors.name = 'El nombre es obligatorio';
+
+	for (const field of ['units'] as const) {
 		const value = values[field];
 		if (!value) {
 			fieldErrors[field] = 'Este valor es obligatorio';
@@ -299,15 +302,17 @@ export function toRecipeRequest(values: RecipeFormValues): CreateRecipeRequest {
 		instructions: values.instructions,
 		products: values.ingredients.map((ingredient) => ({
 			productId: Number(ingredient.productId),
-			grams: Number(ingredient.grams)
+			quantity: Number(ingredient.grams),
+			quantityType: 'GRAMS'
 		}))
 	};
 }
 
 export function toRecipeDerivedProductRequest(values: RecipeDerivedProductFormValues): CreateRecipeDerivedProductRequest {
 	return {
-		producedGrams: Number(values.producedGrams),
-		gramsPerUnit: Number(values.gramsPerUnit)
+		name: values.name,
+		units: Number(values.units),
+		stockFromComposition: values.stockFromComposition
 	};
 }
 

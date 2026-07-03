@@ -27,9 +27,25 @@ export type NutritionalRulesEvaluation = {
 	weekly: NutritionalRuleSetEvaluation;
 };
 
+export type NutrientRuleEvaluationResponse = Partial<NutrientRuleEvaluation>;
+
+export type NutritionalRuleSetEvaluationResponse = {
+	plannedDays?: number;
+	calories?: NutrientRuleEvaluationResponse;
+	carbohydrates?: NutrientRuleEvaluationResponse;
+	proteins?: NutrientRuleEvaluationResponse;
+	fats?: NutrientRuleEvaluationResponse;
+};
+
+export type NutritionalRulesEvaluationResponse = {
+	daily?: NutritionalRuleSetEvaluationResponse;
+	weekly?: NutritionalRuleSetEvaluationResponse;
+};
+
 export type CreateProposedWeekMenuRequest = {
 	startDate: string;
 	endDate: string;
+	users: number;
 };
 
 export type ProposedWeekMenuProductRequest = {
@@ -100,7 +116,7 @@ export type ProposedWeekMenuResponse = {
 	days: ProposedWeekMenuDayResponse[];
 	nutritionalValues: NutritionalValues;
 	stockSummary?: unknown;
-	nutritionalRules?: NutritionalRulesEvaluation;
+	nutritionalRules?: NutritionalRulesEvaluationResponse;
 };
 
 function authHeaders(authorization: string) {
@@ -117,7 +133,8 @@ function sanitizeNumber(value: number | null | undefined) {
 function sanitizeCreateRequest(values: CreateProposedWeekMenuRequest): CreateProposedWeekMenuRequest {
 	return {
 		startDate: values.startDate.trim(),
-		endDate: values.endDate.trim()
+		endDate: values.endDate.trim(),
+		users: Number(values.users)
 	};
 }
 

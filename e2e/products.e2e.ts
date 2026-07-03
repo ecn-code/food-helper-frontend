@@ -30,6 +30,71 @@ async function registerUser(request: APIRequestContext, username: string) {
 	expect([201, 409]).toContain(response.status());
 }
 
+async function loginApi(request: APIRequestContext, username: string) {
+	const response = await request.post(`${backendUrl}/api/v1/auth/login`, {
+		data: {
+			username,
+			password: testPassword
+		}
+	});
+
+	expect(response.status()).toBe(200);
+	const body = (await response.json()) as { accessToken: string; tokenType: string };
+	return `${body.tokenType || 'Bearer'} ${body.accessToken}`;
+}
+
+async function createProductApi(
+	request: APIRequestContext,
+	authorization: string,
+	name: string,
+	description = 'Producto de prueba'
+) {
+	const response = await request.post(`${backendUrl}/api/v1/products`, {
+		headers: {
+			Authorization: authorization
+		},
+		data: {
+			name,
+			description,
+			gramsPerUnit: 100,
+			defaultPrice: null,
+			calories: 10,
+			carbohydrates: 1,
+			proteins: 1,
+			fats: 0.2
+		}
+	});
+
+	expect(response.status()).toBe(201);
+	return (await response.json()) as { id: number; name: string };
+}
+
+async function createRecipeApi(
+	request: APIRequestContext,
+	authorization: string,
+	name: string,
+	productId: number
+) {
+	const ingredient = useRealBackend
+		? { productId, quantity: 100, quantityType: 'GRAMS' }
+		: { productId, grams: 100 };
+
+	const response = await request.post(`${backendUrl}/api/v1/recipes`, {
+		headers: {
+			Authorization: authorization
+		},
+		data: {
+			name,
+			description: 'Receta de prueba',
+			instructions: 'Mezclar y servir.',
+			products: [ingredient]
+		}
+	});
+
+	expect(response.status()).toBe(201);
+	return (await response.json()) as { id: number; name: string };
+}
+
 async function login(page: Page, username: string) {
 	await page.addInitScript(() => {
 		localStorage.clear();
@@ -175,6 +240,60 @@ test('lista, crea, edita y elimina productos desde la web', async ({ page, reque
 
 	await expect(page.getByTestId('success-banner')).toContainText('Producto eliminado correctamente');
 	await expect(page.getByText(updatedName)).toHaveCount(0);
+});
+
+test('enfoca el primer campo de producto al intentar guardar vacío', async ({ page, request }) => {
+	const username = uniqueUsername();
+
+	await registerUser(request, username);
+	await login(page, username);
+
+	await page.getByTestId('open-create-modal').click();
+	await expect(page.getByTestId('create-modal')).toBeVisible();
+	await page.getByRole('button', { name: 'Guardar producto' }).click();
+
+	await expect(page.getByTestId('validation-dialog')).toBeVisible();
+	await expect(page.getByTestId('validation-dialog')).toContainText('No se pudo guardar el producto');
+	await expect(page.getByTestId('validation-dialog')).toContainText('Nombre: El nombre es obligatorio');
+});
+
+test('limpia los formularios de producto y receta al cerrar y reabrir', async ({ page, request }) => {
+	const username = uniqueUsername();
+
+	await registerUser(request, username);
+	await login(page, username);
+
+	await page.getByTestId('open-create-modal').click();
+	await expect(page.getByTestId('create-modal')).toBeVisible();
+	await page.getByTestId('create-name').fill('Temporal');
+	await page.getByTestId('create-description').fill('Texto temporal');
+	await page.getByTestId('create-calories').fill('99');
+	await page.getByTestId('create-modal').getByRole('button', { name: 'Cancelar' }).click();
+	await expect(page.getByTestId('create-modal')).toHaveCount(0);
+
+	await page.getByTestId('open-create-modal').click();
+	await expect(page.getByTestId('create-modal')).toBeVisible();
+	await expect(page.getByTestId('create-name')).toHaveValue('');
+	await expect(page.getByTestId('create-description')).toHaveValue('');
+	await expect(page.getByTestId('create-calories')).toHaveValue('');
+
+	await page.getByTestId('create-modal').getByRole('button', { name: 'Cancelar' }).click();
+
+	await page.getByRole('link', { name: 'Recetas' }).click();
+	await page.getByTestId('open-create-recipe-modal').click();
+	await expect(page.getByTestId('create-recipe-modal')).toBeVisible();
+	await page.getByTestId('create-recipe-name').fill('Receta temporal');
+	await page.getByTestId('create-recipe-description').fill('Descripcion temporal');
+	await page.getByTestId('create-recipe-instructions').fill('Instrucciones temporales');
+	await page.getByTestId('create-recipe-modal').getByRole('button', { name: 'Cancelar' }).click();
+	await expect(page.getByTestId('create-recipe-modal')).toHaveCount(0);
+
+	await page.getByTestId('open-create-recipe-modal').click();
+	await expect(page.getByTestId('create-recipe-modal')).toBeVisible();
+	await expect(page.getByTestId('create-recipe-name')).toHaveValue('');
+	await expect(page.getByTestId('create-recipe-description')).toHaveValue('');
+	await expect(page.getByTestId('create-recipe-instructions')).toHaveValue('');
+	await expect(page.getByTestId('create-recipe-form')).toContainText('Todavia no has añadido ingredientes');
 });
 
 test('filtra productos por texto y campos nutricionales', async ({ page, request }) => {
@@ -370,6 +489,7 @@ test('permite ver una receta desde su tarjeta', async ({ page, request }) => {
 	await page.getByTestId('create-recipe-name').fill(recipeName);
 	await page.getByTestId('create-recipe-description').fill('Receta para probar la vista');
 	await page.getByTestId('create-recipe-instructions').fill('Mezclar y servir.');
+	await page.getByTestId('create-recipe-add-ingredient').click();
 	await chooseProductFromPicker(page, 'create-recipe-product-0', 1, 'Apple');
 	await page.getByTestId('create-recipe-grams-0').fill('100');
 	await page.getByRole('button', { name: 'Guardar receta' }).click();
@@ -382,6 +502,202 @@ test('permite ver una receta desde su tarjeta', async ({ page, request }) => {
 	await expect(page.getByTestId('recipe-view-modal')).toContainText(recipeName);
 	await expect(page.getByTestId('recipe-view-modal')).toContainText('Ingredientes');
 	await page.getByTestId('recipe-view-modal').getByRole('button', { name: 'Cerrar modal' }).click();
+});
+
+test('crea el producto derivado indicando nombre y unidades', async ({ page, request }) => {
+	const username = uniqueUsername();
+	const recipeName = `Receta derivada ${Date.now()}`;
+	const derivedProductName = `${recipeName} base`;
+	const authorization = await loginApi(request, 'elias');
+
+	await registerUser(request, username);
+	await createRecipeApi(request, authorization, recipeName, 1);
+	await login(page, username);
+	await page.getByRole('link', { name: 'Recetas' }).click();
+	await expect(page.getByTestId('recipe-count')).not.toHaveText('Cargando...');
+
+	const recipeCard = page.locator('[data-testid^="recipe-card-"]').filter({ hasText: recipeName });
+	await recipeCard.locator('[data-testid^="derive-button-"]').click();
+	await page.getByTestId('derive-name').fill(derivedProductName);
+	await expect(page.getByTestId('derive-produced-grams')).toHaveCount(0);
+	await expect(page.getByTestId('derive-grams-per-unit')).toHaveCount(0);
+	await page.getByTestId('derive-units').fill('4');
+	await page.getByTestId('derive-stock-composition').check();
+	const [deriveRequest] = await Promise.all([
+		page.waitForRequest((request) => request.method() === 'POST' && request.url().endsWith('/derived-product')),
+		page.getByTestId('derive-recipe-form').getByRole('button', { name: 'Crear producto derivado' }).click()
+	]);
+	expect(deriveRequest.postDataJSON()).toEqual({
+		name: derivedProductName,
+		units: 4,
+		stockFromComposition: true
+	});
+	await expect(recipeCard).toContainText('4 u');
+
+	await recipeCard.locator('[data-testid^="derive-button-"]').click();
+	await expect(page.getByTestId('derive-recipe-modal')).toBeVisible();
+	await expect(page.getByRole('heading', { level: 2, name: 'Editar producto derivado' })).toBeVisible();
+	await expect(page.getByTestId('derive-name')).toHaveValue(derivedProductName);
+	await expect(page.getByTestId('derive-units')).toHaveValue('4');
+	await expect(page.getByTestId('derive-stock-composition')).toBeChecked();
+	await page.getByTestId('derive-stock-product').check();
+	await page.getByTestId('derive-units').fill('6');
+	const [editDeriveRequest] = await Promise.all([
+		page.waitForRequest((request) => request.method() === 'POST' && request.url().endsWith('/derived-product')),
+		page.getByTestId('derive-recipe-form').getByRole('button', { name: 'Actualizar producto derivado' }).click()
+	]);
+	expect(editDeriveRequest.postDataJSON()).toEqual({
+		name: derivedProductName,
+		units: 6,
+		stockFromComposition: false
+	});
+
+	await recipeCard.getByRole('button', { name: 'Ver' }).click();
+	await expect(page.getByTestId('recipe-view-modal')).toBeVisible();
+	await expect(page.getByTestId('recipe-view-modal')).toContainText('Producto propio');
+	await page.getByTestId('recipe-view-modal').getByRole('button', { name: 'Cerrar modal' }).click();
+});
+
+test('envía el número de personas al crear una planificación', async ({ page, request }) => {
+	const username = uniqueUsername();
+	const startDate = '2031-01-06';
+	const endDate = '2031-01-12';
+
+	await registerUser(request, username);
+	await login(page, username);
+	await page.getByRole('link', { name: 'Planificación' }).click();
+	await page.getByRole('button', { name: 'Nueva semana' }).click();
+	await page.getByTestId('week-start-date').fill(startDate);
+	await page.getByTestId('week-end-date').fill(endDate);
+	await page.getByTestId('week-users').fill('3');
+	const [createPlanningRequest] = await Promise.all([
+		page.waitForRequest((request) => request.method() === 'POST' && request.url().endsWith('/api/v1/planning')),
+		page.getByTestId('week-create-form').getByRole('button', { name: 'Crear semana' }).click()
+	]);
+
+	expect(createPlanningRequest.postDataJSON()).toEqual({ startDate, endDate, users: 3 });
+	await expect(page.getByTestId('success-banner')).toContainText('Planificación creada correctamente');
+});
+
+test('reintenta la busqueda de recetas aunque haya una carga previa en vuelo', async ({ page, request }) => {
+	const username = uniqueUsername();
+	const recipeName = `Receta asincrona ${Date.now()}`;
+
+	await registerUser(request, username);
+
+	let holdNextRecipeReload = false;
+	let releaseHeldReload: (() => void) | null = null;
+
+	await page.route('**/api/v1/recipes**', async (route) => {
+		const requestUrl = new URL(route.request().url());
+		const isRecipesGet = route.request().method() === 'GET' && requestUrl.pathname === '/api/v1/recipes';
+
+		if (route.request().method() === 'POST') {
+			holdNextRecipeReload = true;
+			await route.fallback();
+			return;
+		}
+
+		if (isRecipesGet && holdNextRecipeReload && !requestUrl.searchParams.has('search')) {
+			holdNextRecipeReload = false;
+			await new Promise<void>((resolve) => {
+				releaseHeldReload = resolve;
+			});
+			const response = await route.fetch();
+			await route.fulfill({
+				status: response.status(),
+				headers: {
+					...response.headers(),
+					'content-type': 'application/json'
+				},
+				body: await response.text()
+			});
+			return;
+		}
+
+		await route.fallback();
+	});
+
+	await login(page, username);
+	await page.getByRole('link', { name: 'Recetas' }).click();
+	await expect(page.getByRole('heading', { level: 2, name: 'Recetas' })).toBeVisible();
+
+	await page.getByTestId('open-create-recipe-modal').click();
+	await page.getByTestId('create-recipe-name').fill(recipeName);
+	await page.getByTestId('create-recipe-description').fill('Receta para probar la busqueda asincrona');
+	await page.getByTestId('create-recipe-instructions').fill('Mezclar y servir.');
+	await page.getByTestId('create-recipe-add-ingredient').click();
+	await chooseProductFromPicker(page, 'create-recipe-product-0', 1, 'Apple');
+	await page.getByTestId('create-recipe-grams-0').fill('100');
+	await page.getByRole('button', { name: 'Guardar receta' }).click();
+	await expect(page.getByTestId('success-banner')).toContainText('Receta creada correctamente');
+
+	const searchRequest = page.waitForRequest((req) => {
+		const requestUrl = new URL(req.url());
+		return (
+			req.method() === 'GET' &&
+			requestUrl.pathname === '/api/v1/recipes' &&
+			requestUrl.searchParams.get('search') === recipeName
+		);
+	});
+
+	await page.getByTestId('recipe-filter-search').fill(recipeName);
+	await searchRequest;
+
+	releaseHeldReload?.();
+
+	await expect(page.getByTestId('recipe-count')).not.toHaveText('Cargando...');
+	await expect(page.getByTestId('recipe-list')).toContainText(recipeName);
+});
+
+test('enfoca el primer campo de receta al intentar guardar vacío', async ({ page, request }) => {
+	const username = uniqueUsername();
+
+	await registerUser(request, username);
+	await login(page, username);
+
+	await page.getByRole('link', { name: 'Recetas' }).click();
+	await expect(page.getByRole('heading', { level: 2, name: 'Recetas' })).toBeVisible();
+	await page.getByTestId('open-create-recipe-modal').click();
+	await expect(page.getByTestId('create-recipe-modal')).toBeVisible();
+	await page.getByRole('button', { name: 'Guardar receta' }).click();
+
+	await expect(page.getByTestId('validation-dialog')).toBeVisible();
+	await expect(page.getByTestId('validation-dialog')).toContainText('No se pudo guardar la receta');
+	await expect(page.getByTestId('validation-dialog')).toContainText('Nombre: El nombre es obligatorio');
+});
+
+test('mantiene visible el nombre de un producto seleccionado que no estaba en la primera pagina', async ({
+	page,
+	request
+}) => {
+	const username = uniqueUsername();
+	const fillerCount = 19;
+	const targetName = `Selector fuera de pagina ${Date.now()}`;
+	const authorization = await loginApi(request, 'elias');
+
+	await registerUser(request, username);
+	for (let index = 0; index < fillerCount; index += 1) {
+		await createProductApi(request, authorization, `Selector relleno ${index} ${Date.now()}`, `Relleno ${index}`);
+	}
+	const targetProduct = await createProductApi(
+		request,
+		authorization,
+		targetName,
+		'Producto seleccionado desde otra pagina'
+	);
+
+	await login(page, username);
+	await page.getByRole('link', { name: 'Recetas' }).click();
+	await expect(page.getByRole('heading', { level: 2, name: 'Recetas' })).toBeVisible();
+
+	await page.getByTestId('open-create-recipe-modal').click();
+	await expect(page.getByTestId('create-recipe-modal')).toBeVisible();
+	await page.getByTestId('create-recipe-add-ingredient').click();
+	await chooseProductFromPicker(page, 'create-recipe-product-0', targetProduct.id, targetName);
+
+	await expect(page.getByTestId('create-recipe-product-0')).toContainText(targetName);
+	await expect(page.getByTestId('create-recipe-form')).not.toContainText('Producto no encontrado');
 });
 
 test('crea una planificación y añade un menu diario con productos', async ({ page, request }) => {
@@ -499,6 +815,26 @@ test('enfoca el buscador al abrir el selector de productos desde planificación'
 	await page.getByTestId('week-product-id-0-0').click();
 	await expect(page.getByTestId('product-picker-modal')).toBeVisible();
 	await expect(page.getByTestId('product-picker-filter-search')).toBeFocused();
+});
+
+test('abre el selector de productos al añadir ingredientes en una receta', async ({ page, request }) => {
+	const username = uniqueUsername();
+
+	await registerUser(request, username);
+	await login(page, username);
+
+	await page.getByRole('link', { name: 'Recetas' }).click();
+	await page.getByTestId('open-create-recipe-modal').click();
+	await expect(page.getByTestId('create-recipe-modal')).toBeVisible();
+
+	await page.getByTestId('create-recipe-add-ingredient').click();
+	await expect(page.getByTestId('product-picker-modal')).toBeVisible();
+	await expect(page.getByTestId('product-picker-filter-search')).toBeFocused();
+
+	await page.getByTestId('product-picker-option-1').click();
+	await expect(page.getByTestId('product-picker-modal')).toHaveCount(0);
+	await expect(page.getByTestId('create-recipe-modal')).toBeVisible();
+	await expect(page.getByTestId('create-recipe-product-0')).toContainText('Apple');
 });
 
 test('permite reabrir y editar un menu diario ya guardado', async ({ page, request }) => {

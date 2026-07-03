@@ -3,6 +3,7 @@
 	import { CircleCheck, Download, Store, Users, X } from '@lucide/svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import { ApiError, isSessionExpiredError } from '$lib/api/backend';
+	import ValidationDialog from '$lib/components/ui/ValidationDialog.svelte';
 	import {
 		closeMenu,
 		getMenuStats,
@@ -45,6 +46,7 @@
 	let closeDialogOpen = $state(false);
 	let selectedPersonIds = $state<string[]>([]);
 	let closing = $state(false);
+	let validationDialog = $state<{ title: string; message: string; items: string[] } | null>(null);
 
 	onMount(() => void (async () => {
 		if (selectedPersonIds.length === 0) {
@@ -76,8 +78,14 @@
 	})());
 
 	async function filterShoppingList() {
+		validationDialog = null;
 		if (!supermarketId) {
 			shoppingListDialogError = 'Selecciona un supermercado para generar la lista.';
+			validationDialog = {
+				title: 'No se puede generar la lista de compra',
+				message: 'Corrige este campo antes de continuar.',
+				items: ['Supermercado: selecciona un supermercado.']
+			};
 			return;
 		}
 
@@ -147,6 +155,11 @@
 		const numericPersonIds = selectedPersonIds.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0);
 		if (numericPersonIds.length === 0) {
 			error = 'Selecciona al menos una persona.';
+			validationDialog = {
+				title: 'No se puede cerrar el menú',
+				message: 'Corrige este campo antes de continuar.',
+				items: ['Personas consumidoras: selecciona al menos una persona.']
+			};
 			return;
 		}
 		closing = true;
@@ -193,6 +206,13 @@
 	{#if error}
 		<p class="text-sm text-[hsl(var(--destructive))]" role="alert">{error}</p>
 	{/if}
+	<ValidationDialog
+		open={validationDialog !== null}
+		title={validationDialog?.title ?? 'Validación pendiente'}
+		message={validationDialog?.message ?? 'Revisa el formulario antes de continuar.'}
+		items={validationDialog?.items ?? []}
+		onClose={() => (validationDialog = null)}
+	/>
 
 	<div class="grid gap-3 lg:grid-cols-[14rem_1fr_auto] lg:items-end">
 		<label class="space-y-2">
