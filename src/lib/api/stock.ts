@@ -23,6 +23,36 @@ export type AdjustStockQuantityRequest = {
 	quantity: number;
 };
 
+export type StockMovementPayload = {
+	id: number;
+	productId: number;
+	productName: string;
+	stockEntryId: number | null;
+	movementType: string;
+	signedQuantity: number;
+	effectiveDate: string;
+	recordedAt: string;
+	price: number | null;
+	expirationDate: string | null;
+	entryDate: string | null;
+};
+
+export type StockMovementPagePayload = {
+	items: StockMovementPayload[];
+	page: number;
+	size: number;
+	totalElements: number;
+	totalPages: number;
+};
+
+export type ListStockMovementsParams = {
+	fromDate?: string;
+	toDate?: string;
+	productIds?: number[];
+	page?: number;
+	size?: number;
+};
+
 function authHeaders(authorization: string) {
 	return {
 		Authorization: authorization
@@ -46,6 +76,19 @@ export async function listStockEntries(authorization: string, params: ListStockE
 	for (const productId of params.productIds ?? []) query.append('productIds', String(Number(productId)));
 	const suffix = query.size ? `?${query.toString()}` : '';
 	return await request<StockEntryPayload[]>(`/api/v1/stock${suffix}`, {
+		headers: authHeaders(authorization)
+	});
+}
+
+export async function listStockMovements(authorization: string, params: ListStockMovementsParams = {}) {
+	const query = new URLSearchParams();
+	if (params.fromDate) query.set('fromDate', params.fromDate);
+	if (params.toDate) query.set('toDate', params.toDate);
+	if (params.productIds?.length) query.set('productIds', params.productIds.map(Number).join(','));
+	query.set('page', String(params.page ?? 0));
+	query.set('size', String(params.size ?? 20));
+
+	return await request<StockMovementPagePayload>(`/api/v1/stock/movements?${query.toString()}`, {
 		headers: authHeaders(authorization)
 	});
 }

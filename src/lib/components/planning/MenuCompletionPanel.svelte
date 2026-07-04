@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { CircleCheck, Download, Store, Users, X } from '@lucide/svelte';
+	import { CircleCheck, Download, Share2, Store, Users, X } from '@lucide/svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import { ApiError, isSessionExpiredError } from '$lib/api/backend';
 	import ValidationDialog from '$lib/components/ui/ValidationDialog.svelte';
@@ -14,6 +14,7 @@
 	} from '$lib/api/established-week-menus';
 	import { listSupermarkets, type Supermarket } from '$lib/api/supermarkets';
 	import { listUsers, type UserResponse } from '$lib/api/users';
+	import { shareShoppingList as shareShoppingListToTarget, shoppingListPrimaryActionLabel } from '$lib/shopping-list-share';
 
 	let {
 		menuId,
@@ -36,13 +37,16 @@
 	let stats = $state<MenuStatsResponse | null>(null);
 	let supermarkets = $state<Supermarket[]>([]);
 	let users = $state<UserResponse[]>([]);
+	let baseShoppingList = $state<EstablishedWeekMenuShoppingListItemResponse[]>([]);
 	let shoppingList = $state<EstablishedWeekMenuShoppingListItemResponse[]>([]);
 	let usedStock = $state<EstablishedWeekMenuUsedStockResponse[]>([]);
 	let supermarketId = $state('');
 	let error = $state('');
 	let shoppingListDialogOpen = $state(false);
 	let shoppingListLoading = $state(false);
+	let sharingShoppingList = $state(false);
 	let shoppingListDialogError = $state('');
+	let shoppingListShareMessage = $state('');
 	let closeDialogOpen = $state(false);
 	let selectedPersonIds = $state<string[]>([]);
 	let closing = $state(false);
@@ -52,7 +56,8 @@
 		if (selectedPersonIds.length === 0) {
 			selectedPersonIds = [String(currentUserId)];
 		}
-		shoppingList = initialShoppingList;
+		baseShoppingList = initialShoppingList.map((item) => ({ ...item }));
+		shoppingList = initialShoppingList.map((item) => ({ ...item }));
 		usedStock = initialUsedStock;
 		try {
 			supermarkets = await listSupermarkets(authorization);
@@ -79,6 +84,7 @@
 
 	async function filterShoppingList() {
 		validationDialog = null;
+		shoppingListShareMessage = '';
 		if (!supermarketId) {
 			shoppingListDialogError = 'Selecciona un supermercado para generar la lista.';
 			validationDialog = {
@@ -99,6 +105,37 @@
 			shoppingListDialogError = cause instanceof ApiError ? cause.message : 'No se pudo cargar la lista de compra.';
 		} finally {
 			shoppingListLoading = false;
+		}
+	}
+
+	async function shareShoppingList() {
+		if (shoppingList.length === 0) return;
+
+		sharingShoppingList = true;
+		shoppingListDialogError = '';
+		shoppingListShareMessage = '';
+		try {
+			if (supermarketId) {
+				shoppingList = await listMenuShoppingList(menuId, authorization, Number(supermarketId));
+			} else {
+				shoppingList = baseShoppingList.map((item) => ({ ...item }));
+			}
+
+			const result = await shareShoppingListToTarget({
+				title: 'Lista de compra',
+				menuLabel: `Menú #${menuId}`,
+				supermarketName: selectedSupermarketName(),
+				items: shoppingList
+			});
+
+			if (result.method === 'clipboard') {
+				shoppingListShareMessage = 'Lista copiada al portapapeles.';
+			}
+		} catch (cause) {
+			if (isSessionExpiredError(cause)) return;
+			shoppingListDialogError = cause instanceof ApiError ? cause.message : 'No se pudo compartir la lista de compra.';
+		} finally {
+			sharingShoppingList = false;
 		}
 	}
 
@@ -230,12 +267,21 @@
 				{supermarketId ? selectedSupermarketName() : 'Selecciona un supermercado para descargar la lista'}
 			</p>
 		</div>
-		<Button type="button" variant="secondary" onclick={filterShoppingList} disabled={!supermarketId || shoppingListLoading}>
-			<Store class="size-4" />
-			{shoppingListLoading ? 'Generando…' : 'Ver lista'}
-		</Button>
+		<div class="flex flex-wrap gap-2">
+			<Button type="button" variant="secondary" onclick={filterShoppingList} disabled={!supermarketId || shoppingListLoading}>
+				<Store class="size-4" />
+				{shoppingListLoading ? 'Generando…' : 'Ver lista'}
+			</Button>
+			<Button type="button" variant="secondary" onclick={shareShoppingList} disabled={shoppingList.length === 0 || shoppingListLoading || sharingShoppingList}>
+				<Share2 class="size-4" />
+				{sharingShoppingList ? 'Compartiendo…' : shoppingListPrimaryActionLabel()}
+			</Button>
+		</div>
 	</div>
 
+	{#if shoppingListShareMessage}
+		<p class="text-sm text-[hsl(var(--muted-foreground))]" role="status">{shoppingListShareMessage}</p>
+	{/if}
 	{#if shoppingListDialogError}
 		<p class="text-sm text-[hsl(var(--destructive))]" role="alert">{shoppingListDialogError}</p>
 	{/if}
@@ -309,31 +355,33 @@
 				{#if shoppingList.length === 0}
 					<p class="text-sm text-[hsl(var(--muted-foreground))]">No hay productos pendientes para este supermercado.</p>
 				{:else}
-					<div class="hidden overflow-x-auto md:block">
-						<table class="w-full text-sm">
-							<thead class="bg-[hsl(var(--secondary))] text-xs text-[hsl(var(--muted-foreground))]">
-								<tr>
-									<th class="px-3 py-2 text-left font-medium">Producto</th>
-									<th class="px-3 py-2 text-right font-medium">Faltan</th>
-								</tr>
-							</thead>
-							<tbody class="divide-y">
-								{#each shoppingList as item}
+					<div class="max-h-[17rem] overflow-y-auto pr-1">
+						<div class="hidden overflow-x-auto md:block">
+							<table class="w-full text-sm">
+								<thead class="bg-[hsl(var(--secondary))] text-xs text-[hsl(var(--muted-foreground))]">
 									<tr>
-										<td class="px-3 py-2">{item.productName}</td>
-										<td class="px-3 py-2 text-right tabular-nums">{number(item.missingUnits)}</td>
+										<th class="px-3 py-2 text-left font-medium">Producto</th>
+										<th class="px-3 py-2 text-right font-medium">Faltan</th>
 									</tr>
-								{/each}
-							</tbody>
-						</table>
-					</div>
-					<div class="space-y-2 md:hidden">
-						{#each shoppingList as item}
-							<div class="rounded-md border p-3">
-								<p class="text-sm font-medium">{item.productName}</p>
-								<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">{number(item.missingUnits)} uds</p>
-							</div>
-						{/each}
+								</thead>
+								<tbody class="divide-y">
+									{#each shoppingList as item}
+										<tr>
+											<td class="px-3 py-2">{item.productName}</td>
+											<td class="px-3 py-2 text-right tabular-nums">{number(item.missingUnits)}</td>
+										</tr>
+									{/each}
+								</tbody>
+							</table>
+						</div>
+						<div class="space-y-2 md:hidden">
+							{#each shoppingList as item}
+								<div class="rounded-md border p-3">
+									<p class="text-sm font-medium">{item.productName}</p>
+									<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">{number(item.missingUnits)} uds</p>
+								</div>
+							{/each}
+						</div>
 					</div>
 				{/if}
 			</div>
@@ -342,6 +390,10 @@
 				<Button type="button" onclick={downloadShoppingList} disabled={shoppingList.length === 0}>
 					<Download class="size-4" />
 					Descargar lista
+				</Button>
+				<Button type="button" variant="secondary" onclick={shareShoppingList} disabled={shoppingList.length === 0 || shoppingListLoading || sharingShoppingList}>
+					<Share2 class="size-4" />
+					{sharingShoppingList ? 'Compartiendo…' : shoppingListPrimaryActionLabel()}
 				</Button>
 			</div>
 		</div>

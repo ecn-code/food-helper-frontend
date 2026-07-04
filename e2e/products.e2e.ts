@@ -650,6 +650,52 @@ test('reintenta la busqueda de recetas aunque haya una carga previa en vuelo', a
 	await expect(page.getByTestId('recipe-list')).toContainText(recipeName);
 });
 
+test('enfoca el buscador y restaura la lista al volver a recetas y productos', async ({ page, request }) => {
+	const username = uniqueUsername();
+	const seed = Date.now();
+	const productA = `Producto retorno A ${seed}`;
+	const productB = `Producto retorno B ${seed}`;
+	const recipeA = `Receta retorno A ${seed}`;
+	const recipeB = `Receta retorno B ${seed}`;
+
+	await registerUser(request, username);
+	const authorization = await loginApi(request, username);
+	const createdProductA = await createProductApi(request, authorization, productA, 'Producto de prueba A');
+	await createProductApi(request, authorization, productB, 'Producto de prueba B');
+	await createRecipeApi(request, authorization, recipeA, createdProductA.id);
+	await createRecipeApi(request, authorization, recipeB, createdProductA.id);
+
+	await login(page, username);
+	await expect(page.getByTestId('product-filter-search')).toBeFocused();
+
+	await page.getByRole('link', { name: 'Recetas' }).click();
+	await expect(page.getByTestId('recipe-filter-search')).toBeFocused();
+	await expect(page.getByTestId('recipe-list')).toContainText(recipeA);
+	await expect(page.getByTestId('recipe-list')).toContainText(recipeB);
+
+	await page.getByTestId('recipe-filter-search').fill(recipeA);
+	await expect(page.getByTestId('recipe-list')).toContainText(recipeA);
+	await expect(page.getByTestId('recipe-list')).not.toContainText(recipeB);
+
+	await page.getByRole('link', { name: 'Productos' }).click();
+	await expect(page.getByTestId('product-filter-search')).toBeFocused();
+	await page.getByTestId('product-filter-search').fill(productA);
+	await expect(page.getByTestId('product-list')).toContainText(productA);
+	await expect(page.getByTestId('product-list')).not.toContainText(productB);
+
+	await page.getByRole('link', { name: 'Recetas' }).click();
+	await expect(page.getByTestId('recipe-filter-search')).toHaveValue('');
+	await expect(page.getByTestId('recipe-filter-search')).toBeFocused();
+	await expect(page.getByTestId('recipe-list')).toContainText(recipeA);
+	await expect(page.getByTestId('recipe-list')).toContainText(recipeB);
+
+	await page.getByRole('link', { name: 'Productos' }).click();
+	await expect(page.getByTestId('product-filter-search')).toHaveValue('');
+	await expect(page.getByTestId('product-filter-search')).toBeFocused();
+	await expect(page.getByTestId('product-list')).toContainText(productA);
+	await expect(page.getByTestId('product-list')).toContainText(productB);
+});
+
 test('enfoca el primer campo de receta al intentar guardar vacío', async ({ page, request }) => {
 	const username = uniqueUsername();
 

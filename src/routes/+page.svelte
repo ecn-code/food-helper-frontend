@@ -31,6 +31,7 @@
 		Wifi,
 		WifiOff,
 		Search,
+		Percent,
 		Store,
 		PiggyBank,
 		SlidersHorizontal,
@@ -85,6 +86,7 @@
 	import Button from '$lib/components/ui/Button.svelte';
 	import MetricCard from '$lib/components/ui/MetricCard.svelte';
 	import StockProductSearch from '$lib/components/stock/StockProductSearch.svelte';
+	import StockHistory from '$lib/components/stock/StockHistory.svelte';
 	import {
 		emptyProductForm,
 		toProductFormValues,
@@ -157,9 +159,15 @@
 	import PeoplePanel from '$lib/components/people/PeoplePanel.svelte';
 	import MenuWeekPanel from '$lib/components/menus/MenuWeekPanel.svelte';
 	import MenuMealsTable from '$lib/components/menus/MenuMealsTable.svelte';
+	import PlanningCouponsPanel from '$lib/components/planning/PlanningCouponsPanel.svelte';
 	import ValidationDialog from '$lib/components/ui/ValidationDialog.svelte';
 	import { listSupermarkets, type Supermarket } from '$lib/api/supermarkets';
-	import { listPlanning, type PlanningMenuResponse } from '$lib/api/planning';
+	import {
+		listPlanning,
+		listPlanningCoupons,
+		type PlanningCouponResponse,
+		type PlanningMenuResponse
+	} from '$lib/api/planning';
 	import { listUsers, type UserResponse } from '$lib/api/users';
 	import {
 		emptyProductFilters,
@@ -257,6 +265,7 @@
 		error?: string;
 		id?: number;
 	};
+	type PlanningCoupon = PlanningCouponResponse;
 	type DayPartActionState = {
 		type: 'day-part-create' | 'day-part-update';
 		success?: string;
@@ -309,6 +318,7 @@
 		| 'stock'
 		| 'recipes'
 		| 'planning'
+		| 'coupons'
 		| 'menus'
 		| 'closed-menus'
 		| 'people-weights'
@@ -319,6 +329,7 @@
 		| 'money-box'
 		| 'nutritional-rules';
 	type StockViewMode = 'block' | 'list';
+	type StockPanel = 'inventory' | 'history';
 	type ProductViewMode = 'block' | 'list';
 	type RecipeViewMode = 'block' | 'list';
 	// The planning section now comes from the backend planning catalog, not localStorage.
@@ -369,6 +380,7 @@
 		supermarkets: Supermarket[];
 		users: UserResponse[];
 		planningMenus: PlanningMenu[];
+		planningCoupons: PlanningCoupon[];
 		productsLoaded: boolean;
 		recipesLoaded: boolean;
 		stockEntriesLoaded: boolean;
@@ -381,6 +393,7 @@
 		supermarketsLoaded: boolean;
 		usersLoaded: boolean;
 		planningMenusLoaded: boolean;
+		planningCouponsLoaded: boolean;
 		createDefaults: ProductFormValues;
 		createRecipeDefaults: RecipeFormValues;
 		createRecipeDerivedProductDefaults: RecipeDerivedProductFormValues;
@@ -421,6 +434,7 @@
 		supermarkets: [],
 		users: [],
 		planningMenus: [],
+		planningCoupons: [],
 		productsLoaded: false,
 		recipesLoaded: false,
 		stockEntriesLoaded: false,
@@ -433,6 +447,7 @@
 		supermarketsLoaded: false,
 		usersLoaded: false,
 		planningMenusLoaded: false,
+		planningCouponsLoaded: false,
 		createDefaults: emptyProductForm(),
 		createRecipeDefaults: emptyRecipeForm(),
 		createRecipeDerivedProductDefaults: emptyRecipeDerivedProductForm()
@@ -457,6 +472,7 @@
 	let activeEstablishedWeekMenuId = $state<number | null>(null);
 	let knownProposedWeekMenus = $state<KnownProposedWeekMenu[]>([]);
 	let planningMenus = $state<PlanningMenu[]>([]);
+	let planningCoupons = $state<PlanningCoupon[]>([]);
 	let selectedPlanningMenuId = $state<number | null>(null);
 	let selectedMenuId = $state<number | null>(null);
 	let selectedClosedMenuId = $state<number | null>(null);
@@ -478,6 +494,7 @@
 	let stockExpiresBefore = $state('');
 	let stockStatsOpen = $state(false);
 	let stockViewMode = $state<StockViewMode>('block');
+	let stockPanel = $state<StockPanel>('inventory');
 	let productStatsOpen = $state(false);
 	let productViewMode = $state<ProductViewMode>('block');
 	let recipeStatsOpen = $state(false);
@@ -487,8 +504,9 @@
 	let editingRecipeId = $state<number | null>(null);
 	let derivingRecipeId = $state<number | null>(null);
 	let creatingWeekMenuDraft = $state<ProposedWeekMenuCreateFormValues>(emptyProposedWeekMenuCreateForm());
-	let publishPayerUserId = $state('');
+	let couponPayerUserId = $state('');
 	let publishPersonIds = $state<string[]>([]);
+	let publishCouponCodes = $state<string[]>([]);
 	let dayPartDraft = $state<ProposedWeekMenuDayPartFormValues>(emptyProposedWeekMenuDayPartForm());
 	let editingDayPartId = $state<number | null>(null);
 	let dayPartOrderBusy = $state(false);
@@ -498,6 +516,7 @@
 	let editPhotoInput = $state<HTMLInputElement | null>(null);
 	let productFilters = $state<ProductFiltersState>(emptyProductFilters());
 	let recipeFilters = $state<RecipeFiltersState>(emptyRecipeFilters());
+	let recipesListNeedsReload = $state(false);
 	let visibleProducts = $state<Product[]>([]);
 	let visibleProductsLoaded = $state(false);
 	let visibleProductsLoading = $state(false);
@@ -516,6 +535,7 @@
 	let recipesScrollSentinel = $state<HTMLElement | null>(null);
 	let productPickerTarget = $state<ProductPickerTarget | null>(null);
 	let productPickerPreviousModalMode = $state<ModalMode>(null);
+	let productPickerScrollY = $state<number | null>(null);
 	let sessionExpiredDialogOpen = $state(false);
 	let sessionExpiredDialogMessage = $state<string | null>(null);
 	let hydrated = $state(false);
@@ -533,6 +553,11 @@
 	let productDetailRequestToken = 0;
 	let sessionExpiredListener: ((event: Event) => void) | null = null;
 	let planningMenusLoadedAt = $state(0);
+	let planningCouponsLoadedAt = $state(0);
+	let planningCouponsPlanningId = $state<number | null>(null);
+	let planningCouponsPayerUserId = $state<number | null>(null);
+	let planningCouponsLoading = $state(false);
+	let planningCouponsError = $state<string | null>(null);
 	let proposedWeekMenuLoadedAt = $state(0);
 	let establishedWeekMenuLoadedAt = $state(0);
 	let menusLoadedAt = $state(0);
@@ -604,6 +629,7 @@
 		return value === 'recipes' ||
 			value === 'stock' ||
 			value === 'planning' ||
+			value === 'coupons' ||
 			value === 'menus' ||
 			value === 'closed-menus' ||
 			value === 'people-weights' ||
@@ -642,6 +668,9 @@
 
 		if (section === 'products' || section === 'recipes') {
 			resetCatalogFilters();
+			if (section === 'recipes') {
+				recipesListNeedsReload = true;
+			}
 		}
 
 		currentSection = section;
@@ -654,6 +683,7 @@
 		if (section === 'recipes') return 'Recetas';
 		if (section === 'stock') return 'Stock';
 		if (section === 'planning') return 'Planificación';
+		if (section === 'coupons') return 'Cupones';
 		if (section === 'menus') return 'Menú';
 		if (section === 'closed-menus') return 'Menús cerrados';
 		if (section === 'people-weights') return 'Pesos';
@@ -674,6 +704,9 @@
 
 	function invalidateWeekMenuCaches() {
 		planningMenusLoadedAt = 0;
+		planningCouponsLoadedAt = 0;
+		planningCouponsPlanningId = null;
+		planningCouponsPayerUserId = null;
 		proposedWeekMenuLoadedAt = 0;
 		establishedWeekMenuLoadedAt = 0;
 		menusLoadedAt = 0;
@@ -682,6 +715,30 @@
 
 	function shouldRefreshMenusViewAfterMutation() {
 		return currentSection === 'menus' || currentSection === 'closed-menus' || data.menusLoaded || data.establishedWeekMenuLoaded;
+	}
+
+	function currentPlanningCouponMenuId() {
+		return data.proposedWeekMenu?.id ?? activeProposedWeekMenuId ?? selectedPlanningMenuId ?? null;
+	}
+
+	function planningCouponsCacheFresh(planningId: number | null, payerUserId: number | null, force = false) {
+		if (force || !data.planningCouponsLoaded) return false;
+		if (!planningCouponsLoadedAt) return false;
+		if (planningCouponsPlanningId !== planningId) return false;
+		if (planningCouponsPayerUserId !== payerUserId) return false;
+		return Date.now() - planningCouponsLoadedAt < WEEK_MENU_CACHE_TTL_MS;
+	}
+
+	function resetPlanningCoupons() {
+		planningCoupons = [];
+		data.planningCoupons = [];
+		data.planningCouponsLoaded = false;
+		planningCouponsLoadedAt = 0;
+		planningCouponsPlanningId = null;
+		planningCouponsPayerUserId = null;
+		planningCouponsLoading = false;
+		planningCouponsError = null;
+		publishCouponCodes = [];
 	}
 
 	function createErrors(): ProductFormErrors {
@@ -877,17 +934,25 @@
 	}
 
 	function openProductPicker(target: ProductPickerTarget) {
+		productPickerScrollY = window.scrollY;
 		productPickerTarget = target;
 		productPickerPreviousModalMode = modalMode;
 		modalMode = 'product-picker';
 	}
 
 	function closeProductPicker() {
+		const scrollY = productPickerScrollY;
 		productPickerTarget = null;
 		if (modalMode === 'product-picker') {
 			modalMode = productPickerPreviousModalMode;
 		}
 		productPickerPreviousModalMode = null;
+		productPickerScrollY = null;
+		if (scrollY !== null) {
+			requestAnimationFrame(() => {
+				requestAnimationFrame(() => restoreScroll(scrollY));
+			});
+		}
 	}
 
 	function selectProductFromPicker(product: Product) {
@@ -1001,6 +1066,7 @@
 		data.supermarkets = [];
 		data.users = [];
 		data.planningMenus = [];
+		resetPlanningCoupons();
 		data.productsLoaded = false;
 		data.recipesLoaded = false;
 		data.stockEntriesLoaded = false;
@@ -1020,6 +1086,7 @@
 		proposedWeekMenuDayPartsLoadedAt = 0;
 		productFilters = emptyProductFilters();
 		recipeFilters = emptyRecipeFilters();
+		recipesListNeedsReload = false;
 		productPickerTarget = null;
 		brokenProductPhotoUrls = {};
 		activeProposedWeekMenuId = null;
@@ -1310,6 +1377,7 @@
 			recipesTotalElements = response.totalElements;
 			recipesTotalPages = Math.max(response.totalPages, 1);
 			data.recipesLoaded = true;
+			recipesListNeedsReload = false;
 		} catch (error) {
 			if (requestToken !== recipesRequestToken) return;
 			if (reset) {
@@ -1461,6 +1529,41 @@
 		const draftMenus = planningMenus.filter((menu) => menu.state === 'DRAFT');
 		if (selectedPlanningMenuId && !planningMenus.some((menu) => menu.id === selectedPlanningMenuId)) {
 			selectedPlanningMenuId = draftMenus[0]?.id ?? null;
+		}
+	}
+
+	async function loadPlanningCoupons(session = authSession, planningId = currentPlanningCouponMenuId(), payerUserId = Number(couponPayerUserId)) {
+		if (!session) return;
+		if (!planningId || !Number.isFinite(payerUserId) || payerUserId <= 0) {
+			resetPlanningCoupons();
+			return;
+		}
+
+		planningCouponsLoading = true;
+		data.planningCouponsLoaded = false;
+		planningCouponsError = null;
+		try {
+			const coupons = await listPlanningCoupons(planningId, payerUserId, authorizationHeader(session));
+			planningCoupons = coupons;
+			data.planningCoupons = coupons;
+			data.planningCouponsLoaded = true;
+			planningCouponsLoadedAt = Date.now();
+			planningCouponsPlanningId = planningId;
+			planningCouponsPayerUserId = payerUserId;
+			publishCouponCodes = publishCouponCodes.filter((code) => coupons.some((coupon) => coupon.code === code && coupon.available));
+		} catch (error) {
+			if (handleExpiredSession(error)) {
+				return;
+			}
+			planningCoupons = [];
+			data.planningCoupons = [];
+			data.planningCouponsLoaded = true;
+			planningCouponsLoadedAt = Date.now();
+			planningCouponsPlanningId = planningId;
+			planningCouponsPayerUserId = payerUserId;
+			planningCouponsError = error instanceof ApiError ? error.message : 'No se pudieron cargar los cupones.';
+		} finally {
+			planningCouponsLoading = false;
 		}
 	}
 
@@ -1667,7 +1770,7 @@
 
 		const tasks: Promise<void>[] = [];
 
-		if (force || !data.recipesLoaded) {
+		if (force || recipesListNeedsReload || !data.recipesLoaded) {
 			tasks.push(loadRecipes(session, true));
 		}
 
@@ -1724,6 +1827,31 @@
 		}
 
 		await Promise.all(tasks);
+	}
+
+	async function refreshCouponsView(session = authSession, force = false) {
+		if (!session) {
+			resetCatalogState();
+			return;
+		}
+
+		await refreshPlanningView(session, force);
+
+		if (force || !data.usersLoaded) {
+			await loadUsers(session);
+		}
+
+		const planningId = currentPlanningCouponMenuId();
+		const payerUserId = Number(couponPayerUserId);
+
+		if (!planningId || !Number.isFinite(payerUserId) || payerUserId <= 0) {
+			resetPlanningCoupons();
+			return;
+		}
+
+		if (!planningCouponsCacheFresh(planningId, payerUserId, force)) {
+			await loadPlanningCoupons(session, planningId, payerUserId);
+		}
 	}
 
 	async function refreshMenusView(session = authSession, force = false) {
@@ -1811,6 +1939,11 @@
 			return;
 		}
 
+		if (currentSection === 'coupons') {
+			await refreshCouponsView(session, force);
+			return;
+		}
+
 		if (currentSection === 'menus') {
 			await refreshMenusView(session, force);
 			return;
@@ -1868,6 +2001,9 @@
 			const storedSession = readAuthSession();
 			authSession = storedSession;
 			data.session = storedSession ? publicAuthSession(storedSession) : null;
+			if (storedSession && !couponPayerUserId) {
+				couponPayerUserId = String(storedSession.userId);
+			}
 			data.backendError = null;
 			const storedSelectedPlanningMenuId =
 				typeof window !== 'undefined'
@@ -1914,6 +2050,7 @@
 					: prefersCompactStockList
 						? 'block'
 						: 'list';
+			recipesListNeedsReload = true;
 
 			try {
 				await checkHealth();
@@ -2152,11 +2289,19 @@
 	}
 
 	function openPublishWeekMenuModal() {
-		publishPayerUserId = String(authSession?.userId ?? '');
+		if (!couponPayerUserId && authSession?.userId) {
+			couponPayerUserId = String(authSession.userId);
+		}
 		publishPersonIds = authSession?.userId ? [String(authSession.userId)] : [];
+		publishCouponCodes = [];
 		if (authSession && !data.usersLoaded) {
 			void loadUsers(authSession).catch(() => {
 				// The select can still open; the backend error banner handles failures elsewhere.
+			});
+		}
+		if (authSession) {
+			void refreshCouponsView(authSession, true).catch(() => {
+				// The modal can still open; the error banner will handle failures when submitted.
 			});
 		}
 		modalMode = 'week-publish';
@@ -2424,6 +2569,7 @@
 		productDetailError = null;
 		productPickerTarget = null;
 		productPickerPreviousModalMode = null;
+		productPickerScrollY = null;
 		previewProduct = null;
 		detailProduct = null;
 		editingProduct = null;
@@ -2442,8 +2588,8 @@
 		editingWeekDayDate = null;
 		creatingWeekMenuDraft = emptyProposedWeekMenuCreateForm();
 		weekDayDraft = emptyProposedWeekMenuDayForm();
-		publishPayerUserId = '';
 		publishPersonIds = [];
+		publishCouponCodes = [];
 	}
 
 	function productPhotoUrl(photo: string) {
@@ -2723,6 +2869,7 @@
 		data.proposedWeekMenuLoaded = true;
 		data.establishedWeekMenu = null;
 		data.establishedWeekMenuLoaded = false;
+		resetPlanningCoupons();
 		activeProposedWeekMenuId = menu?.id ?? null;
 		activeEstablishedWeekMenuId = null;
 		selectedMenuId = null;
@@ -2745,6 +2892,7 @@
 
 		activeProposedWeekMenuId = menuId;
 		activeEstablishedWeekMenuId = null;
+		resetPlanningCoupons();
 		selectedPlanningMenuId = menuId;
 		data.proposedWeekMenu = null;
 		data.establishedWeekMenu = null;
@@ -2775,6 +2923,15 @@
 		const selectedMenuId = Number((event.currentTarget as HTMLSelectElement | null)?.value ?? '');
 		if (Number.isNaN(selectedMenuId) || selectedMenuId <= 0) return;
 		void selectProposedWeekMenu(selectedMenuId);
+	}
+
+	function handleCouponPayerSelection(event: Event) {
+		const selectedUserId = (event.currentTarget as HTMLSelectElement | null)?.value ?? '';
+		couponPayerUserId = selectedUserId;
+		publishCouponCodes = [];
+		if (authSession) {
+			void loadPlanningCoupons(authSession, currentPlanningCouponMenuId(), Number(selectedUserId));
+		}
 	}
 
 	function setActiveEstablishedWeekMenu(menu: EstablishedWeekMenu | null) {
@@ -2812,6 +2969,7 @@
 		data.establishedWeekMenu = null;
 		data.proposedWeekMenuLoaded = false;
 		data.establishedWeekMenuLoaded = false;
+		resetPlanningCoupons();
 		activeProposedWeekMenuId = null;
 		activeEstablishedWeekMenuId = null;
 		selectedPlanningMenuId = null;
@@ -4219,7 +4377,7 @@
 		validationDialog = null;
 		if (!authSession || !activeProposedWeekMenuId) return;
 
-		const payerUserId = Number(publishPayerUserId);
+		const payerUserId = Number(couponPayerUserId);
 		if (!Number.isFinite(payerUserId) || payerUserId <= 0) {
 			form = { type: 'week-publish', error: 'Selecciona un pagador válido.', id: activeProposedWeekMenuId };
 			openValidationDialog('No se pudo establecer la semana', 'Corrige este campo antes de continuar.', [
@@ -4242,13 +4400,28 @@
 			return;
 		}
 
+		const availableCouponCodes = new Set(planningCoupons.filter((coupon) => coupon.available).map((coupon) => coupon.code));
+		const invalidCouponCodes = publishCouponCodes.filter((code) => !availableCouponCodes.has(code));
+		if (invalidCouponCodes.length > 0) {
+			form = {
+				type: 'week-publish',
+				error: 'Revisa los cupones seleccionados antes de continuar.',
+				id: activeProposedWeekMenuId
+			};
+			openValidationDialog('No se pudo establecer la semana', 'Selecciona solo cupones disponibles para este pagador.', [
+				`Cupones seleccionados: ${invalidCouponCodes.join(', ')}`
+			]);
+			return;
+		}
+
 		try {
 			const menu = toEstablishedWeekMenuModel(
 				await publishProposedWeekMenuRequest(
 					activeProposedWeekMenuId,
 					{
 						payerUserId,
-						personIds
+						personIds,
+						couponCodes: publishCouponCodes.length > 0 ? publishCouponCodes : undefined
 					},
 					authorizationHeader(authSession)
 				)
@@ -4493,6 +4666,21 @@
 					>
 						<CalendarClock class="size-4 shrink-0" aria-hidden="true" />
 						<span class="truncate">Planificación</span>
+					</a>
+					<a
+						class={`flex h-9 items-center gap-2 rounded-md px-2.5 text-sm font-medium ${
+							currentSection === 'coupons'
+								? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]'
+								: 'text-[hsl(var(--muted-foreground))] transition-colors hover:bg-[hsl(var(--secondary))] hover:text-[hsl(var(--foreground))]'
+						}`}
+						href="#coupons"
+						onclick={(event) => {
+							event.preventDefault();
+							setSection('coupons');
+						}}
+					>
+						<Percent class="size-4 shrink-0" aria-hidden="true" />
+						<span class="truncate">Cupones</span>
 					</a>
 					<a
 						class={`flex h-9 items-center gap-2 rounded-md px-2.5 text-sm font-medium ${
@@ -4840,6 +5028,18 @@
 				<button
 					type="button"
 					class={`inline-flex min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+						currentSection === 'coupons'
+							? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]'
+							: 'text-[hsl(var(--muted-foreground))]'
+					}`}
+					onclick={() => setSection('coupons')}
+				>
+					<Percent class="size-4" aria-hidden="true" />
+					<span class="truncate">Cupones</span>
+				</button>
+				<button
+					type="button"
+					class={`inline-flex min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
 						currentSection === 'menus'
 							? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]'
 							: 'text-[hsl(var(--muted-foreground))]'
@@ -4985,25 +5185,8 @@
 							<Plus class="size-4" aria-hidden="true" />
 							Añadir producto
 						</Button>
-					</div>
-				</section>
-
-			<ProductFilters
-				filters={productFilters}
-				onChange={updateProductFilters}
-				onClear={clearProductFilters}
-				testIdPrefix="product-filter"
-			/>
-
-			<div class="flex flex-wrap items-center justify-between gap-3">
-				<span class="inline-flex w-fit items-center gap-1.5 rounded-md border border-[hsl(var(--border))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]">
-					<Leaf class="size-3.5" aria-hidden="true" />
-					<span data-testid="product-count">
-						{productCountLabel()}
-					</span>
-					productos
-				</span>
-			</div>
+				</div>
+			</section>
 
 			{#if productStatsError}
 				<div
@@ -5029,8 +5212,8 @@
 				</div>
 			{/if}
 
-				{#if productStatsOpen}
-					<section class="grid gap-3 md:grid-cols-2 xl:grid-cols-6" aria-label="Metricas del catalogo">
+			{#if productStatsOpen}
+				<section class="grid gap-3 md:grid-cols-2 xl:grid-cols-6" aria-label="Metricas del catalogo">
 					<MetricCard
 						label="Top Kcal"
 						value={highestMetric('calories')}
@@ -5060,10 +5243,19 @@
 						tone="accent"
 					>
 						<Droplets class="size-4" aria-hidden="true" />
-						</MetricCard>
-						</section>
-					{/if}
-								<section class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-sm">
+					</MetricCard>
+				</section>
+			{/if}
+
+			<ProductFilters
+				filters={productFilters}
+				onChange={updateProductFilters}
+				onClear={clearProductFilters}
+				testIdPrefix="product-filter"
+				focusOnMount={true}
+			/>
+
+			<section class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-sm">
 				<div class="flex flex-col gap-3 border-b border-[hsl(var(--border))] p-4 sm:flex-row sm:items-center sm:justify-between">
 					<div class="min-w-0">
 							<h2 class="text-base font-semibold text-[hsl(var(--foreground))]">Productos</h2>
@@ -5071,8 +5263,8 @@
 							Productos con descripcion, calorias y macros principales.
 						</p>
 					</div>
-						<span class="inline-flex w-fit shrink-0 items-center gap-1.5 rounded-md border border-[hsl(var(--border))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]">
-							<Leaf class="size-3.5" aria-hidden="true" />
+					<span class="inline-flex w-fit shrink-0 items-center gap-1.5 rounded-md border border-[hsl(var(--border))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]">
+						<Leaf class="size-3.5" aria-hidden="true" />
 						<span data-testid="product-loaded-count">
 							{productCountLabel()}
 						</span>
@@ -5647,7 +5839,12 @@
 							</p>
 						</div>
 					</div>
+					<div class="inline-flex rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-1 shadow-sm" aria-label="Vista de stock">
+						<Button type="button" size="sm" variant={stockPanel === 'inventory' ? 'primary' : 'ghost'} onclick={() => (stockPanel = 'inventory')} aria-pressed={stockPanel === 'inventory'} data-testid="stock-inventory-tab"><Package class="size-4" aria-hidden="true" />Inventario</Button>
+						<Button type="button" size="sm" variant={stockPanel === 'history' ? 'primary' : 'ghost'} onclick={() => (stockPanel = 'history')} aria-pressed={stockPanel === 'history'} data-testid="stock-history-tab"><Clock class="size-4" aria-hidden="true" />Historial</Button>
+					</div>
 
+					{#if stockPanel === 'inventory'}
 					<section class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4 shadow-sm">
 						<div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
 							<div class="min-w-0">
@@ -5965,7 +6162,10 @@
 							{/if}
 							{/if}
 									</section>
-						</section>
+					{:else if authSession}
+						<StockHistory authorization={authorizationHeader(authSession)} />
+					{/if}
+				</section>
 
 					{:else if currentSection === 'planning'}
 					{@const activeMenu = data.proposedWeekMenu}
@@ -6014,6 +6214,10 @@
 										Establecer semana
 									</Button>
 								{/if}
+								<Button type="button" variant="secondary" onclick={() => setSection('coupons')} disabled={!data.backendAvailable || !activeMenu}>
+									<Percent class="size-4" aria-hidden="true" />
+									Cupones
+								</Button>
 								{#if activeMenu}
 									<Button type="button" variant="danger" onclick={openDeleteWeekMenuModal} disabled={!data.backendAvailable}>
 										<Trash2 class="size-4" aria-hidden="true" />
@@ -6204,6 +6408,106 @@
 							</section>
 						{/if}
 					</section>
+
+					{:else if currentSection === 'coupons'}
+						{@const activeCouponMenu = data.proposedWeekMenu ?? planningMenus.find((menu) => menu.id === selectedPlanningMenuId) ?? null}
+						<section id="coupons" class="space-y-4">
+							<div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+								<div class="min-w-0">
+									<div class="flex flex-wrap items-center gap-2">
+										<h2 class="text-2xl font-semibold tracking-tight text-[hsl(var(--foreground))]">Cupones</h2>
+										{#if activeCouponMenu}
+											<span class="inline-flex w-fit items-center gap-1.5 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]">
+												<CalendarClock class="size-3.5" aria-hidden="true" />
+												{weekDateRangeLabel(activeCouponMenu.startDate, activeCouponMenu.endDate)}
+											</span>
+										{/if}
+									</div>
+									<p class="mt-1 max-w-2xl text-sm leading-6 text-[hsl(var(--muted-foreground))]">
+										Consulta qué cupones puedes aplicar ahora, qué condiciones los bloquean y cuándo volverán a estar disponibles.
+									</p>
+								</div>
+								<div class="flex flex-wrap gap-2 sm:shrink-0">
+									<Button type="button" variant="secondary" onclick={() => setSection('planning')}>
+										<CalendarClock class="size-4" aria-hidden="true" />
+										Ir a planificación
+									</Button>
+								</div>
+							</div>
+
+							{#if !data.proposedWeekMenuLoaded && !activeCouponMenu}
+								<div class="grid place-items-center rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-8 py-16 text-center shadow-sm">
+									<div class="grid size-12 place-items-center rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
+										<div class="size-5 animate-spin rounded-full border-2 border-[hsl(var(--muted-foreground))] border-t-transparent" aria-hidden="true"></div>
+									</div>
+									<h3 class="mt-4 text-sm font-semibold text-[hsl(var(--foreground))]">Cargando cupones</h3>
+									<p class="mt-1 max-w-sm text-sm text-[hsl(var(--muted-foreground))]">
+										Estamos consultando la planificación activa para mostrar los cupones disponibles.
+									</p>
+								</div>
+							{:else if !activeCouponMenu}
+								<div class="grid gap-4 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-8 shadow-sm">
+									<div class="mx-auto grid size-12 place-items-center rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
+										<Percent class="size-5 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
+									</div>
+									<div class="text-center">
+										<h3 class="text-base font-semibold text-[hsl(var(--foreground))]">No hay una planificación activa</h3>
+										<p class="mt-1 text-sm leading-6 text-[hsl(var(--muted-foreground))]">
+											Abre una planificación de borrador para ver los cupones aplicables y sus condiciones.
+										</p>
+									</div>
+									<div class="flex justify-center">
+										<Button type="button" onclick={() => setSection('planning')} disabled={!data.backendAvailable}>
+											<CalendarClock class="size-4" aria-hidden="true" />
+											Ir a planificación
+										</Button>
+									</div>
+								</div>
+							{:else}
+								<section class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-sm">
+									<div class="grid gap-4 border-b border-[hsl(var(--border))] p-4 lg:grid-cols-[minmax(0,1fr)_minmax(280px,360px)] lg:items-end">
+										<div class="min-w-0">
+											<p class="text-sm font-semibold text-[hsl(var(--foreground))]">
+												{planningMenus.find((menu) => menu.id === activeCouponMenu.id)?.label ?? `Planificación #${activeCouponMenu.id}`}
+											</p>
+											<p class="mt-1 text-sm text-[hsl(var(--muted-foreground))]">
+												Los cupones dependen del pagador, así que puedes cambiarlo sin salir de esta pantalla.
+											</p>
+										</div>
+										<label class="block min-w-0">
+											<span class={fieldLabelClass}>Pagador</span>
+											<select
+												class={inputClass}
+												value={couponPayerUserId}
+												onchange={handleCouponPayerSelection}
+												disabled={!data.backendAvailable || !data.usersLoaded}
+												data-testid="coupon-payer"
+											>
+												<option value="" disabled>Selecciona un pagador</option>
+												{#if !data.usersLoaded}
+													<option value={couponPayerUserId} disabled>Cargando personas…</option>
+												{/if}
+												{#each data.users as user}
+													<option value={String(user.id)}>{user.username}</option>
+												{/each}
+											</select>
+										</label>
+									</div>
+
+									<div class="p-4">
+										<PlanningCouponsPanel
+											coupons={planningCoupons}
+											loaded={data.planningCouponsLoaded}
+											loading={planningCouponsLoading}
+											error={planningCouponsError}
+											onRetry={authSession ? () => void loadPlanningCoupons(authSession, currentPlanningCouponMenuId(), Number(couponPayerUserId)) : undefined}
+											emptyTitle="No hay cupones para esta planificación"
+											emptyMessage="Si el backend no devuelve cupones aplicables para este pagador, aquí se mostrará el motivo y el historial de disponibilidad."
+										/>
+									</div>
+								</section>
+							{/if}
+						</section>
 
 					{:else if currentSection === 'menus'}
 					<section id="menus" class="space-y-4">
@@ -6645,6 +6949,7 @@
 						onChange={updateRecipeFilters}
 						onClear={clearRecipeFilters}
 						testIdPrefix="recipe-filter"
+						focusOnMount={true}
 					/>
 
 					<section class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-sm">
@@ -8734,10 +9039,10 @@
 						<section class="grid gap-4 md:grid-cols-2">
 							<label class="block min-w-0">
 								<span class={fieldLabelClass}>Pagador</span>
-								<select class={inputClass} bind:value={publishPayerUserId} data-testid="week-publish-payer">
+								<select class={inputClass} value={couponPayerUserId} onchange={handleCouponPayerSelection} data-testid="week-publish-payer">
 									<option value="" disabled>Selecciona un pagador</option>
 									{#if !data.usersLoaded}
-										<option value={publishPayerUserId} disabled>Cargando personas…</option>
+										<option value={couponPayerUserId} disabled>Cargando personas…</option>
 									{/if}
 									{#each data.users as user}
 										<option value={String(user.id)}>{user.username}</option>
@@ -8778,6 +9083,31 @@
 							{:else}
 								<p class="text-sm text-[hsl(var(--muted-foreground))]">Cargando personas…</p>
 							{/if}
+						</section>
+						<section class="space-y-3 rounded-lg border p-4">
+							<div class="flex flex-wrap items-center justify-between gap-2">
+								<div>
+									<h3 class="text-sm font-semibold">Cupones disponibles</h3>
+									<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
+										Selecciona uno o varios cupones para redimirlos al establecer la semana.
+									</p>
+								</div>
+								<span class="rounded-md bg-[hsl(var(--secondary))] px-2 py-1 text-xs text-[hsl(var(--muted-foreground))]">
+									{publishCouponCodes.length} seleccionados
+								</span>
+							</div>
+							<PlanningCouponsPanel
+								coupons={planningCoupons}
+								loaded={data.planningCouponsLoaded}
+								loading={planningCouponsLoading}
+								error={planningCouponsError}
+								selectable={true}
+								selectedCodes={publishCouponCodes}
+								onSelectedCodesChange={(codes) => (publishCouponCodes = codes)}
+								onRetry={authSession ? () => void loadPlanningCoupons(authSession, activeProposedWeekMenuId, Number(couponPayerUserId)) : undefined}
+								emptyTitle="No hay cupones aplicables"
+								emptyMessage="El backend no ha devuelto cupones que puedan aplicarse ahora mismo para este pagador."
+							/>
 						</section>
 					</fieldset>
 					<div class="flex flex-col-reverse gap-2 border-t border-[hsl(var(--border))] pt-5 sm:flex-row sm:justify-end">

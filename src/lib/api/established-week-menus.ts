@@ -85,6 +85,7 @@ export async function publishProposedWeekMenu(
 		payerUserId: number;
 		personIds?: number[];
 		stockAllocations?: ManualStockAllocationRequest[];
+		couponCodes?: string[];
 	},
 	authorization: string
 ) {
@@ -97,7 +98,8 @@ export async function publishProposedWeekMenu(
 			...(options.stockAllocations ? { stockAllocations: options.stockAllocations.map((allocation) => ({
 				stockEntryId: Number(allocation.stockEntryId),
 				usedUnits: Number(allocation.usedUnits)
-			})) } : {})
+			})) } : {}),
+			...(options.couponCodes ? { couponCodes: options.couponCodes } : {})
 		})
 	});
 }

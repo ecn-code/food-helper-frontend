@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount, tick } from 'svelte';
 	import { BookOpen, Package, Search, X } from '@lucide/svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import NutritionRangeFilter from '$lib/components/filters/NutritionRangeFilter.svelte';
@@ -25,13 +26,17 @@
 		filters,
 		onChange,
 		onClear,
-		testIdPrefix = 'recipe-filter'
+		testIdPrefix = 'recipe-filter',
+		focusOnMount = false
 	}: {
 		filters: RecipeFilters;
 		onChange: (next: RecipeFilters) => void;
 		onClear: () => void;
 		testIdPrefix?: string;
+		focusOnMount?: boolean;
 	} = $props();
+
+	let searchInput = $state<HTMLInputElement | null>(null);
 
 	function setSearch(value: string) {
 		onChange(updateRecipeFilterSearch(filters, value));
@@ -52,6 +57,17 @@
 			}
 		});
 	}
+
+	async function focusSearchInput() {
+		await tick();
+		searchInput?.focus();
+	}
+
+	onMount(() => {
+		if (focusOnMount) {
+			void focusSearchInput();
+		}
+	});
 </script>
 
 <div class="space-y-4 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4 shadow-sm">
@@ -64,6 +80,7 @@
 					class={`${inputClass} pl-9`}
 					placeholder="Buscar por receta, descripción o ingrediente"
 					value={filters.search}
+					bind:this={searchInput}
 					oninput={(event) => setSearch((event.currentTarget as HTMLInputElement).value)}
 					data-testid={`${testIdPrefix}-search`}
 				/>

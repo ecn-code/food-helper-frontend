@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { ChevronDown, ChevronUp, Package, Plus, RefreshCw, Trash2, Users } from '@lucide/svelte';
+	import { ChevronDown, ChevronUp, Package, Plus, Share2, Trash2, Users } from '@lucide/svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import { ApiError, isSessionExpiredError } from '$lib/api/backend';
 	import { listSupermarkets, type Supermarket } from '$lib/api/supermarkets';
@@ -12,6 +12,7 @@
 		type EstablishedWeekMenuWeekStockItemResponse,
 		type EstablishedWeekMenuUsedStockResponse
 	} from '$lib/api/established-week-menus';
+	import { shareShoppingList as shareShoppingListToTarget, shoppingListPrimaryActionLabel } from '$lib/shopping-list-share';
 
 	let {
 		menu,
@@ -29,7 +30,9 @@
 	let weekStockDraft = $state<EstablishedWeekMenuWeekStockItemResponse[]>([]);
 	let usedStock = $state<EstablishedWeekMenuUsedStockResponse[]>([]);
 	let shoppingListLoading = $state(false);
+	let sharingShoppingList = $state(false);
 	let shoppingListError = $state('');
+	let shoppingListShareMessage = $state('');
 	let weekStockError = $state('');
 	let savingWeekStock = $state(false);
 	let newWeekStockProductId = $state('');
@@ -77,6 +80,7 @@
 	async function refreshShoppingList() {
 		shoppingListLoading = true;
 		shoppingListError = '';
+		shoppingListShareMessage = '';
 		try {
 			if (!supermarketId) {
 				shoppingList = menu.shoppingList.map((item) => ({ ...item }));
@@ -88,6 +92,37 @@
 			shoppingListError = cause instanceof ApiError ? cause.message : 'No se pudo cargar la lista de compra.';
 		} finally {
 			shoppingListLoading = false;
+		}
+	}
+
+	async function shareShoppingList() {
+		if (shoppingList.length === 0) return;
+
+		sharingShoppingList = true;
+		shoppingListError = '';
+		shoppingListShareMessage = '';
+		try {
+			if (supermarketId) {
+				shoppingList = await listMenuShoppingList(menu.id, authorization, Number(supermarketId));
+			} else {
+				shoppingList = menu.shoppingList.map((item) => ({ ...item }));
+			}
+
+			const result = await shareShoppingListToTarget({
+				title: 'Lista de compra',
+				menuLabel: `Menú #${menu.id}`,
+				supermarketName: selectedSupermarketName(),
+				items: shoppingList
+			});
+
+			if (result.method === 'clipboard') {
+				shoppingListShareMessage = 'Lista copiada al portapapeles.';
+			}
+		} catch (cause) {
+			if (isSessionExpiredError(cause)) return;
+			shoppingListError = cause instanceof ApiError ? cause.message : 'No se pudo compartir la lista de compra.';
+		} finally {
+			sharingShoppingList = false;
 		}
 	}
 
@@ -193,26 +228,34 @@
 						<div>
 							<h4 class="text-sm font-semibold">Lista de compra</h4>
 							<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
-								Filtra por supermercado si quieres ver solo lo que toca comprar en uno concreto.
+								Elige un supermercado para ver solo lo que toca comprar en uno concreto.
 							</p>
 						</div>
 						<div class="flex flex-col gap-2 sm:flex-row sm:items-end">
 							<label class="block min-w-0">
 								<span class="sr-only">Supermercado</span>
-								<select class="h-10 w-full min-w-[14rem] rounded-md border bg-white px-3 text-sm" bind:value={supermarketId} data-testid="menu-shopping-list-supermarket">
+								<select
+									class="h-10 w-full min-w-[14rem] rounded-md border bg-white px-3 text-sm"
+									bind:value={supermarketId}
+									onchange={() => void refreshShoppingList()}
+									data-testid="menu-shopping-list-supermarket"
+								>
 									<option value="">Todos los supermercados</option>
 									{#each supermarkets as supermarket}
 										<option value={supermarket.id}>{supermarket.name}</option>
 									{/each}
 								</select>
 							</label>
-							<Button type="button" variant="secondary" onclick={refreshShoppingList} disabled={shoppingListLoading} data-testid="menu-shopping-list-filter">
-								<RefreshCw class={`size-4 ${shoppingListLoading ? 'animate-spin' : ''}`} />
-								{shoppingListLoading ? 'Filtrando…' : 'Filtrar'}
+							<Button type="button" variant="secondary" onclick={shareShoppingList} disabled={shoppingListLoading || sharingShoppingList || shoppingList.length === 0} data-testid="menu-shopping-list-share">
+								<Share2 class="size-4" />
+								{sharingShoppingList ? 'Compartiendo…' : shoppingListPrimaryActionLabel()}
 							</Button>
 						</div>
 					</div>
 
+					{#if shoppingListShareMessage}
+						<p class="mt-3 text-sm text-[hsl(var(--muted-foreground))]" role="status">{shoppingListShareMessage}</p>
+					{/if}
 					{#if shoppingListError}
 						<p class="mt-3 text-sm text-[hsl(var(--destructive))]" role="alert">{shoppingListError}</p>
 					{/if}
@@ -223,31 +266,33 @@
 								{supermarketId ? `No hay productos pendientes para ${selectedSupermarketName()}.` : 'No hay productos pendientes.'}
 							</p>
 						{:else}
-							<div class="hidden overflow-x-auto md:block">
-								<table class="w-full text-sm">
-									<thead class="bg-[hsl(var(--secondary))] text-xs text-[hsl(var(--muted-foreground))]">
-										<tr>
-											<th class="px-3 py-2 text-left font-medium">Producto</th>
-											<th class="px-3 py-2 text-right font-medium">Faltan</th>
-										</tr>
-									</thead>
-									<tbody class="divide-y">
-										{#each shoppingList as item}
+							<div class="max-h-[17rem] overflow-y-auto pr-1">
+								<div class="hidden overflow-x-auto md:block">
+									<table class="w-full text-sm">
+										<thead class="bg-[hsl(var(--secondary))] text-xs text-[hsl(var(--muted-foreground))]">
 											<tr>
-												<td class="px-3 py-2">{item.productName}</td>
-												<td class="px-3 py-2 text-right tabular-nums">{formatNumber(item.missingUnits)}</td>
+												<th class="px-3 py-2 text-left font-medium">Producto</th>
+												<th class="px-3 py-2 text-right font-medium">Faltan</th>
 											</tr>
-										{/each}
-									</tbody>
-								</table>
-							</div>
-							<div class="space-y-2 md:hidden">
-								{#each shoppingList as item}
-									<div class="rounded-md border p-3">
-										<p class="text-sm font-medium">{item.productName}</p>
-										<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">{formatNumber(item.missingUnits)} uds</p>
-									</div>
-								{/each}
+										</thead>
+										<tbody class="divide-y">
+											{#each shoppingList as item}
+												<tr>
+													<td class="px-3 py-2">{item.productName}</td>
+													<td class="px-3 py-2 text-right tabular-nums">{formatNumber(item.missingUnits)}</td>
+												</tr>
+											{/each}
+										</tbody>
+									</table>
+								</div>
+								<div class="space-y-2 md:hidden">
+									{#each shoppingList as item}
+										<div class="rounded-md border p-3">
+											<p class="text-sm font-medium">{item.productName}</p>
+											<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">{formatNumber(item.missingUnits)} uds</p>
+										</div>
+									{/each}
+								</div>
 							</div>
 						{/if}
 					</div>
