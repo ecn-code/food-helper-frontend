@@ -165,6 +165,7 @@
 	import {
 		listPlanning,
 		listPlanningCoupons,
+		validatePlanningCoupons,
 		type PlanningCouponResponse,
 		type PlanningMenuResponse
 	} from '$lib/api/planning';
@@ -721,6 +722,11 @@
 		return data.proposedWeekMenu?.id ?? activeProposedWeekMenuId ?? selectedPlanningMenuId ?? null;
 	}
 
+	function ensureDefaultCouponPayerUserId(session = authSession) {
+		if (couponPayerUserId || !session?.userId) return;
+		couponPayerUserId = String(session.userId);
+	}
+
 	function planningCouponsCacheFresh(planningId: number | null, payerUserId: number | null, force = false) {
 		if (force || !data.planningCouponsLoaded) return false;
 		if (!planningCouponsLoadedAt) return false;
@@ -1094,6 +1100,7 @@
 		selectedPlanningMenuId = null;
 		selectedMenuId = null;
 		selectedClosedMenuId = null;
+		couponPayerUserId = '';
 		creatingWeekMenuDraft = emptyProposedWeekMenuCreateForm();
 		dayPartDraft = emptyProposedWeekMenuDayPartForm();
 		editingDayPartId = null;
@@ -1489,6 +1496,7 @@
 		if (!session) return;
 		data.users = await listUsers(authorizationHeader(session));
 		data.usersLoaded = true;
+		ensureDefaultCouponPayerUserId(session);
 	}
 
 	function planningMenuLabel(menu: PlanningMenuResponse) {
@@ -1836,11 +1844,13 @@
 		}
 
 		await refreshPlanningView(session, force);
+		ensureDefaultCouponPayerUserId(session);
 
 		if (force || !data.usersLoaded) {
 			await loadUsers(session);
 		}
 
+		ensureDefaultCouponPayerUserId(session);
 		const planningId = currentPlanningCouponMenuId();
 		const payerUserId = Number(couponPayerUserId);
 
@@ -2001,9 +2011,7 @@
 			const storedSession = readAuthSession();
 			authSession = storedSession;
 			data.session = storedSession ? publicAuthSession(storedSession) : null;
-			if (storedSession && !couponPayerUserId) {
-				couponPayerUserId = String(storedSession.userId);
-			}
+			ensureDefaultCouponPayerUserId(storedSession);
 			data.backendError = null;
 			const storedSelectedPlanningMenuId =
 				typeof window !== 'undefined'
@@ -2289,9 +2297,7 @@
 	}
 
 	function openPublishWeekMenuModal() {
-		if (!couponPayerUserId && authSession?.userId) {
-			couponPayerUserId = String(authSession.userId);
-		}
+		ensureDefaultCouponPayerUserId(authSession);
 		publishPersonIds = authSession?.userId ? [String(authSession.userId)] : [];
 		publishCouponCodes = [];
 		if (authSession && !data.usersLoaded) {
@@ -4411,7 +4417,58 @@
 			openValidationDialog('No se pudo establecer la semana', 'Selecciona solo cupones disponibles para este pagador.', [
 				`Cupones seleccionados: ${invalidCouponCodes.join(', ')}`
 			]);
+			if (authSession) {
+				void loadPlanningCoupons(authSession, activeProposedWeekMenuId, payerUserId);
+			}
 			return;
+		}
+
+		let couponCodesToSend = [...publishCouponCodes];
+		if (couponCodesToSend.length > 0) {
+			try {
+				const validatedCoupons = await validatePlanningCoupons(
+					activeProposedWeekMenuId,
+					payerUserId,
+					couponCodesToSend,
+					authorizationHeader(authSession)
+				);
+				const validatedCodes = validatedCoupons.map((coupon) => coupon.code);
+				const missingCouponCodes = couponCodesToSend.filter((code) => !validatedCodes.includes(code));
+				if (missingCouponCodes.length > 0) {
+					publishCouponCodes = validatedCodes;
+					form = {
+						type: 'week-publish',
+						error: 'Algunos cupones dejaron de estar disponibles.',
+						id: activeProposedWeekMenuId
+					};
+					openValidationDialog(
+						'No se pudo establecer la semana',
+						'El backend ha vuelto a validar los cupones y ha rechazado algunos de ellos.',
+						[`Cupones no válidos: ${missingCouponCodes.join(', ')}`]
+					);
+					if (authSession) {
+						void loadPlanningCoupons(authSession, activeProposedWeekMenuId, payerUserId);
+					}
+					return;
+				}
+				couponCodesToSend = validatedCodes;
+			} catch (error) {
+				if (handleExpiredSession(error)) {
+					return;
+				}
+				form = {
+					type: 'week-publish',
+					error: error instanceof ApiError ? error.message : 'No se pudieron validar los cupones.',
+					id: activeProposedWeekMenuId
+				};
+				openValidationDialog('No se pudo establecer la semana', 'El backend no aceptó la validación previa de cupones.', [
+					error instanceof ApiError ? error.message : 'Reintenta la operación.'
+				]);
+				if (authSession) {
+					void loadPlanningCoupons(authSession, activeProposedWeekMenuId, payerUserId);
+				}
+				return;
+			}
 		}
 
 		try {
@@ -4421,7 +4478,7 @@
 					{
 						payerUserId,
 						personIds,
-						couponCodes: publishCouponCodes.length > 0 ? publishCouponCodes : undefined
+						couponCodes: couponCodesToSend.length > 0 ? couponCodesToSend : undefined
 					},
 					authorizationHeader(authSession)
 				)
@@ -4654,6 +4711,21 @@
 					<a class={`flex h-9 items-center gap-2 rounded-md px-2.5 text-sm font-medium ${currentSection === 'nutritional-rules' ? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))] transition-colors hover:bg-[hsl(var(--secondary))] hover:text-[hsl(var(--foreground))]'}`} href="#nutritional-rules" onclick={(event) => { event.preventDefault(); setSection('nutritional-rules'); }}><SlidersHorizontal class="size-4 shrink-0" aria-hidden="true" /><span class="truncate">Reglas nutricionales</span></a>
 					<a
 						class={`flex h-9 items-center gap-2 rounded-md px-2.5 text-sm font-medium ${
+							currentSection === 'coupons'
+								? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]'
+								: 'text-[hsl(var(--muted-foreground))] transition-colors hover:bg-[hsl(var(--secondary))] hover:text-[hsl(var(--foreground))]'
+						}`}
+						href="#coupons"
+						onclick={(event) => {
+							event.preventDefault();
+							setSection('coupons');
+						}}
+						>
+							<Percent class="size-4 shrink-0" aria-hidden="true" />
+							<span class="truncate">Cupones</span>
+						</a>
+					<a
+						class={`flex h-9 items-center gap-2 rounded-md px-2.5 text-sm font-medium ${
 							currentSection === 'planning'
 								? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]'
 								: 'text-[hsl(var(--muted-foreground))] transition-colors hover:bg-[hsl(var(--secondary))] hover:text-[hsl(var(--foreground))]'
@@ -4666,21 +4738,6 @@
 					>
 						<CalendarClock class="size-4 shrink-0" aria-hidden="true" />
 						<span class="truncate">Planificación</span>
-					</a>
-					<a
-						class={`flex h-9 items-center gap-2 rounded-md px-2.5 text-sm font-medium ${
-							currentSection === 'coupons'
-								? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]'
-								: 'text-[hsl(var(--muted-foreground))] transition-colors hover:bg-[hsl(var(--secondary))] hover:text-[hsl(var(--foreground))]'
-						}`}
-						href="#coupons"
-						onclick={(event) => {
-							event.preventDefault();
-							setSection('coupons');
-						}}
-					>
-						<Percent class="size-4 shrink-0" aria-hidden="true" />
-						<span class="truncate">Cupones</span>
 					</a>
 					<a
 						class={`flex h-9 items-center gap-2 rounded-md px-2.5 text-sm font-medium ${
@@ -5016,18 +5073,6 @@
 				<button
 					type="button"
 					class={`inline-flex min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-						currentSection === 'planning'
-							? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]'
-							: 'text-[hsl(var(--muted-foreground))]'
-					}`}
-					onclick={() => setSection('planning')}
-				>
-					<CalendarClock class="size-4" aria-hidden="true" />
-					<span class="truncate">Planificación</span>
-				</button>
-				<button
-					type="button"
-					class={`inline-flex min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
 						currentSection === 'coupons'
 							? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]'
 							: 'text-[hsl(var(--muted-foreground))]'
@@ -5036,6 +5081,18 @@
 				>
 					<Percent class="size-4" aria-hidden="true" />
 					<span class="truncate">Cupones</span>
+				</button>
+				<button
+					type="button"
+					class={`inline-flex min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+						currentSection === 'planning'
+							? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]'
+							: 'text-[hsl(var(--muted-foreground))]'
+					}`}
+					onclick={() => setSection('planning')}
+				>
+					<CalendarClock class="size-4" aria-hidden="true" />
+					<span class="truncate">Planificación</span>
 				</button>
 				<button
 					type="button"
@@ -9089,7 +9146,7 @@
 								<div>
 									<h3 class="text-sm font-semibold">Cupones disponibles</h3>
 									<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
-										Selecciona uno o varios cupones para redimirlos al establecer la semana.
+										Selecciona uno o varios cupones para redimirlos al establecer la semana. El backend los volverá a validar antes de guardar.
 									</p>
 								</div>
 								<span class="rounded-md bg-[hsl(var(--secondary))] px-2 py-1 text-xs text-[hsl(var(--muted-foreground))]">

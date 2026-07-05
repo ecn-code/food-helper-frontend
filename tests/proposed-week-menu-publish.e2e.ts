@@ -33,6 +33,7 @@ test('publishes a proposed week menu into an established snapshot', async ({ pag
 	);
 	expect(payerOptions.length).toBeGreaterThan(1);
 	expect(payerOptions).toContain('elias');
+	await expect(page.getByTestId('week-publish-payer')).toHaveValue('1');
 	await expect(publishModal.getByRole('heading', { name: 'Personas consumidoras' })).toBeVisible();
 	await expect(publishModal.getByRole('button', { name: 'Automática' })).toHaveCount(0);
 	await expect(publishModal.getByRole('button', { name: 'Manual' })).toHaveCount(0);
@@ -48,5 +49,7 @@ test('publishes a proposed week menu into an established snapshot', async ({ pag
 	]);
 
 	await expect(page.getByTestId('week-publish-modal')).toHaveCount(0);
+	await page.locator('a[href="#coupons"]').first().click();
+	await expect(page.getByTestId('coupon-payer')).toHaveValue('1');
 	await expect(page).toHaveURL(/#menus$/);
 });
