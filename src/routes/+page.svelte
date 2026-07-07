@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { afterNavigate } from '$app/navigation';
 	import { onDestroy, onMount } from 'svelte';
 	import {
 		BookOpen,
@@ -416,6 +417,9 @@
 	const fieldErrorClass = 'mt-1.5 block text-xs text-[hsl(var(--destructive))]';
 	const PRODUCT_PAGE_SIZE = 20;
 	const RECIPE_PAGE_SIZE = 20;
+	const BACKEND_HEALTH_RETRY_INITIAL_DELAY_MS = 5_000;
+	const BACKEND_HEALTH_RETRY_MAX_DELAY_MS = 60_000;
+	const PRODUCT_QUERY_PARAM = 'productId';
 
 	let data = $state<DataState>({
 		backendBaseUrl: apiBaseUrl(),
@@ -548,6 +552,8 @@
 	);
 	let recipesRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 	let loginSuccessTimer: ReturnType<typeof setTimeout> | null = null;
+	let backendHealthRetryTimer: ReturnType<typeof setTimeout> | null = null;
+	let backendHealthRetryDelayMs = BACKEND_HEALTH_RETRY_INITIAL_DELAY_MS;
 	let sessionNow = $state(Date.now());
 	let visibleProductsRequestToken = 0;
 	let productsRequestToken = 0;
@@ -594,6 +600,18 @@
 			clearTimeout(loginSuccessTimer);
 			loginSuccessTimer = null;
 		}
+	}
+
+	function clearBackendHealthRetryTimer() {
+		if (backendHealthRetryTimer !== null) {
+			clearTimeout(backendHealthRetryTimer);
+			backendHealthRetryTimer = null;
+		}
+	}
+
+	function formatBackendHealthRetryDelay(delayMs: number) {
+		const seconds = Math.round(delayMs / 1000);
+		return seconds >= 60 ? '1 min' : `${seconds} s`;
 	}
 
 	function scheduleLoginSuccessDismiss() {
@@ -647,6 +665,26 @@
 			: 'products';
 	}
 
+	function emptyProductFallback(productId: number): Product {
+		return {
+			id: productId,
+			name: `Producto ${productId}`,
+			description: '',
+			gramsPerUnit: 100,
+			nutritionBasis: 'PER_100_GRAMS',
+			defaultPrice: null,
+			nutritionalValues: {
+				calories: 0,
+				carbohydrates: 0,
+				proteins: 0,
+				fats: 0
+			},
+			photo: null,
+			supermarkets: [],
+			derivedProduct: null
+		};
+	}
+
 	function activeWeekMenuKind() {
 		if (data.establishedWeekMenu) return 'established';
 		if (data.proposedWeekMenu) return 'proposed';
@@ -678,6 +716,15 @@
 		if (updateHash && typeof window !== 'undefined') {
 			window.location.hash = section;
 		}
+	}
+
+	function clearProductQueryParam(url: URL) {
+		if (!url.searchParams.has(PRODUCT_QUERY_PARAM)) return;
+		const nextUrl = new URL(url.href);
+		nextUrl.searchParams.delete(PRODUCT_QUERY_PARAM);
+		const nextSearch = nextUrl.searchParams.toString();
+		const nextHref = `${nextUrl.pathname}${nextSearch ? `?${nextSearch}` : ''}${nextUrl.hash}`;
+		window.history.replaceState(window.history.state, '', nextHref);
 	}
 
 	function sectionLabel(section: SectionMode) {
@@ -2006,7 +2053,22 @@
 			void refreshCurrentView();
 		};
 
-		const bootstrap = async () => {
+		function scheduleBackendHealthRetry() {
+			const retryDelayMs = backendHealthRetryDelayMs;
+			clearBackendHealthRetryTimer();
+			data.backendAvailable = false;
+			data.backendError = `No se pudo conectar con el backend configurado. Reintentando en ${formatBackendHealthRetryDelay(retryDelayMs)}...`;
+			backendHealthRetryTimer = setTimeout(() => {
+				backendHealthRetryTimer = null;
+				backendHealthRetryDelayMs = Math.min(
+					retryDelayMs * 2,
+					BACKEND_HEALTH_RETRY_MAX_DELAY_MS
+				);
+				void bootstrap();
+			}, retryDelayMs);
+		}
+
+		async function bootstrap() {
 			data.backendBaseUrl = apiBaseUrl();
 			const storedSession = readAuthSession();
 			authSession = storedSession;
@@ -2062,42 +2124,50 @@
 
 			try {
 				await checkHealth();
+				clearBackendHealthRetryTimer();
+				backendHealthRetryDelayMs = BACKEND_HEALTH_RETRY_INITIAL_DELAY_MS;
 				data.backendAvailable = true;
-			} catch (error) {
-				data.backendAvailable = false;
-				data.backendError = error instanceof ApiError ? error.message : 'No se pudo conectar con el backend configurado.';
+				data.backendError = null;
+			} catch {
+				scheduleBackendHealthRetry();
 				return;
 			}
 
 			if (storedSession) {
 				try {
 					await refreshCurrentView(storedSession);
+					handleProductQueryParam(new URL(window.location.href));
 				} catch (error) {
-						if (
-							(currentSection === 'planning' || currentSection === 'menus' || currentSection === 'closed-menus') &&
-							error instanceof ApiError &&
-							error.status === 404
-						) {
-							clearActiveWeekMenu();
-							data.proposedWeekMenuLoaded = true;
-							data.establishedWeekMenuLoaded = true;
-							if (typeof window !== 'undefined') {
-								window.localStorage.removeItem('foodhelper_proposed_week_menu_id');
-								window.localStorage.removeItem('foodhelper_established_week_menu_id');
-								window.localStorage.removeItem('foodhelper_selected_menu_id');
-								window.localStorage.removeItem('foodhelper_selected_closed_menu_id');
-							}
-							return;
+					if (
+						(currentSection === 'planning' || currentSection === 'menus' || currentSection === 'closed-menus') &&
+						error instanceof ApiError &&
+						error.status === 404
+					) {
+						clearActiveWeekMenu();
+						data.proposedWeekMenuLoaded = true;
+						data.establishedWeekMenuLoaded = true;
+						if (typeof window !== 'undefined') {
+							window.localStorage.removeItem('foodhelper_proposed_week_menu_id');
+							window.localStorage.removeItem('foodhelper_established_week_menu_id');
+							window.localStorage.removeItem('foodhelper_selected_menu_id');
+							window.localStorage.removeItem('foodhelper_selected_closed_menu_id');
 						}
+						return;
+					}
 
 					if (handleExpiredSession(error)) {
 						return;
 					}
 
-					data.backendError = error instanceof ApiError ? error.message : 'No se pudieron cargar los datos.';
+					if (!(error instanceof ApiError)) {
+						scheduleBackendHealthRetry();
+						return;
+					}
+
+					data.backendError = error.message;
 				}
 			}
-		};
+		}
 
 		void bootstrap();
 		if (sessionExpiredListener) {
@@ -2111,12 +2181,19 @@
 				sessionExpiredListener = null;
 			}
 			window.clearInterval(sessionTimer);
+			clearBackendHealthRetryTimer();
 			window.removeEventListener('hashchange', syncSection);
 		};
 	});
 
+	afterNavigate(({ to }) => {
+		if (!to) return;
+		handleProductQueryParam(to.url);
+	});
+
 	onDestroy(() => {
 		clearLoginSuccessTimer();
+		clearBackendHealthRetryTimer();
 	});
 
 	function openCreateModal() {
@@ -2194,6 +2271,33 @@
 		productDetailError = null;
 		modalMode = 'product-view';
 		void loadProductForModal(product.id, product, 'view');
+	}
+
+	async function openProductFromQueryParam(productId: number) {
+		if (!authSession) {
+			clearSession();
+			return;
+		}
+
+		const fallbackProduct =
+			data.products.find((product) => product.id === productId) ??
+			data.selectedProducts.find((product) => product.id === productId) ??
+			emptyProductFallback(productId);
+
+		detailProduct = null;
+		editingProduct = null;
+		detailRecipe = null;
+		productDetailError = null;
+		modalMode = 'product-view';
+		void loadProductForModal(productId, fallbackProduct, 'view');
+	}
+
+	function handleProductQueryParam(url: URL) {
+		const productId = Number(url.searchParams.get(PRODUCT_QUERY_PARAM) ?? '');
+		if (!Number.isFinite(productId) || productId <= 0) return;
+		setSection('products', { updateHash: false });
+		void openProductFromQueryParam(productId);
+		clearProductQueryParam(url);
 	}
 
 	function openStockModal(product: Product | null = null) {
@@ -6242,15 +6346,14 @@
 											<span class="sr-only">Periodo de planificación</span>
 											<select
 												class="h-10 w-full max-w-[18rem] cursor-pointer rounded-md border border-[hsl(var(--input))] bg-[hsl(var(--card))] px-3 pr-8 text-sm text-[hsl(var(--foreground))] shadow-sm transition-colors focus:border-[hsl(var(--ring))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--ring)/0.14)] disabled:cursor-not-allowed disabled:bg-[hsl(var(--muted))] disabled:opacity-70"
-												value={selectedPlanningMenuId ?? ''}
+												value={String(selectedPlanningMenuId ?? planningMenusForSelector()[0]?.id ?? '')}
 												onchange={(event) => void selectPlanningMenu(Number((event.currentTarget as HTMLSelectElement).value))}
 												disabled={!data.backendAvailable}
 												data-testid="planning-menu-selector"
 												aria-label="Periodo de planificación"
 											>
-												<option value="" disabled>Selecciona un periodo</option>
 												{#each planningMenusForSelector() as menu (menu.id)}
-													<option value={menu.id}>{menu.label}</option>
+													<option value={String(menu.id)}>{menu.label}</option>
 												{/each}
 											</select>
 										</label>

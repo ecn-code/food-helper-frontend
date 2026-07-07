@@ -29,14 +29,25 @@
 		emptyMessage = 'Cuando el backend tenga reglas y cupones activos, aparecerán aquí con su estado y tiempos de reutilización.'
 	}: Props = $props();
 
+	type ConditionSegment =
+		| {
+				type: 'text';
+				value: string;
+		  }
+		| {
+				type: 'product';
+				label: string;
+				productId: number;
+		  };
+
 	function money(value: number) {
 		return new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR' }).format(value);
 	}
 
 	function formatDateTime(value: string | null) {
-		if (!value) return 'No disponible';
+		if (!value) return '-';
 		const parsed = new Date(value);
-		if (Number.isNaN(parsed.getTime())) return 'No disponible';
+		if (Number.isNaN(parsed.getTime())) return '-';
 		return new Intl.DateTimeFormat('es-ES', {
 			dateStyle: 'medium',
 			timeStyle: 'short'
@@ -49,6 +60,18 @@
 		return reason;
 	}
 
+	function availabilityLabel(coupon: PlanningCouponResponse) {
+		if (coupon.informativeAvailabilityState === 'AVAILABLE' || coupon.available) return 'Disponible';
+		if (coupon.informativeAvailabilityState === 'CONDITION_NOT_MET') return 'No cumple condiciones';
+		if (coupon.informativeAvailabilityState === 'USED_RECENTLY') return 'Usado recientemente';
+		if (coupon.informativeAvailabilityState === 'CONDITION_NOT_MET_AND_USED_RECENTLY') return 'Bloqueado por ambas causas';
+		return coupon.available ? 'Disponible' : 'Bloqueado';
+	}
+
+	function availabilityTone(coupon: PlanningCouponResponse) {
+		return coupon.available ? 'bg-emerald-600/10 text-emerald-700' : 'bg-amber-600/10 text-amber-700';
+	}
+
 	function toggleSelected(code: string, checked: boolean) {
 		if (!onSelectedCodesChange) return;
 		const next = checked
@@ -56,6 +79,39 @@
 			: selectedCodes.filter((current) => current !== code);
 		onSelectedCodesChange(next);
 	}
+
+	function conditionDescriptionSegments(description: string): ConditionSegment[] {
+		const segments: ConditionSegment[] = [];
+		const pattern = /product\s+(\d+)/gi;
+		let lastIndex = 0;
+		let match: RegExpExecArray | null;
+
+		while ((match = pattern.exec(description)) !== null) {
+			if (match.index > lastIndex) {
+				segments.push({
+					type: 'text',
+					value: description.slice(lastIndex, match.index)
+				});
+			}
+
+			segments.push({
+				type: 'product',
+				label: match[0].slice(0, match[0].length - match[1].length).trimEnd(),
+				productId: Number(match[1])
+			});
+			lastIndex = pattern.lastIndex;
+		}
+
+		if (lastIndex < description.length) {
+			segments.push({
+				type: 'text',
+				value: description.slice(lastIndex)
+			});
+		}
+
+		return segments.length > 0 ? segments : [{ type: 'text', value: description }];
+	}
+
 </script>
 
 <section class="space-y-4" data-testid="planning-coupons-panel">
@@ -115,15 +171,27 @@
 								{:else}
 									<h3 class="text-sm font-semibold text-[hsl(var(--foreground))]">{coupon.name}</h3>
 								{/if}
-								<span
-									class={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium ${
-										coupon.available ? 'bg-emerald-600/10 text-emerald-700' : 'bg-amber-600/10 text-amber-700'
-									}`}
-								>
-									{coupon.available ? 'Disponible' : 'Bloqueado'}
+								<span class={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium ${availabilityTone(coupon)}`}>
+									{availabilityLabel(coupon)}
 								</span>
 							</div>
 							<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">{coupon.code}</p>
+							<p class="mt-2 text-sm leading-6 text-[hsl(var(--muted-foreground))]">
+								{#each conditionDescriptionSegments(coupon.conditionDescription) as segment, index (index)}
+									{#if segment.type === 'text'}
+										{segment.value}
+									{:else}
+										{segment.label}
+										{' '}
+										<a
+											href={`?productId=${segment.productId}#products`}
+											class="font-medium text-[hsl(var(--primary))] underline underline-offset-2 hover:text-[hsl(var(--primary)/0.8)]"
+										>
+											{segment.productId}
+										</a>
+									{/if}
+								{/each}
+							</p>
 						</div>
 						<div class="grid size-10 shrink-0 place-items-center rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--background))] text-[hsl(var(--muted-foreground))]">
 							<Percent class="size-4" aria-hidden="true" />
@@ -141,9 +209,17 @@
 						<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-2.5">
 							<dt class="flex items-center gap-1.5 text-xs text-[hsl(var(--muted-foreground))]">
 								<Clock class="size-3.5" aria-hidden="true" />
-								Reintento
+								Cuarentena
 							</dt>
 							<dd class="mt-1 font-medium tabular-nums">{coupon.periodDays} d</dd>
+						</div>
+						<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-2.5">
+							<dt class="text-xs text-[hsl(var(--muted-foreground))]">Cumple condiciones</dt>
+							<dd class="mt-1 font-medium">{coupon.conditionMet ? 'Sí' : 'No'}</dd>
+						</div>
+						<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-2.5">
+							<dt class="text-xs text-[hsl(var(--muted-foreground))]">Uso reciente</dt>
+							<dd class="mt-1 font-medium">{coupon.usedRecently ? 'Sí' : 'No'}</dd>
 						</div>
 						<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-2.5">
 							<dt class="flex items-center gap-1.5 text-xs text-[hsl(var(--muted-foreground))]">
