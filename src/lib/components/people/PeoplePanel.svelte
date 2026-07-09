@@ -129,7 +129,7 @@
 	}
 
 	function formatWeight(value: number) {
-		return `${new Intl.NumberFormat('es-ES', { maximumFractionDigits: 1 }).format(value)} kg`;
+		return `${new Intl.NumberFormat('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value)} kg`;
 	}
 
 	function formatNumber(value: number) {
@@ -245,7 +245,7 @@
 	}
 
 	function initialUserId() {
-		return String(users.some((user) => user.id === Number(selectedUserId)) ? selectedUserId : users[0]?.id ?? currentUserId);
+		return String(users.some((user) => user.id === currentUserId) ? currentUserId : users[0]?.id ?? currentUserId);
 	}
 
 	async function bootstrap() {
@@ -457,7 +457,7 @@
 					<option value={selectedUserId}>Cargando personas…</option>
 				{/if}
 				{#each users as user}
-					<option value={user.id}>{user.username}</option>
+					<option value={String(user.id)}>{user.username}</option>
 				{/each}
 			</select>
 			{#if currentUser}

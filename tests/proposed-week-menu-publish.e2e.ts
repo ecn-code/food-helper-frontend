@@ -51,5 +51,5 @@ test('publishes a proposed week menu into an established snapshot', async ({ pag
 	await expect(page.getByTestId('week-publish-modal')).toHaveCount(0);
 	await page.locator('a[href="#coupons"]').first().click();
 	await expect(page.getByTestId('coupon-payer')).toHaveValue('1');
-	await expect(page).toHaveURL(/#menus$/);
+	await expect(page).toHaveURL(/#coupons$/);
 });

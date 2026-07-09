@@ -242,6 +242,43 @@ test('lista, crea, edita y elimina productos desde la web', async ({ page, reque
 	await expect(page.getByText(updatedName)).toHaveCount(0);
 });
 
+test('muestra un error visible si falla el borrado inesperadamente', async ({ page, request }) => {
+	const username = uniqueUsername();
+	const productName = `Producto roto ${Date.now()}`;
+
+	await registerUser(request, username);
+	await login(page, username);
+
+	await page.getByTestId('open-create-modal').click();
+	await page.getByTestId('create-name').fill(productName);
+	await page.getByTestId('create-description').fill('Producto de prueba');
+	await page.getByTestId('create-default-price').fill('1.25');
+	await page.getByTestId('create-calories').fill('12');
+	await page.getByTestId('create-carbohydrates').fill('2');
+	await page.getByTestId('create-proteins').fill('1');
+	await page.getByTestId('create-fats').fill('0.1');
+	await page.getByRole('button', { name: 'Guardar producto' }).click();
+	await expect(page.getByTestId('product-list')).toContainText(productName);
+
+	const productCard = page.locator('[data-testid^="product-card-"]').filter({ hasText: productName });
+	await productCard.getByRole('button', { name: 'Eliminar' }).click();
+	await expect(page.getByTestId('delete-modal')).toBeVisible();
+
+	await page.route('**/api/v1/products/*', async (route) => {
+		if (route.request().method() === 'DELETE') {
+			await route.abort();
+			return;
+		}
+
+		await route.fallback();
+	});
+
+	await page.getByRole('button', { name: 'Si, eliminar' }).click();
+	await expect(page.getByTestId('error-banner')).toContainText('No se pudo eliminar el producto.');
+	await expect(page.getByTestId('delete-modal')).toBeVisible();
+	await expect(page.getByTestId('product-list')).toContainText(productName);
+});
+
 test('enfoca el primer campo de producto al intentar guardar vacío', async ({ page, request }) => {
 	const username = uniqueUsername();
 
@@ -788,6 +825,7 @@ test('crea una planificación y añade un menu diario con productos', async ({ p
 
 	await page.getByTestId(`week-day-action-${startDate}`).click();
 	await expect(page.getByTestId('week-day-modal')).toBeVisible();
+	await page.getByRole('button', { name: 'Catálogo' }).click();
 	await page.getByTestId('week-day-date').fill(startDate);
 	await page.getByTestId('week-section-day-part-0').selectOption({ label: 'Comida' });
 	await chooseProductFromPicker(page, 'week-product-id-0-0', 1);
@@ -803,6 +841,7 @@ test('crea una planificación y añade un menu diario con productos', async ({ p
 	const secondDate = '2030-01-02';
 	await page.getByTestId(`week-day-action-${secondDate}`).click();
 	await expect(page.getByTestId('week-day-modal')).toBeVisible();
+	await page.getByRole('button', { name: 'Catálogo' }).click();
 	await page.getByTestId('week-day-date').fill(secondDate);
 	await page.getByTestId('week-section-day-part-0').selectOption({ label: 'Cena' });
 	await chooseProductFromPicker(page, 'week-product-id-0-0', 2);
@@ -827,6 +866,10 @@ test('crea una planificación y añade un menu diario con productos', async ({ p
 	await expect(page.getByTestId('week-stock-summary')).toContainText('Rice');
 	await expect(page.getByTestId('week-stock-row-1')).toContainText('5,00');
 	await expect(page.getByTestId('week-stock-row-2')).toContainText('2,50');
+
+	await page.getByRole('button', { name: 'Lista de compra' }).click();
+	await expect(page.getByTestId('shopping-list-dialog')).toBeVisible();
+	await expect(page.getByTestId('shopping-list-dialog')).toContainText('Lista de compra');
 });
 
 test('enfoca el buscador al abrir el selector de productos desde planificación', async ({ page, request }) => {
@@ -889,22 +932,39 @@ test('permite reabrir y editar un menu diario ya guardado', async ({ page, reque
 	const endDate = '2030-02-16';
 
 	await registerUser(request, username);
+	const authorization = await loginApi(request, username);
+
+	const createPlanningResponse = await request.post(`${backendUrl}/api/v1/planning`, {
+		headers: {
+			Authorization: authorization
+		},
+		data: {
+			startDate,
+			endDate,
+			users: 1
+		}
+	});
+	expect(createPlanningResponse.status()).toBe(201);
+	const createdPlanning = (await createPlanningResponse.json()) as { id: number };
+
+	const upsertDayResponse = await request.put(`${backendUrl}/api/v1/planning/${createdPlanning.id}/days`, {
+		headers: {
+			Authorization: authorization
+		},
+		data: {
+			date: startDate,
+			sections: [
+				{
+					dayPartId: 1,
+					products: [{ productId: 1, units: 1, sortOrder: 10 }]
+				}
+			]
+		}
+	});
+	expect(upsertDayResponse.status()).toBe(200);
+
 	await login(page, username);
-
 	await page.getByRole('link', { name: 'Planificación' }).click();
-	await page.getByRole('button', { name: 'Nueva semana' }).click();
-	await page.getByTestId('week-start-date').fill(startDate);
-	await page.getByTestId('week-end-date').fill(endDate);
-	await page.getByTestId('week-create-form').getByRole('button', { name: 'Crear semana' }).click();
-	await expect(page.getByTestId('success-banner')).toContainText('Planificación creada correctamente');
-
-	await page.getByTestId(`week-day-action-${startDate}`).click();
-	await expect(page.getByTestId('week-day-modal')).toBeVisible();
-	await chooseProductFromPicker(page, 'week-product-id-0-0', 1);
-	await page.getByTestId('week-product-units-0-0').fill('1');
-	await page.getByTestId('week-product-sort-0-0').fill('10');
-	await page.getByRole('button', { name: 'Guardar menu' }).click();
-	await expect(page.getByTestId('success-banner')).toContainText('Menu diario guardado correctamente');
 	await expect(page.getByTestId(`week-day-card-${startDate}`)).toContainText('Apple');
 	await expect(page.getByTestId(`week-day-action-${startDate}`)).toContainText('Editar menu');
 
@@ -915,6 +975,76 @@ test('permite reabrir y editar un menu diario ya guardado', async ({ page, reque
 	await expect(page.getByTestId('success-banner')).toContainText('Menu diario guardado correctamente');
 	await expect(page.getByTestId(`week-day-card-${startDate}`)).toContainText('Rice');
 	await expect(page.getByTestId(`week-day-card-${startDate}`)).not.toContainText('Apple');
+});
+
+test('mantiene el nombre guardado al editar un menu diario aunque el catalogo no cargue ese producto', async ({
+	page,
+	request
+}) => {
+	const username = uniqueUsername();
+	const startDate = '2030-04-14';
+	const endDate = '2030-04-20';
+
+	await registerUser(request, username);
+	const authorization = await loginApi(request, username);
+
+	const createPlanningResponse = await request.post(`${backendUrl}/api/v1/planning`, {
+		headers: {
+			Authorization: authorization
+		},
+		data: {
+			startDate,
+			endDate,
+			users: 1
+		}
+	});
+	expect(createPlanningResponse.status()).toBe(201);
+	const createdPlanning = (await createPlanningResponse.json()) as { id: number };
+
+	const upsertDayResponse = await request.put(`${backendUrl}/api/v1/planning/${createdPlanning.id}/days`, {
+		headers: {
+			Authorization: authorization
+		},
+		data: {
+			date: startDate,
+			sections: [
+				{
+					dayPartId: 1,
+					products: [{ productId: 1, units: 1, sortOrder: 10 }]
+				}
+			]
+		}
+	});
+	expect(upsertDayResponse.status()).toBe(200);
+
+	await page.route('**/api/v1/products?*', async (route) => {
+		if (route.request().method() !== 'GET') {
+			await route.continue();
+			return;
+		}
+
+		await route.fulfill({
+			status: 200,
+			contentType: 'application/json',
+			headers: { 'access-control-allow-origin': '*' },
+			body: JSON.stringify({
+				items: [],
+				page: 0,
+				size: 100,
+				totalElements: 0,
+				totalPages: 1
+			})
+		});
+	});
+
+	await login(page, username);
+	await page.getByRole('link', { name: 'Planificación' }).click();
+	await expect(page.getByTestId(`week-day-card-${startDate}`)).toContainText('Apple');
+
+	await page.getByTestId(`week-day-action-${startDate}`).click();
+	await expect(page.getByTestId('week-day-modal')).toBeVisible();
+	await expect(page.getByTestId('week-product-id-0-0')).toContainText('Apple');
+	await expect(page.getByTestId('week-day-modal')).not.toContainText('Producto no encontrado');
 });
 
 test('avisa cuando no hay partes del dia para añadir menus a la planificacion', async ({ page, request }) => {

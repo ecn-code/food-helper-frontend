@@ -711,39 +711,39 @@ function adjustShoppingList(shoppingList, productId, quantityDelta) {
 
 function replaceWeekStock(menu, requestedWeekStock) {
 	const currentWeekStock = Array.isArray(menu.weekStock) ? menu.weekStock : [];
-	const currentByProduct = new Map(currentWeekStock.map((item) => [item.productId, item]));
+	const currentByProduct = new Map();
+	for (const item of currentWeekStock) {
+		const currentQuantity = Number(currentByProduct.get(item.productId) ?? 0);
+		currentByProduct.set(item.productId, Number((currentQuantity + Number(item.quantity ?? 0)).toFixed(2)));
+	}
+
 	const requestedByProduct = new Map();
+	const updatedWeekStock = [];
 	for (const item of requestedWeekStock ?? []) {
 		if (!item || !Number.isFinite(Number(item.productId)) || !Number.isFinite(Number(item.quantity)) || Number(item.quantity) <= 0) {
-			throw new Error('Week stock items require a productId and positive quantity');
+			throw new Error('Week stock items require a productId, positive quantity, and unit price');
 		}
-		if (requestedByProduct.has(Number(item.productId))) {
-			throw new Error('Each product can appear only once in weekStock');
+		const price = Number(item.price);
+		if (!Number.isFinite(price) || price < 0) {
+			throw new Error('Week stock items require a valid price');
 		}
-		requestedByProduct.set(Number(item.productId), {
+		const productId = Number(item.productId);
+		const quantity = Number(item.quantity);
+		requestedByProduct.set(productId, Number((Number(requestedByProduct.get(productId) ?? 0) + quantity).toFixed(2)));
+		updatedWeekStock.push({
 			productId: Number(item.productId),
 			productName: String(item.productName ?? productById(Number(item.productId))?.name ?? `Product ${item.productId}`),
-			quantity: Number(item.quantity)
+			quantity: Number(item.quantity),
+			price
 		});
 	}
 
-	const productIds = [...new Set([...currentByProduct.keys(), ...requestedByProduct.keys()])];
 	let shoppingList = Array.isArray(menu.shoppingList) ? [...menu.shoppingList] : [];
-	const updatedWeekStock = [];
-
-	for (const productId of productIds) {
-		const currentQuantity = Number(currentByProduct.get(productId)?.quantity ?? 0);
-		const requestedQuantity = Number(requestedByProduct.get(productId)?.quantity ?? 0);
+	for (const productId of new Set([...currentByProduct.keys(), ...requestedByProduct.keys()])) {
+		const currentQuantity = Number(currentByProduct.get(productId) ?? 0);
+		const requestedQuantity = Number(requestedByProduct.get(productId) ?? 0);
 		const delta = Number((requestedQuantity - currentQuantity).toFixed(2));
 		shoppingList = adjustShoppingList(shoppingList, productId, delta);
-		if (requestedQuantity > 0) {
-			const requested = requestedByProduct.get(productId);
-			updatedWeekStock.push({
-				productId,
-				productName: requested?.productName ?? productById(productId)?.name ?? `Product ${productId}`,
-				quantity: requestedQuantity
-			});
-		}
 	}
 
 	return {
@@ -781,6 +781,108 @@ function planningMenuResponse(menu) {
 		state: established ? (established.stats ? 'CLOSED' : 'ESTABLISHED') : 'DRAFT',
 		menuId: established?.id ?? null
 	};
+}
+
+function planningCouponCatalogResponse() {
+	const now = new Date();
+	const plusDays = (days) => new Date(now.getTime() + days * 24 * 60 * 60 * 1000).toISOString();
+	const minusDays = (days) => new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString();
+
+	return [
+		{
+			code: 'NO_REPEATED_PRODUCTS',
+			name: 'Variety challenge',
+			conditionDescription: 'The menu cannot repeat the same product on the same day or across different day parts.',
+			conditionMet: true,
+			rewardAmount: 20,
+			periodDays: 30,
+			available: true,
+			usedRecently: false,
+			informativeAvailabilityState: 'AVAILABLE',
+			lastUsedAt: null,
+			nextAvailableAt: null,
+			unavailableReasons: null
+		},
+		{
+			code: 'USED_RECENTLY',
+			name: 'Used recently',
+			conditionDescription: 'The planning is valid, but the payout cooldown has not finished yet.',
+			conditionMet: true,
+			rewardAmount: 15,
+			periodDays: 21,
+			available: false,
+			usedRecently: true,
+			informativeAvailabilityState: 'USED_RECENTLY',
+			lastUsedAt: minusDays(5),
+			nextAvailableAt: plusDays(16),
+			unavailableReasons: ['USED_WITHIN_PERIOD']
+		},
+		{
+			code: 'CONDITION_NOT_MET',
+			name: 'Condition not met',
+			conditionDescription: 'The current planning does not satisfy the coupon rule.',
+			conditionMet: false,
+			rewardAmount: 10,
+			periodDays: 14,
+			available: false,
+			usedRecently: false,
+			informativeAvailabilityState: 'CONDITION_NOT_MET',
+			lastUsedAt: null,
+			nextAvailableAt: null,
+			unavailableReasons: ['CONDITION_NOT_MET']
+		}
+	];
+}
+
+function globalCouponCatalogResponse(onlyAvailable = false) {
+	const catalog = planningCouponCatalogResponse().map((coupon) => ({
+		code: coupon.code,
+		name: coupon.name,
+		conditionDescription: coupon.conditionDescription,
+		available: coupon.available,
+		unavailableReasons: coupon.unavailableReasons
+	}));
+
+	return onlyAvailable ? catalog.filter((coupon) => coupon.available) : catalog;
+}
+
+function normalizeCouponCodes(couponCodes) {
+	if (!Array.isArray(couponCodes) || couponCodes.length === 0) return [];
+	const normalized = [];
+	const seen = new Set();
+	for (const couponCode of couponCodes) {
+		if (couponCode == null || String(couponCode).trim() === '') {
+			return { error: 'Coupon code is required' };
+		}
+		const normalizedCode = String(couponCode).trim().toUpperCase();
+		if (seen.has(normalizedCode)) {
+			return { error: `Duplicate coupon code: ${normalizedCode}` };
+		}
+		seen.add(normalizedCode);
+		normalized.push(normalizedCode);
+	}
+	return { codes: normalized };
+}
+
+function validatePlanningCouponSelection(couponCodes) {
+	const normalized = normalizeCouponCodes(couponCodes);
+	if (normalized.error) {
+		return { error: normalized.error };
+	}
+
+	const catalog = planningCouponCatalogResponse();
+	const couponsByCode = new Map(catalog.map((coupon) => [coupon.code, coupon]));
+	for (const couponCode of normalized.codes) {
+		const coupon = couponsByCode.get(couponCode);
+		if (!coupon) {
+			return { error: `Unknown coupon code: ${couponCode}` };
+		}
+		if (!coupon.available) {
+			return { error: `Coupon ${couponCode} is not available` };
+		}
+	}
+
+	return { coupons: normalized.codes.map((couponCode) => couponsByCode.get(couponCode)) };
 }
 
 function userResponse(user) {
@@ -2053,6 +2155,73 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
+	const proposedWeekMenuCouponsMatch = url.pathname.match(/^\/api\/v1\/(?:proposed-week-menus|planning)\/(\d+)\/coupons$/);
+	if (proposedWeekMenuCouponsMatch && req.method === 'GET') {
+		const id = Number(proposedWeekMenuCouponsMatch[1]);
+		const menu = proposedWeekMenuById(id);
+		if (!menu) {
+			sendJson(res, 404, errorBody(404, 'Not Found', 'Proposed week menu not found', url.pathname));
+			return;
+		}
+
+		const payerUserId = Number(url.searchParams.get('payerUserId') ?? NaN);
+		if (![...users.values()].some((user) => user.id === payerUserId)) {
+			sendJson(res, 404, errorBody(404, 'Not Found', 'User not found', url.pathname));
+			return;
+		}
+
+		sendJson(res, 200, planningCouponCatalogResponse());
+		return;
+	}
+
+	const couponsMatch = url.pathname === '/api/v1/coupons' && req.method === 'GET';
+	if (couponsMatch) {
+		const payerUserId = Number(url.searchParams.get('payerUserId') ?? NaN);
+		if (!Number.isFinite(payerUserId) || payerUserId <= 0) {
+			sendJson(res, 400, errorBody(400, 'Bad Request', 'payerUserId is required', url.pathname));
+			return;
+		}
+		if (![...users.values()].some((user) => user.id === payerUserId)) {
+			sendJson(res, 404, errorBody(404, 'Not Found', 'User not found', url.pathname));
+			return;
+		}
+
+		const onlyAvailable = String(url.searchParams.get('onlyAvailable') ?? 'false').toLowerCase() === 'true';
+		sendJson(res, 200, globalCouponCatalogResponse(onlyAvailable));
+		return;
+	}
+
+	const proposedWeekMenuCouponsValidateMatch = url.pathname.match(/^\/api\/v1\/(?:proposed-week-menus|planning)\/(\d+)\/coupons\/validate$/);
+	if (proposedWeekMenuCouponsValidateMatch && req.method === 'POST') {
+		const id = Number(proposedWeekMenuCouponsValidateMatch[1]);
+		const menu = proposedWeekMenuById(id);
+		if (!menu) {
+			sendJson(res, 404, errorBody(404, 'Not Found', 'Proposed week menu not found', url.pathname));
+			return;
+		}
+
+		const payload = await parseBody(req).catch(() => null);
+		if (!payload) {
+			sendJson(res, 400, errorBody(400, 'Bad Request', 'Malformed JSON', url.pathname));
+			return;
+		}
+
+		const payerUserId = Number(payload.payerUserId ?? NaN);
+		if (![...users.values()].some((user) => user.id === payerUserId)) {
+			sendJson(res, 404, errorBody(404, 'Not Found', 'User not found', url.pathname));
+			return;
+		}
+
+		const validation = validatePlanningCouponSelection(payload.couponCodes);
+		if (validation.error) {
+			sendJson(res, 400, errorBody(400, 'Bad Request', validation.error, url.pathname));
+			return;
+		}
+
+		sendJson(res, 200, validation.coupons);
+		return;
+	}
+
 	const proposedWeekMenuPublishMatch = url.pathname.match(/^\/api\/v1\/(?:proposed-week-menus\/(\d+)\/publish|planning\/(\d+)\/menu)$/);
 	if (proposedWeekMenuPublishMatch && req.method === 'POST') {
 		const id = Number(proposedWeekMenuPublishMatch[1] ?? proposedWeekMenuPublishMatch[2]);
@@ -2187,6 +2356,86 @@ const server = http.createServer(async (req, res) => {
 		} catch (error) {
 			sendJson(res, 400, errorBody(400, 'Bad Request', error?.message || 'Invalid week stock', url.pathname));
 			return;
+		}
+
+		sendJson(res, 200, establishedWeekMenuResponse(menu));
+		return;
+	}
+
+	const establishedWeekMenuWeekStockTransferMatch = url.pathname.match(/^\/api\/v1\/menus\/(\d+)\/week-stock\/transfer$/);
+	if (establishedWeekMenuWeekStockTransferMatch && req.method === 'POST') {
+		const id = Number(establishedWeekMenuWeekStockTransferMatch[1]);
+		const menu = establishedWeekMenuById(id);
+		if (!menu) {
+			sendJson(res, 404, errorBody(404, 'Not Found', 'Established week menu not found', url.pathname));
+			return;
+		}
+
+		const payload = await parseBody(req).catch(() => null);
+		const stockEntryId = Number(payload?.stockEntryId);
+		const quantity = Number(payload?.quantity);
+		if (!Number.isFinite(stockEntryId) || stockEntryId <= 0) {
+			sendJson(res, 400, errorBody(400, 'Bad Request', 'stockEntryId must be a valid stock entry id', url.pathname));
+			return;
+		}
+		if (!Number.isFinite(quantity) || quantity <= 0) {
+			sendJson(res, 400, errorBody(400, 'Bad Request', 'quantity must be greater than 0', url.pathname));
+			return;
+		}
+
+		const stockEntry = stockEntryById(stockEntryId);
+		if (!stockEntry) {
+			sendJson(res, 404, errorBody(404, 'Not Found', 'Stock entry not found', url.pathname));
+			return;
+		}
+		if (quantity > Number(stockEntry.quantity)) {
+			sendJson(res, 400, errorBody(400, 'Bad Request', 'quantity cannot exceed the available stock entry quantity', url.pathname));
+			return;
+		}
+
+		const nextWeekStock = [
+			...(menu.weekStock ?? []),
+			{
+				productId: stockEntry.productId,
+				productName: stockEntry.productName,
+				quantity,
+				price: Number(stockEntry.price)
+			}
+		];
+
+		try {
+			const updated = replaceWeekStock(menu, nextWeekStock);
+			menu.weekStock = updated.weekStock;
+			menu.shoppingList = updated.shoppingList;
+		} catch (error) {
+			sendJson(res, 400, errorBody(400, 'Bad Request', error?.message || 'Invalid week stock transfer', url.pathname));
+			return;
+		}
+
+		const usedCost = Number((quantity * Number(stockEntry.price)).toFixed(2));
+		const existingUsedStock = Array.isArray(menu.usedStock) ? menu.usedStock.find((item) => item.stockEntryId === stockEntryId) : null;
+		if (existingUsedStock) {
+			existingUsedStock.usedUnits = Number((Number(existingUsedStock.usedUnits) + quantity).toFixed(2));
+			existingUsedStock.totalCost = Number((Number(existingUsedStock.totalCost) + usedCost).toFixed(2));
+		} else {
+			menu.usedStock = [
+				...(menu.usedStock ?? []),
+				{
+					stockEntryId,
+					productId: stockEntry.productId,
+					productName: stockEntry.productName,
+					usedUnits: quantity,
+					price: Number(stockEntry.price),
+					totalCost: usedCost,
+					expirationDate: stockEntry.expirationDate ?? null,
+					entryDate: stockEntry.entryDate
+				}
+			];
+		}
+
+		stockEntry.quantity = Number((Number(stockEntry.quantity) - quantity).toFixed(2));
+		if (stockEntry.quantity <= 0) {
+			stockEntries = stockEntries.filter((entry) => entry.id !== stockEntry.id);
 		}
 
 		sendJson(res, 200, establishedWeekMenuResponse(menu));

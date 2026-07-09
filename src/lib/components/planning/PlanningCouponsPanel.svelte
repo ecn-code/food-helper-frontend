@@ -1,10 +1,10 @@
 <script lang="ts">
-	import { CalendarClock, CircleAlert, CircleCheck, Clock, Percent, RefreshCw } from '@lucide/svelte';
+	import { CircleAlert, CircleCheck, Percent, RefreshCw } from '@lucide/svelte';
 	import Button from '$lib/components/ui/Button.svelte';
-	import type { PlanningCouponResponse } from '$lib/api/planning';
+	import type { CouponResponse } from '$lib/api/coupons';
 
 	type Props = {
-		coupons: PlanningCouponResponse[];
+		coupons: CouponResponse[];
 		loaded: boolean;
 		loading: boolean;
 		error: string | null;
@@ -26,49 +26,14 @@
 		onSelectedCodesChange,
 		onRetry,
 		emptyTitle = 'No hay cupones disponibles',
-		emptyMessage = 'Cuando el backend tenga reglas y cupones activos, aparecerán aquí con su estado y tiempos de reutilización.'
+		emptyMessage = 'Cuando el backend tenga cupones activos, aparecerán aquí con su estado.',
 	}: Props = $props();
 
-	type ConditionSegment =
-		| {
-				type: 'text';
-				value: string;
-		  }
-		| {
-				type: 'product';
-				label: string;
-				productId: number;
-		  };
-
-	function money(value: number) {
-		return new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR' }).format(value);
+	function availabilityLabel(coupon: CouponResponse) {
+		return coupon.available ? 'Disponible' : 'No disponible';
 	}
 
-	function formatDateTime(value: string | null) {
-		if (!value) return '-';
-		const parsed = new Date(value);
-		if (Number.isNaN(parsed.getTime())) return '-';
-		return new Intl.DateTimeFormat('es-ES', {
-			dateStyle: 'medium',
-			timeStyle: 'short'
-		}).format(parsed);
-	}
-
-	function reasonLabel(reason: string) {
-		if (reason === 'CONDITION_NOT_MET') return 'La planificación actual no cumple la condición';
-		if (reason === 'USED_WITHIN_PERIOD') return 'Aún está en periodo de reutilización';
-		return reason;
-	}
-
-	function availabilityLabel(coupon: PlanningCouponResponse) {
-		if (coupon.informativeAvailabilityState === 'AVAILABLE' || coupon.available) return 'Disponible';
-		if (coupon.informativeAvailabilityState === 'CONDITION_NOT_MET') return 'No cumple condiciones';
-		if (coupon.informativeAvailabilityState === 'USED_RECENTLY') return 'Usado recientemente';
-		if (coupon.informativeAvailabilityState === 'CONDITION_NOT_MET_AND_USED_RECENTLY') return 'Bloqueado por ambas causas';
-		return coupon.available ? 'Disponible' : 'Bloqueado';
-	}
-
-	function availabilityTone(coupon: PlanningCouponResponse) {
+	function availabilityTone(coupon: CouponResponse) {
 		return coupon.available ? 'bg-emerald-600/10 text-emerald-700' : 'bg-amber-600/10 text-amber-700';
 	}
 
@@ -80,38 +45,11 @@
 		onSelectedCodesChange(next);
 	}
 
-	function conditionDescriptionSegments(description: string): ConditionSegment[] {
-		const segments: ConditionSegment[] = [];
-		const pattern = /product\s+(\d+)/gi;
-		let lastIndex = 0;
-		let match: RegExpExecArray | null;
-
-		while ((match = pattern.exec(description)) !== null) {
-			if (match.index > lastIndex) {
-				segments.push({
-					type: 'text',
-					value: description.slice(lastIndex, match.index)
-				});
-			}
-
-			segments.push({
-				type: 'product',
-				label: match[0].slice(0, match[0].length - match[1].length).trimEnd(),
-				productId: Number(match[1])
-			});
-			lastIndex = pattern.lastIndex;
-		}
-
-		if (lastIndex < description.length) {
-			segments.push({
-				type: 'text',
-				value: description.slice(lastIndex)
-			});
-		}
-
-		return segments.length > 0 ? segments : [{ type: 'text', value: description }];
+	function reasonLabel(reason: string) {
+		if (reason === 'CONDITION_NOT_MET') return 'La planificación no cumple la condición';
+		if (reason === 'USED_WITHIN_PERIOD') return 'Aún está en periodo de reutilización';
+		return reason;
 	}
-
 </script>
 
 <section class="space-y-4" data-testid="planning-coupons-panel">
@@ -137,7 +75,7 @@
 			</div>
 			<h3 class="mt-4 text-sm font-semibold text-[hsl(var(--foreground))]">Cargando cupones</h3>
 			<p class="mt-1 max-w-sm text-sm text-[hsl(var(--muted-foreground))]">
-				Estamos consultando los cupones disponibles para este pagador y esta planificación.
+				Estamos consultando los cupones disponibles para este pagador.
 			</p>
 		</div>
 	{:else if coupons.length === 0}
@@ -175,71 +113,16 @@
 									{availabilityLabel(coupon)}
 								</span>
 							</div>
-							<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">{coupon.code}</p>
-							<p class="mt-2 text-sm leading-6 text-[hsl(var(--muted-foreground))]">
-								{#each conditionDescriptionSegments(coupon.conditionDescription) as segment, index (index)}
-									{#if segment.type === 'text'}
-										{segment.value}
-									{:else}
-										{segment.label}
-										{' '}
-										<a
-											href={`?productId=${segment.productId}#products`}
-											class="font-medium text-[hsl(var(--primary))] underline underline-offset-2 hover:text-[hsl(var(--primary)/0.8)]"
-										>
-											{segment.productId}
-										</a>
-									{/if}
-								{/each}
-							</p>
+							<p class="mt-2 text-sm leading-6 text-[hsl(var(--muted-foreground))]">{coupon.conditionDescription}</p>
 						</div>
 						<div class="grid size-10 shrink-0 place-items-center rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--background))] text-[hsl(var(--muted-foreground))]">
 							<Percent class="size-4" aria-hidden="true" />
 						</div>
 					</div>
 
-					<dl class="mt-4 grid grid-cols-2 gap-2 text-sm">
-						<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-2.5">
-							<dt class="flex items-center gap-1.5 text-xs text-[hsl(var(--muted-foreground))]">
-								<CircleCheck class="size-3.5" aria-hidden="true" />
-								Recompensa
-							</dt>
-							<dd class="mt-1 font-medium tabular-nums">{money(coupon.rewardAmount)}</dd>
-						</div>
-						<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-2.5">
-							<dt class="flex items-center gap-1.5 text-xs text-[hsl(var(--muted-foreground))]">
-								<Clock class="size-3.5" aria-hidden="true" />
-								Cuarentena
-							</dt>
-							<dd class="mt-1 font-medium tabular-nums">{coupon.periodDays} d</dd>
-						</div>
-						<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-2.5">
-							<dt class="text-xs text-[hsl(var(--muted-foreground))]">Cumple condiciones</dt>
-							<dd class="mt-1 font-medium">{coupon.conditionMet ? 'Sí' : 'No'}</dd>
-						</div>
-						<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-2.5">
-							<dt class="text-xs text-[hsl(var(--muted-foreground))]">Uso reciente</dt>
-							<dd class="mt-1 font-medium">{coupon.usedRecently ? 'Sí' : 'No'}</dd>
-						</div>
-						<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-2.5">
-							<dt class="flex items-center gap-1.5 text-xs text-[hsl(var(--muted-foreground))]">
-								<CalendarClock class="size-3.5" aria-hidden="true" />
-								Último uso
-							</dt>
-							<dd class="mt-1 text-xs leading-5">{formatDateTime(coupon.lastUsedAt)}</dd>
-						</div>
-						<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-2.5">
-							<dt class="flex items-center gap-1.5 text-xs text-[hsl(var(--muted-foreground))]">
-								<Clock class="size-3.5" aria-hidden="true" />
-								Disponible otra vez
-							</dt>
-							<dd class="mt-1 text-xs leading-5">{formatDateTime(coupon.nextAvailableAt)}</dd>
-						</div>
-					</dl>
-
 					{#if !coupon.available}
 						<div class="mt-4 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-3">
-							<p class="text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted-foreground))]">Condiciones</p>
+							<p class="text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted-foreground))]">Motivos</p>
 							<ul class="mt-2 space-y-1 text-sm leading-5 text-[hsl(var(--foreground))]">
 								{#if coupon.unavailableReasons && coupon.unavailableReasons.length > 0}
 									{#each coupon.unavailableReasons as reason}

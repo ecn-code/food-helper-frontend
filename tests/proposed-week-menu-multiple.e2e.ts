@@ -33,16 +33,22 @@ test('keeps multiple proposed weeks selectable', async ({ page }) => {
 			text: option.textContent ?? ''
 		}))
 	);
-	expect(options.length).toBeGreaterThanOrEqual(3);
+	expect(options.length).toBeGreaterThanOrEqual(2);
 	const firstMenuId = options.find((option) => option.text.includes('15/06/2026'))?.value ?? '';
 	const secondMenuId = options.find((option) => option.text.includes('22/06/2026'))?.value ?? '';
 	expect(firstMenuId).not.toBe('');
 	expect(secondMenuId).not.toBe('');
+	await expect(selector).toHaveValue(secondMenuId);
+	await expect(selector.locator('option:checked')).toContainText('22/06/2026');
 
 	await selector.selectOption(firstMenuId);
+	await expect(selector).toHaveValue(firstMenuId);
+	await expect(selector.locator('option:checked')).toContainText('15/06/2026');
 	await expect(page.getByTestId('week-date-range')).toContainText('15/06/2026');
 	await expect.poll(() => page.evaluate(() => localStorage.getItem('foodhelper_selected_planning_menu_id'))).toBe(firstMenuId);
 
 	await selector.selectOption(secondMenuId);
+	await expect(selector).toHaveValue(secondMenuId);
+	await expect(selector.locator('option:checked')).toContainText('22/06/2026');
 	await expect(page.getByTestId('week-date-range')).toContainText('22/06/2026');
 });

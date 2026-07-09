@@ -1,10 +1,17 @@
-import { expect, test, type APIRequestContext } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 
 const useRealBackend = process.env.E2E_REAL_BACKEND === '1';
 const mockBackendUrl = process.env.MOCK_BACKEND_URL || 'http://127.0.0.1:4010';
 const backendUrl = useRealBackend
 	? (process.env.PUBLIC_BACKEND_BASE_URL ?? 'http://127.0.0.1:8080')
 	: mockBackendUrl;
+
+async function loginAs(page: Page, username: string) {
+	await page.getByTestId('login-username').fill(username);
+	await page.getByTestId('login-password').fill('secret-password');
+	await page.getByTestId('login-submit').click();
+	await expect(page.getByText(username, { exact: true }).first()).toBeVisible();
+}
 
 test.beforeEach(async ({ request }) => {
 	if (!useRealBackend) {
@@ -29,9 +36,7 @@ test('cierra un menú con varias personas y rechaza el cierre sin selección', a
 	await registerUser(request, collaborator);
 
 	await page.goto('/');
-	await page.getByTestId('login-username').fill('elias');
-	await page.getByTestId('login-password').fill('secret-password');
-	await page.getByTestId('login-submit').click();
+	await loginAs(page, 'elias');
 
 	await page.getByRole('link', { name: 'Planificación' }).click();
 	await page.getByRole('button', { name: 'Nueva semana' }).click();
@@ -64,9 +69,7 @@ test('permite ajustar el stock temporal del menu y reducir la lista de la compra
 				`http://127.0.0.1:${process.env.MOCK_BACKEND_PORT || 4010}`;
 
 	await page.goto('/');
-	await page.getByTestId('login-username').fill('elias');
-	await page.getByTestId('login-password').fill('secret-password');
-	await page.getByTestId('login-submit').click();
+	await loginAs(page, 'elias');
 
 	const session = await page.evaluate(() => {
 		const raw = localStorage.getItem('foodhelper_session');
@@ -80,6 +83,7 @@ test('permite ajustar el stock temporal del menu y reducir la lista de la compra
 	const weekResponse = await page.request.post(`${backendBaseUrl}/api/v1/proposed-week-menus`, {
 		headers: authHeaders,
 		data: {
+			users: 1,
 			startDate: '2026-07-08',
 			endDate: '2026-07-14'
 		}
@@ -120,6 +124,7 @@ test('permite ajustar el stock temporal del menu y reducir la lista de la compra
 	const dummyWeekResponse = await page.request.post(`${backendBaseUrl}/api/v1/proposed-week-menus`, {
 		headers: authHeaders,
 		data: {
+			users: 1,
 			startDate: '2026-07-22',
 			endDate: '2026-07-28'
 		}
@@ -139,7 +144,107 @@ test('permite ajustar el stock temporal del menu y reducir la lista de la compra
 	await page.reload();
 	await page.getByTestId('app-ready').waitFor();
 	await page.getByRole('link', { name: 'Menú', exact: true }).click();
-	await expect(page.getByTestId('menu-period-selector')).toBeVisible();
+	const menuSelector = page.getByTestId('menu-period-selector');
+	await expect(menuSelector).toBeVisible();
+	await expect(menuSelector).not.toHaveValue('');
+	await expect(menuSelector.locator('option:checked')).not.toHaveText('');
+	await page.evaluate((menuId) => {
+		const select = document.querySelector('[data-testid="menu-period-selector"]') as HTMLSelectElement | null;
+		if (!select) return;
+		select.value = String(menuId);
+		select.dispatchEvent(new Event('change', { bubbles: true }));
+	}, establishedMenu.id);
+	await expect(menuSelector).toHaveValue(String(establishedMenu.id));
+	await expect(menuSelector.locator('option:checked')).toHaveAttribute('value', String(establishedMenu.id));
+
+	await expect(page.getByTestId('menu-week-panel')).toBeVisible();
+	await expect(page.getByTestId('menu-week-panel')).toContainText('1 productos pendientes');
+	await expect(page.getByTestId('menu-week-panel')).toContainText('Apple');
+
+	await page.getByTestId('menu-week-panel-toggle').click();
+	await page.getByTestId('menu-week-open-shopping-list-dialog').click();
+	await expect(page.getByTestId('menu-week-shopping-list-dialog')).toBeVisible();
+	const stockProductSelector = page.getByTestId('menu-week-stock-product');
+	await stockProductSelector.selectOption('1');
+	await page.getByTestId('menu-week-stock-quantity').fill('1');
+	await page.getByTestId('menu-week-stock-price').fill('2.5');
+	await page.getByTestId('menu-week-stock-add').click();
+
+	await expect(page.getByTestId('menu-week-panel')).toContainText('0 productos pendientes');
+	await expect(page.getByTestId('menu-week-panel')).toContainText('No hay productos pendientes.');
+	await expect(page.getByTestId('menu-week-shopping-list-dialog')).toHaveCount(0);
+	await page.getByTestId('menu-week-open-catalog-dialog').click();
+	await expect(page.getByTestId('menu-week-catalog-dialog')).toBeVisible();
+	const catalogSearch = page.getByTestId('menu-week-catalog-search').getByTestId('stock-product-search-input');
+	await catalogSearch.fill('Ap');
+	await expect(page.getByTestId('menu-week-catalog-search').getByTestId('stock-product-search-option-1')).toBeVisible();
+	await page.getByTestId('menu-week-catalog-search').getByTestId('stock-product-search-option-1').click();
+	await page.getByTestId('menu-week-catalog-quantity').fill('2');
+	await page.getByTestId('menu-week-catalog-price').fill('3.1');
+	await page.getByTestId('menu-week-catalog-add').click();
+
+	await expect(page.getByTestId('menu-week-catalog-dialog')).toHaveCount(0);
+	await expect(page.getByTestId('menu-week-panel')).toContainText('2 productos');
+	await expect(page.getByTestId('menu-week-stock-item-0')).toContainText('Apple');
+	await expect(page.getByTestId('menu-week-stock-item-0')).toContainText('1 uds · 2,50 €');
+	await expect(page.getByTestId('menu-week-stock-item-1')).toContainText('Apple');
+	await expect(page.getByTestId('menu-week-stock-item-1')).toContainText('2 uds · 3,10 €');
+});
+
+test('limita la cantidad del stock global al maximo disponible', async ({ page, request }) => {
+	const backendBaseUrl =
+		process.env.E2E_REAL_BACKEND === '1'
+			? process.env.PUBLIC_BACKEND_BASE_URL || 'http://127.0.0.1:8080'
+			: process.env.MOCK_BACKEND_URL ||
+				`http://127.0.0.1:${process.env.MOCK_BACKEND_PORT || 4010}`;
+
+	await page.goto('/');
+	await loginAs(page, 'elias');
+
+	const session = await page.evaluate(() => {
+		const raw = localStorage.getItem('foodhelper_session');
+		return raw ? JSON.parse(raw) : null;
+	});
+	expect(session).not.toBeNull();
+	const authHeaders = {
+		Authorization: `${session.tokenType} ${session.accessToken}`
+	};
+
+	const weekResponse = await page.request.post(`${backendBaseUrl}/api/v1/proposed-week-menus`, {
+		headers: authHeaders,
+		data: {
+			users: 1,
+			startDate: '2026-08-05',
+			endDate: '2026-08-11'
+		}
+	});
+	expect(weekResponse.ok()).toBeTruthy();
+	const week = await weekResponse.json();
+
+	const publishResponse = await page.request.post(`${backendBaseUrl}/api/v1/planning/${week.id}/menu`, {
+		headers: authHeaders,
+		data: {
+			payerUserId: 1,
+			personIds: [1]
+		}
+	});
+	expect(publishResponse.ok()).toBeTruthy();
+	const establishedMenu = await publishResponse.json();
+
+	const stockResponse = await page.request.post(`${backendBaseUrl}/api/v1/products/1/stock`, {
+		headers: authHeaders,
+		data: {
+			quantity: 4.5,
+			price: 2.5,
+			expirationDate: '2026-08-20',
+			entryDate: '2026-08-05'
+		}
+	});
+	expect(stockResponse.ok()).toBeTruthy();
+
+	await page.reload();
+	await page.getByTestId('app-ready').waitFor();
+	await page.getByRole('link', { name: 'Menú', exact: true }).click();
 	await page.evaluate((menuId) => {
 		const select = document.querySelector('[data-testid="menu-period-selector"]') as HTMLSelectElement | null;
 		if (!select) return;
@@ -147,16 +252,41 @@ test('permite ajustar el stock temporal del menu y reducir la lista de la compra
 		select.dispatchEvent(new Event('change', { bubbles: true }));
 	}, establishedMenu.id);
 
-	await expect(page.getByTestId('menu-week-panel')).toBeVisible();
-	await expect(page.getByTestId('menu-week-panel')).toContainText('1 productos pendientes');
-	await expect(page.getByTestId('menu-week-panel')).toContainText('Apple');
+	const panelContent = page.locator('#menu-week-panel-content');
+	if (!(await panelContent.isVisible())) {
+		await page.getByTestId('menu-week-panel-toggle').click();
+	}
+	await Promise.all([
+		page.waitForResponse((response) =>
+			response.request().method() === 'GET' &&
+			response.url().includes('/api/v1/stock') &&
+			response.status() === 200
+		),
+		page.getByTestId('menu-week-open-global-stock-dialog').click()
+	]);
+	await expect(page.getByTestId('menu-week-global-stock-dialog')).toBeVisible();
+	const stockSearch = page.getByTestId('menu-week-global-stock-search-entry');
+	await stockSearch.fill('App');
+	await expect(page.getByTestId('menu-week-global-stock-entry')).toContainText('uds');
+	await page.getByTestId('menu-week-global-stock-entry').focus();
+	await page.keyboard.press('ArrowDown');
+	await page.keyboard.press('Enter');
+	await expect(page.getByTestId('menu-week-global-stock-entry')).not.toHaveValue('');
+	await expect(page.getByTestId('menu-week-global-stock-quantity')).toHaveValue('4.5');
 
-	await page.getByTestId('menu-week-stock-product').selectOption('1');
-	await page.getByTestId('menu-week-stock-quantity').fill('1');
-	await page.getByTestId('menu-week-stock-add').click();
+	await page.getByTestId('menu-week-global-stock-quantity').fill('10');
+	await expect(page.getByTestId('menu-week-global-stock-quantity')).toHaveValue('4.5');
 
-	await expect(page.getByTestId('menu-week-panel')).toContainText('0 productos pendientes');
-	await expect(page.getByTestId('menu-week-panel')).toContainText('No hay productos pendientes.');
+	await Promise.all([
+		page.waitForResponse((response) =>
+			response.request().method() === 'POST' &&
+			response.url().endsWith(`/api/v1/menus/${establishedMenu.id}/week-stock/transfer`) &&
+			response.status() === 200
+		),
+		page.getByTestId('menu-week-global-stock-add').click()
+	]);
+	await expect(page.getByTestId('menu-week-global-stock-dialog')).toHaveCount(0);
+	await expect(page.getByTestId('menu-week-stock-item-0')).toContainText('Apple');
 });
 
 test('recuerda el estado colapsado del bloque de menú en el navegador', async ({ page }) => {
@@ -167,9 +297,7 @@ test('recuerda el estado colapsado del bloque de menú en el navegador', async (
 				`http://127.0.0.1:${process.env.MOCK_BACKEND_PORT || 4010}`;
 
 	await page.goto('/');
-	await page.getByTestId('login-username').fill('elias');
-	await page.getByTestId('login-password').fill('secret-password');
-	await page.getByTestId('login-submit').click();
+	await loginAs(page, 'elias');
 
 	const session = await page.evaluate(() => {
 		const raw = localStorage.getItem('foodhelper_session');
@@ -262,26 +390,40 @@ test('recuerda el estado colapsado del bloque de menú en el navegador', async (
 	await expect(page.locator('#menu-week-panel-content')).toBeHidden();
 });
 
-test('crea, edita y elimina pesos desde la pantalla de personas', async ({ page }) => {
+test('selecciona al usuario logado y permite gestionar sus pesos', async ({ page, request }) => {
+	const username = `weights-${Date.now()}`;
+	await registerUser(request, username);
 	await page.goto('/');
-	await page.getByTestId('login-username').fill('elias');
-	await page.getByTestId('login-password').fill('secret-password');
-	await page.getByTestId('login-submit').click();
+	await loginAs(page, username);
+	const loggedUserId = await page.evaluate(() => {
+		const raw = localStorage.getItem('foodhelper_session');
+		return raw ? String(JSON.parse(raw).userId) : '';
+	});
 
 	await page.getByRole('link', { name: 'Pesos' }).click();
 	await expect(page.getByTestId('people-panel')).toBeVisible();
-	await expect(page.getByTestId('people-user-selector')).toBeVisible();
+	const userSelector = page.getByTestId('people-user-selector');
+	await expect(userSelector).toBeVisible();
+	await expect(userSelector).toHaveValue(loggedUserId);
+	await expect(userSelector.locator('option:checked')).toHaveText(username);
 
 	await page.getByTestId('people-weight-input').fill('72.4');
-	await page.getByTestId('people-weight-date').fill('2026-06-29');
+	const today = await page.evaluate(() => {
+		const date = new Date();
+		const year = date.getFullYear();
+		const month = String(date.getMonth() + 1).padStart(2, '0');
+		const day = String(date.getDate()).padStart(2, '0');
+		return `${year}-${month}-${day}`;
+	});
+	await page.getByTestId('people-weight-date').fill(today);
 	await page.getByTestId('people-weight-notes').fill('Peso inicial');
 	await page.getByTestId('people-weight-save').click();
-	await expect(page.locator('tbody tr').filter({ hasText: '72,4 kg' })).toHaveCount(1);
+	await expect(page.locator('tbody tr').filter({ hasText: '72,40 kg' })).toHaveCount(1);
 
 	await page.locator('[data-testid^="people-weight-edit-"]').first().click();
 	await page.getByTestId('people-weight-input').fill('73.1');
 	await page.getByTestId('people-weight-save').click();
-	await expect(page.locator('tbody tr').filter({ hasText: '73,1 kg' })).toHaveCount(1);
+	await expect(page.locator('tbody tr').filter({ hasText: '73,10 kg' })).toHaveCount(1);
 
 	page.once('dialog', (dialog) => dialog.accept());
 	await page.locator('[data-testid^="people-weight-delete-"]').first().click();

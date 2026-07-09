@@ -44,12 +44,19 @@ export type EstablishedWeekMenuWeekStockItemResponse = {
 	productId: number;
 	productName: string;
 	quantity: number;
+	price: number;
 };
 
 export type EstablishedWeekMenuShoppingListItemResponse = {
 	productId: number;
 	productName: string;
 	missingUnits: number;
+	price?: number | null;
+};
+
+export type CreateMenuStockTransferRequest = {
+	stockEntryId: number;
+	quantity: number;
 };
 
 export type ManualStockAllocationRequest = {
@@ -182,8 +189,24 @@ export async function updateMenuWeekStock(
 		body: JSON.stringify({
 			weekStock: weekStock.map((item) => ({
 				productId: Number(item.productId),
-				quantity: Number(item.quantity)
+				quantity: Number(item.quantity),
+				price: Number(item.price)
 			}))
+		})
+	});
+}
+
+export async function transferStockToWeekStock(
+	id: number,
+	values: CreateMenuStockTransferRequest,
+	authorization: string
+) {
+	return await request<EstablishedWeekMenuResponse>(`/api/v1/menus/${id}/week-stock/transfer`, {
+		method: 'POST',
+		headers: authHeaders(authorization),
+		body: JSON.stringify({
+			stockEntryId: Number(values.stockEntryId),
+			quantity: Number(values.quantity),
 		})
 	});
 }

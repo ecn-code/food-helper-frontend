@@ -538,14 +538,14 @@
 					<span class="text-sm font-medium text-[hsl(var(--foreground))]">Período</span>
 					<select
 						class="h-10 w-full rounded-md border border-[hsl(var(--input))] bg-white px-3 text-sm focus:border-[hsl(var(--ring))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--ring)/0.2)]"
-						value={selectedMenuId}
+						value={selectedMenuId || String(orderedMenus[0]?.id ?? '')}
 						onchange={handleMenuSelection}
 						disabled={!loaded || orderedMenus.length === 0}
 						data-testid="menu-period-selector"
 					>
 						{#if orderedMenus.length === 0}<option value="">No hay períodos disponibles</option>{/if}
 						{#each orderedMenus as menu (menu.id)}
-							<option value={menu.id}>{menuLabel(menu)}</option>
+							<option value={String(menu.id)}>{menuLabel(menu)}</option>
 						{/each}
 					</select>
 					{#if selectedMenu && filterMode === 'menu'}
