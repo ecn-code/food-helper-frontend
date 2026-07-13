@@ -33,6 +33,8 @@
 		WifiOff,
 		Search,
 		Percent,
+		ChevronLeft,
+		ChevronRight,
 		Store,
 		PiggyBank,
 		SlidersHorizontal,
@@ -81,7 +83,7 @@
 	} from '$lib/api/proposed-week-menus';
 	import {
 		getEstablishedWeekMenu as getEstablishedWeekMenuRequest,
-		listMenus as listMenusRequest,
+		listMenusPage as listMenusPageRequest,
 		publishProposedWeekMenu as publishProposedWeekMenuRequest,
 		undoEstablishedWeekMenu as undoEstablishedWeekMenuRequest
 	} from '$lib/api/established-week-menus';
@@ -401,6 +403,14 @@
 		createRecipeDerivedProductDefaults: RecipeDerivedProductFormValues;
 	};
 
+	type ClosedMenusPage = {
+		items: EstablishedWeekMenu[];
+		page: number;
+		size: number;
+		totalElements: number;
+		totalPages: number;
+	};
+
 	type KnownProposedWeekMenu = {
 		id: number;
 		startDate: string;
@@ -417,6 +427,7 @@
 	const fieldErrorClass = 'mt-1.5 block text-xs text-[hsl(var(--destructive))]';
 	const PRODUCT_PAGE_SIZE = 20;
 	const RECIPE_PAGE_SIZE = 20;
+	const CLOSED_MENU_PAGE_SIZE = 8;
 	const BACKEND_HEALTH_RETRY_INITIAL_DELAY_MS = 5_000;
 	const BACKEND_HEALTH_RETRY_MAX_DELAY_MS = 60_000;
 	const PRODUCT_QUERY_PARAM = 'productId';
@@ -478,12 +489,19 @@
 	let selectedPlanningMenuId = $state<number | null>(null);
 	let selectedMenuId = $state<number | null>(null);
 	let selectedClosedMenuId = $state<number | null>(null);
+	let menuCloseDialogNonce = $state(0);
 	let planningShoppingListDialogOpen = $state(false);
 	let planningShoppingListDialogNonce = $state(0);
 	let sectionLoading = $state(false);
 	let sectionLoadingLabel = $state('');
 	let sectionLoadingToken = 0;
 	let menus = $state<EstablishedWeekMenu[]>([]);
+	let closedMenusPage = $state<ClosedMenusPage | null>(null);
+	let closedMenusPageLoading = $state(false);
+	let closedMenusPageLoaded = $state(false);
+	let closedMenusPageLoadedAt = $state(0);
+	let closedMenusPageLoadedIndex = $state<number | null>(null);
+	let closedMenusPageError = $state<string | null>(null);
 	let createPhotoPreview = $state<PhotoPreview | null>(null);
 	let editPhotoPreview = $state<PhotoPreview | null>(null);
 	let brokenProductPhotoUrls = $state<Record<SignedPhoto, true>>({});
@@ -550,7 +568,7 @@
 	const planningSummary = $derived(weekPlanningSummary());
 	const planningDayList = $derived(weekDays());
 	const activeEstablishedMenu = $derived(
-		data.establishedWeekMenu ?? menus.find((menu) => planningStateByMenuId(menu.id) === 'ESTABLISHED') ?? null
+		data.establishedWeekMenu ?? menus.find((menu) => menu.isActive) ?? menus.find((menu) => menu.state === 'ESTABLISHED') ?? null
 	);
 	let recipesRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 	let loginSuccessTimer: ReturnType<typeof setTimeout> | null = null;
@@ -714,12 +732,17 @@
 
 	function setSection(section: SectionMode, options: { updateHash?: boolean } = {}) {
 		const { updateHash = true } = options;
+		const leavingMenus = currentSection === 'menus' && section !== 'menus';
 
 		if (section === 'products' || section === 'recipes') {
 			resetCatalogFilters();
 			if (section === 'recipes') {
 				recipesListNeedsReload = true;
 			}
+		}
+
+		if (leavingMenus) {
+			menuCloseDialogNonce = 0;
 		}
 
 		currentSection = section;
@@ -737,6 +760,11 @@
 		await tick();
 		try {
 			await refreshCurrentView(authSession);
+		} catch (error) {
+			if (handleExpiredSession(error)) {
+				return;
+			}
+			data.backendError = error instanceof ApiError ? error.message : 'No se pudieron cargar los datos.';
 		} finally {
 			if (token === sectionLoadingToken) {
 				sectionLoading = false;
@@ -896,6 +924,12 @@
 			message,
 			items
 		};
+	}
+
+	function openApiErrorDialog(title: string, error: unknown, fallbackMessage: string) {
+		openValidationDialog(title, fallbackMessage, [
+			error instanceof ApiError ? error.message : fallbackMessage
+		]);
 	}
 
 	function labeledValidationItems(entries: Array<[string, string | undefined]>) {
@@ -1159,6 +1193,7 @@
 		data.proposedWeekMenu = null;
 		data.establishedWeekMenu = null;
 		data.menus = [];
+		closedMenusPage = null;
 		data.proposedWeekMenuDayParts = [];
 		data.productStats = null;
 		productStatsLoading = false;
@@ -1175,6 +1210,7 @@
 		data.proposedWeekMenuLoaded = false;
 		data.establishedWeekMenuLoaded = false;
 		data.menusLoaded = false;
+		closedMenusPageLoaded = false;
 		data.proposedWeekMenuDayPartsLoaded = false;
 		data.productStatsLoaded = false;
 		data.recipeStatsLoaded = false;
@@ -1185,6 +1221,9 @@
 		proposedWeekMenuLoadedAt = 0;
 		establishedWeekMenuLoadedAt = 0;
 		menusLoadedAt = 0;
+		closedMenusPageLoadedAt = 0;
+		closedMenusPageLoadedIndex = null;
+		closedMenusPageError = null;
 		proposedWeekMenuDayPartsLoadedAt = 0;
 		productFilters = emptyProductFilters();
 		recipeFilters = emptyRecipeFilters();
@@ -1611,16 +1650,8 @@
 		return `Menú #${menu.id} · ${weekDateRangeLabel(menu.startDate, menu.endDate)} · ${menu.payerUsername}`;
 	}
 
-	function planningStateByMenuId(menuId: number) {
-		return planningMenus.find((menu) => menu.menuId === menuId)?.state ?? null;
-	}
-
-	function inProgressMenus() {
-		return menus.filter((menu) => planningStateByMenuId(menu.id) === 'ESTABLISHED');
-	}
-
 	function closedMenus() {
-		return menus.filter((menu) => planningStateByMenuId(menu.id) === 'CLOSED');
+		return closedMenusPage?.items ?? [];
 	}
 
 	async function loadPlanningMenus(session = authSession) {
@@ -1716,19 +1747,72 @@
 	async function loadMenus(session = authSession) {
 		if (!session) return;
 		const authorization = authorizationHeader(session);
-		menus = (await listMenusRequest(authorization)).map((menu) => toEstablishedWeekMenuModel(menu));
+		const firstPage = await listMenusPageRequest(authorization, { page: 0, size: 100, state: 'ESTABLISHED' });
+		const extraPages = await Promise.all(
+			Array.from({ length: Math.max(0, firstPage.totalPages - 1) }, async (_, index) =>
+				await listMenusPageRequest(authorization, { page: index + 1, size: 100, state: 'ESTABLISHED' })
+			)
+		);
+		const allMenus = [firstPage, ...extraPages].flatMap((page) => page.items);
+		menus = allMenus.map((menu) => toEstablishedWeekMenuModel(menu));
 		data.menus = menus;
 		data.menusLoaded = true;
 		menusLoadedAt = Date.now();
-		if (selectedMenuId && !inProgressMenus().some((menu) => menu.id === selectedMenuId)) {
-			selectedMenuId = inProgressMenus()[0]?.id ?? null;
+		const availableMenuIds = new Set(menus.map((menu) => menu.id));
+		if (selectedMenuId && !availableMenuIds.has(selectedMenuId)) {
+			selectedMenuId = null;
 		}
-		if (
-			selectedMenuId &&
-			inProgressMenus().some((menu) => menu.id === selectedMenuId) &&
-			(!data.establishedWeekMenuLoaded || activeEstablishedWeekMenuId !== selectedMenuId)
-		) {
+		if (!selectedMenuId) {
+			selectedMenuId = menus[0]?.id ?? null;
+		}
+		if (selectedMenuId && (!data.establishedWeekMenuLoaded || activeEstablishedWeekMenuId !== selectedMenuId)) {
 			await loadEstablishedWeekMenu(session, selectedMenuId, 'selected');
+		}
+	}
+
+	async function loadClosedMenusPage(session = authSession, page = 0, force = false) {
+		if (!session) return;
+
+		const numericPage = Math.max(0, Math.trunc(page));
+		if (!force && closedMenusPageLoaded && closedMenusPageLoadedIndex === numericPage && closedMenusPageLoadedAt > 0) {
+			return;
+		}
+
+		const authorization = authorizationHeader(session);
+		closedMenusPageLoading = true;
+		closedMenusPageError = null;
+		try {
+			const response = await listMenusPageRequest(authorization, {
+				page: numericPage,
+				size: CLOSED_MENU_PAGE_SIZE,
+				state: 'CLOSED'
+			});
+			closedMenusPage = {
+				...response,
+				items: response.items.map((menu) => toEstablishedWeekMenuModel(menu))
+			};
+			closedMenusPageLoaded = true;
+			closedMenusPageLoadedAt = Date.now();
+			closedMenusPageLoadedIndex = numericPage;
+			if (!selectedClosedMenuId && closedMenusPage.items.length > 0) {
+				await loadEstablishedWeekMenu(session, closedMenusPage.items[0].id, 'closed');
+			} else if (
+				selectedClosedMenuId &&
+				(!data.establishedWeekMenuLoaded || activeEstablishedWeekMenuId !== selectedClosedMenuId)
+			) {
+				await loadEstablishedWeekMenu(session, selectedClosedMenuId, 'closed');
+			}
+		} catch (error) {
+			if (handleExpiredSession(error)) {
+				return;
+			}
+			closedMenusPage = null;
+			closedMenusPageLoaded = true;
+			closedMenusPageLoadedAt = Date.now();
+			closedMenusPageLoadedIndex = numericPage;
+			closedMenusPageError = error instanceof ApiError ? error.message : 'No se pudieron cargar los menús cerrados.';
+		} finally {
+			closedMenusPageLoading = false;
 		}
 	}
 
@@ -1752,21 +1836,16 @@
 		}
 	}
 
+	function requestMenuCloseDialog() {
+		menuCloseDialogNonce += 1;
+	}
+
 	async function selectClosedMenu(menuId: number) {
-		const menu = menus.find((item) => item.id === menuId) ?? null;
-		if (!authSession || !menu || menuId === selectedClosedMenuId) return;
+		if (!authSession || menuId === selectedClosedMenuId) return;
 
 		selectedClosedMenuId = menuId;
 		if (typeof window !== 'undefined') {
 			window.localStorage.setItem('foodhelper_selected_closed_menu_id', String(menuId));
-		}
-
-		const planningMenu = planningMenus.find((item) => item.menuId === menuId) ?? null;
-		if (planningMenu) {
-			selectedPlanningMenuId = planningMenu.id;
-			if (typeof window !== 'undefined') {
-				window.localStorage.setItem('foodhelper_selected_planning_menu_id', String(planningMenu.id));
-			}
 		}
 
 		try {
@@ -2038,10 +2117,6 @@
 			return;
 		}
 
-		if (!isCacheFresh(data.planningMenusLoaded, planningMenusLoadedAt, force)) {
-			await loadPlanningMenus(session);
-		}
-
 		if (!isCacheFresh(data.menusLoaded, menusLoadedAt, force)) {
 			await loadMenus(session);
 		}
@@ -2053,17 +2128,14 @@
 			return;
 		}
 
-		if (!isCacheFresh(data.planningMenusLoaded, planningMenusLoadedAt, force)) {
-			await loadPlanningMenus(session);
-		}
-
-		if (!isCacheFresh(data.menusLoaded, menusLoadedAt, force)) {
-			await loadMenus(session);
+		const requestedClosedMenuPage = closedMenusPage?.page ?? 0;
+		if (force || !closedMenusPageLoaded || closedMenusPageLoadedIndex !== requestedClosedMenuPage || Date.now() - closedMenusPageLoadedAt >= WEEK_MENU_CACHE_TTL_MS) {
+			await loadClosedMenusPage(session, requestedClosedMenuPage, force);
 		}
 
 		const closed = closedMenus();
 		if (selectedClosedMenuId && !closed.some((menu) => menu.id === selectedClosedMenuId)) {
-			selectedClosedMenuId = null;
+			// Keep the detail open if the selected menu is outside the current page.
 		}
 
 		let menuId = selectedClosedMenuId;
@@ -3483,13 +3555,27 @@
 							currentProductErrors[field] = 'El valor no puede ser negativo';
 						}
 					}
-				} else if (!product.productId || Number.isNaN(Number(product.productId)) || Number(product.productId) <= 0) {
-					currentProductErrors.productId = 'Selecciona un producto valido';
-					if (product.units && (Number.isNaN(Number(product.units)) || Number(product.units) <= 0)) {
-						currentProductErrors.units = 'Las unidades deben ser mayores que 0';
+				} else {
+					if (!product.productId || Number.isNaN(Number(product.productId)) || Number(product.productId) <= 0) {
+						currentProductErrors.productId = 'Selecciona un producto valido';
 					}
-					if (product.grams && (Number.isNaN(Number(product.grams)) || Number(product.grams) <= 0)) {
-						currentProductErrors.grams = 'Los gramos deben ser mayores que 0';
+
+					if (product.quantityMode === 'units' && product.units.trim() !== '') {
+						const numericUnits = Number(product.units);
+						if (Number.isNaN(numericUnits)) {
+							currentProductErrors.units = 'Las unidades deben ser un numero valido';
+						} else if (numericUnits <= 0) {
+							currentProductErrors.units = 'Las unidades deben ser mayores que 0';
+						}
+					}
+
+					if (product.quantityMode === 'grams' && product.grams.trim() !== '') {
+						const numericGrams = Number(product.grams);
+						if (Number.isNaN(numericGrams)) {
+							currentProductErrors.grams = 'Los gramos deben ser un numero valido';
+						} else if (numericGrams <= 0) {
+							currentProductErrors.grams = 'Los gramos deben ser mayores que 0';
+						}
 					}
 				}
 
@@ -4451,6 +4537,7 @@
 					error: error.message,
 					values
 				};
+				openApiErrorDialog('No se pudo crear la planificación', error, 'Revisa la planificación e inténtalo de nuevo.');
 				return;
 			}
 			throw error;
@@ -4523,6 +4610,11 @@
 					id: editingDayPartId ?? undefined,
 					values
 				};
+				openApiErrorDialog(
+					editingDayPartId === null ? 'No se pudo crear la parte del día' : 'No se pudo actualizar la parte del día',
+					error,
+					'Corrige los datos e inténtalo de nuevo.'
+				);
 				return;
 			}
 			throw error;
@@ -4597,6 +4689,7 @@
 					id: activeProposedWeekMenuId,
 					values
 				};
+				openApiErrorDialog('No se pudo guardar el menú diario', error, 'El backend rechazó el menú diario.');
 				return;
 			}
 			throw error;
@@ -4710,6 +4803,7 @@
 					error: error.message,
 					id: activeProposedWeekMenuId
 				};
+				openApiErrorDialog('No se pudo establecer la semana', error, 'El backend rechazó la planificación.');
 				return;
 			}
 			throw error;
@@ -4794,7 +4888,7 @@
 	}
 
 	async function undoEstablishedMenu(menu: EstablishedWeekMenu) {
-		if (!authSession) return;
+		if (!authSession || !menu.canUndo) return;
 		const previousMenuId = activeEstablishedWeekMenuId;
 		activeEstablishedWeekMenuId = menu.id;
 		data.establishedWeekMenu = menu;
@@ -4809,14 +4903,9 @@
 
 	async function editEstablishedMenu(menu: EstablishedWeekMenu) {
 		if (!authSession) return;
+		if (!menu.canEdit) return;
 
-		const planningMenu = planningMenus.find((item) => item.menuId === menu.id) ?? null;
-		if (!planningMenu) {
-			data.backendError = 'No se pudo localizar la planificación asociada a este menú.';
-			return;
-		}
-
-		await loadProposedWeekMenu(authSession, planningMenu.id);
+		await loadProposedWeekMenu(authSession, menu.proposedWeekMenuId);
 		const firstDayDate = data.proposedWeekMenu?.days[0]?.date ?? menu.startDate;
 		setSection('menus');
 		openWeekDayModal(firstDayDate);
@@ -6453,14 +6542,14 @@
 										</span>
 									{/if}
 									{#if planningMenusForSelector().length > 0}
-										<label class="min-w-0">
-											<span class="sr-only">Periodo de planificación</span>
-											<select
-												class="h-10 w-full max-w-[18rem] cursor-pointer rounded-md border border-[hsl(var(--input))] bg-[hsl(var(--card))] px-3 pr-8 text-sm text-[hsl(var(--foreground))] shadow-sm transition-colors focus:border-[hsl(var(--ring))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--ring)/0.14)] disabled:cursor-not-allowed disabled:bg-[hsl(var(--muted))] disabled:opacity-70"
-												value={String(selectedPlanningMenuId ?? planningMenusForSelector()[0]?.id ?? '')}
-												onchange={(event) => void selectPlanningMenu(Number((event.currentTarget as HTMLSelectElement).value))}
-												disabled={!data.backendAvailable}
-												data-testid="planning-menu-selector"
+								<label class="min-w-0">
+									<span class="sr-only">Periodo de planificación</span>
+								<select
+									class="h-10 w-full max-w-[18rem] cursor-pointer rounded-md border border-[hsl(var(--input))] bg-[hsl(var(--card))] px-3 pr-8 text-sm text-[hsl(var(--foreground))] shadow-sm transition-colors focus:border-[hsl(var(--ring))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--ring)/0.14)] disabled:cursor-not-allowed disabled:bg-[hsl(var(--muted))] disabled:opacity-70"
+									value={String(selectedPlanningMenuId ?? planningMenusForSelector()[0]?.id ?? '')}
+									onchange={(event) => void selectPlanningMenu(Number((event.currentTarget as HTMLSelectElement).value))}
+									disabled={!data.backendAvailable}
+									data-testid="planning-menu-selector"
 												aria-label="Periodo de planificación"
 											>
 												{#each planningMenusForSelector() as menu (menu.id)}
@@ -6744,10 +6833,10 @@
 					{:else if currentSection === 'menus'}
 					<section id="menus" class="space-y-4">
 						<div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-							<div class="min-w-0">
+						<div class="min-w-0">
 								<h2 class="text-2xl font-semibold tracking-tight text-[hsl(var(--foreground))]">Menú</h2>
 								<p class="mt-1 max-w-2xl text-sm leading-6 text-[hsl(var(--muted-foreground))]">
-									Consulta las comidas planificadas, el stock del menú y la lista de la compra durante la semana.
+									Consulta los menús activos, el stock del menú y la lista de la compra durante la semana.
 								</p>
 							</div>
 							<div class="flex flex-wrap gap-2 sm:shrink-0">
@@ -6758,18 +6847,38 @@
 							</div>
 						</div>
 
-						{#if activeEstablishedMenu && planningStateByMenuId(activeEstablishedMenu.id) === 'ESTABLISHED'}
+						{#if activeEstablishedMenu && activeEstablishedMenu.isActive}
 							<MenuWeekPanel
 								menu={activeEstablishedMenu}
 								authorization={authorizationHeader(authSession!)}
 								onUpdated={handleEstablishedMenuUpdated}
+								onCloseMenu={requestMenuCloseDialog}
+							/>
+							<MenuCompletionPanel
+								menuId={activeEstablishedMenu.id}
+								payerUsername={activeEstablishedMenu.payerUsername}
+								currentUserId={authSession!.userId}
+								initialPersonIds={activeEstablishedMenu.personIds}
+								authorization={authorizationHeader(authSession!)}
+								initialShoppingList={activeEstablishedMenu.shoppingList}
+								initialUsedStock={activeEstablishedMenu.usedStock}
+								initialWeekStock={activeEstablishedMenu.weekStock}
+								showPanel={false}
+								openToken={menuCloseDialogNonce}
+								onClosed={
+									authSession
+										? async () => {
+												await loadEstablishedWeekMenu(authSession, activeEstablishedMenu.id, 'selected');
+												await refreshMenusView(authSession, true);
+											}
+										: undefined
+								}
 							/>
 						{/if}
 
 						<MenuMealsTable
 							menus={data.menus}
 							loaded={data.menusLoaded}
-							menuStateByMenuId={planningStateByMenuId}
 							selectedMenuId={selectedMenuId}
 							onSelectMenu={selectMenu}
 							onEditMenu={editEstablishedMenu}
@@ -6808,44 +6917,106 @@
 							</div>
 						</div>
 
-						{#if closedMenuList.length > 0}
-							<section class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4 shadow-sm">
-								<div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(260px,360px)] lg:items-end">
-									<div class="min-w-0">
-										<p class="text-sm text-[hsl(var(--muted-foreground))]">
-											{closedMenuList.length} menús cerrados cargados desde el backend.
+						<section class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4 shadow-sm">
+							<div class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+								<div class="min-w-0">
+									<p class="text-sm text-[hsl(var(--muted-foreground))]">
+										{#if closedMenusPageLoading}
+											Cargando página de menús cerrados…
+										{:else if closedMenusPage}
+											{closedMenusPage.totalElements} menús cerrados · Página {closedMenusPage.page + 1} de {closedMenusPage.totalPages}
+										{:else if closedMenusPageError}
+											No se pudieron cargar los menús cerrados.
+										{:else}
+											Mostramos los menús cerrados en páginas pequeñas para abrir cada detalle sin cargar todo de golpe.
+										{/if}
+									</p>
+									{#if closedMenusPageError}
+										<p class="mt-1 text-sm text-[hsl(var(--destructive))]" role="alert">{closedMenusPageError}</p>
+									{/if}
+								</div>
+								<div class="flex flex-wrap gap-2">
+									<Button
+										type="button"
+										variant="secondary"
+										size="sm"
+										onclick={() => void loadClosedMenusPage(authSession!, Math.max(0, (closedMenusPage?.page ?? closedMenusPageLoadedIndex ?? 0) - 1), true)}
+										disabled={!data.backendAvailable || closedMenusPageLoading || !closedMenusPage || closedMenusPage.page === 0}
+										data-testid="closed-menus-prev-page"
+									>
+										<ChevronLeft class="size-4" aria-hidden="true" />
+										Anterior
+									</Button>
+									<Button
+										type="button"
+										variant="secondary"
+										size="sm"
+										onclick={() => void loadClosedMenusPage(authSession!, (closedMenusPage?.page ?? closedMenusPageLoadedIndex ?? 0) + 1, true)}
+										disabled={!data.backendAvailable || closedMenusPageLoading || !closedMenusPage || closedMenusPage.page + 1 >= closedMenusPage.totalPages}
+										data-testid="closed-menus-next-page"
+									>
+										Siguiente
+										<ChevronRight class="size-4" aria-hidden="true" />
+									</Button>
+								</div>
+							</div>
+
+							{#if closedMenusPageLoading && !closedMenuList.length}
+								<div class="mt-4 grid place-items-center rounded-md border border-dashed border-[hsl(var(--border))] px-8 py-12 text-center">
+									<div class="size-5 animate-spin rounded-full border-2 border-[hsl(var(--muted-foreground))] border-t-transparent" aria-hidden="true"></div>
+									<p class="mt-3 text-sm text-[hsl(var(--muted-foreground))]">Cargando menús cerrados</p>
+								</div>
+							{:else if closedMenuList.length === 0}
+								<div class="mt-4 grid gap-3 rounded-md border border-dashed border-[hsl(var(--border))] px-6 py-10 text-center">
+									<CircleCheck class="mx-auto size-5 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
+									<div>
+										<h3 class="text-sm font-semibold text-[hsl(var(--foreground))]">No hay menús cerrados en esta página</h3>
+										<p class="mt-1 text-sm leading-6 text-[hsl(var(--muted-foreground))]">
+											Prueba con la siguiente página o revisa si todavía no se han cerrado menús.
 										</p>
 									</div>
-									<label class="block min-w-0">
-										<span class={fieldLabelClass}>Menú cerrado</span>
-										<select
-											class={inputClass}
-											value={selectedClosedMenuId ?? ''}
-											onchange={(event) => void selectClosedMenu(Number((event.currentTarget as HTMLSelectElement).value))}
-											disabled={!data.backendAvailable}
-											data-testid="closed-menu-selector"
-										>
-											<option value="" disabled>Selecciona un menú cerrado</option>
-											{#each closedMenuList as menu (menu.id)}
-												<option value={menu.id}>{menuLabel(menu)}</option>
-											{/each}
-										</select>
-									</label>
 								</div>
-							</section>
-						{/if}
+							{:else}
+								<div class="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+									{#each closedMenuList as menu (menu.id)}
+										<button
+											type="button"
+											class={`flex h-full min-h-28 flex-col justify-between rounded-lg border p-4 text-left shadow-sm transition-colors ${
+												selectedClosedMenuId === menu.id
+													? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary)/0.06)]'
+													: 'border-[hsl(var(--border))] bg-[hsl(var(--card))] hover:bg-[hsl(var(--secondary))]'
+											}`}
+											onclick={() => void selectClosedMenu(menu.id)}
+											disabled={!data.backendAvailable}
+											data-testid={`closed-menu-card-${menu.id}`}
+										>
+											<div class="min-w-0">
+												<p class="truncate text-sm font-semibold text-[hsl(var(--foreground))]">{menuLabel(menu)}</p>
+												<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
+													{weekDateRangeLabel(menu.startDate, menu.endDate)} · {menu.payerUsername}
+												</p>
+											</div>
+											<div class="mt-4 flex items-center justify-between gap-2 text-xs text-[hsl(var(--muted-foreground))]">
+												<span>{menu.stockSummary.plannedDays} días</span>
+												<span>{formatCurrency(menu.stockSummary.estimatedCost)}</span>
+											</div>
+										</button>
+									{/each}
+								</div>
+							{/if}
+						</section>
 
 						{#if !data.establishedWeekMenuLoaded}
 							<div class="grid place-items-center rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-8 py-16 text-center shadow-sm">
 								<div class="grid size-12 place-items-center rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
 									<div class="size-5 animate-spin rounded-full border-2 border-[hsl(var(--muted-foreground))] border-t-transparent" aria-hidden="true"></div>
 								</div>
-								<h3 class="mt-4 text-sm font-semibold text-[hsl(var(--foreground))]">Cargando menús cerrados</h3>
+								<h3 class="mt-4 text-sm font-semibold text-[hsl(var(--foreground))]">Cargando detalle del menú cerrado</h3>
 								<p class="mt-1 max-w-sm text-sm text-[hsl(var(--muted-foreground))]">
 									Estamos consultando el snapshot cerrado seleccionado y sus estadísticas.
 								</p>
 							</div>
-						{:else if !activeMenu || planningStateByMenuId(activeMenu.id) !== 'CLOSED'}
+						{:else if !activeMenu}
 							<div class="grid gap-4 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-8 shadow-sm">
 								<div class="mx-auto grid size-12 place-items-center rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
 									<CircleCheck class="size-5 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
@@ -6853,7 +7024,7 @@
 								<div class="text-center">
 									<h3 class="text-base font-semibold text-[hsl(var(--foreground))]">No hay un menú cerrado seleccionado</h3>
 									<p class="mt-1 text-sm leading-6 text-[hsl(var(--muted-foreground))]">
-										Selecciona un menú cerrado para ver sus estadísticas y su snapshot final.
+										Selecciona un menú de la lista para ver sus estadísticas y su snapshot final.
 									</p>
 								</div>
 							</div>
@@ -6862,9 +7033,11 @@
 								menuId={activeMenu.id}
 								payerUsername={activeMenu.payerUsername}
 								currentUserId={authSession!.userId}
+								initialPersonIds={activeMenu.personIds}
 								authorization={authorizationHeader(authSession!)}
 								initialShoppingList={activeMenu.shoppingList}
 								initialUsedStock={activeMenu.usedStock}
+								initialWeekStock={activeMenu.weekStock}
 							/>
 							<section class="grid gap-3 md:grid-cols-2 xl:grid-cols-4" aria-label="Metricas del menu">
 								<div data-testid="menu-planned-days-card">
@@ -9628,6 +9801,40 @@
 								<p class="mt-1 text-lg font-semibold tabular-nums">{formatNumber(detailProduct.nutritionalValues.fats)}g</p>
 							</div>
 						</section>
+
+						{#if detailProduct.derivedProduct?.ingredients?.length}
+							<section class="space-y-3 rounded-lg border border-[hsl(var(--border))] p-4" data-testid="product-composition">
+								<div class="flex flex-wrap items-start justify-between gap-3">
+									<div>
+										<h3 class="text-sm font-semibold text-[hsl(var(--foreground))]">Composición</h3>
+										<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
+											Este producto se compone de estos subproductos.
+										</p>
+									</div>
+									{#if detailProduct.derivedProduct.stockFromComposition}
+										<span class="rounded-md bg-[hsl(var(--secondary))] px-2 py-1 text-xs text-[hsl(var(--muted-foreground))]">
+											Stock por composición
+										</span>
+									{/if}
+								</div>
+
+								<div class="space-y-2">
+									{#each detailProduct.derivedProduct.ingredients as ingredient (ingredient.productId)}
+										<div class="rounded-md border border-[hsl(var(--border))] p-3">
+											<div class="flex items-start justify-between gap-3">
+												<div class="min-w-0">
+													<p class="truncate font-medium text-[hsl(var(--foreground))]">{ingredient.productName}</p>
+													<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Producto #{ingredient.productId}</p>
+												</div>
+												<p class="shrink-0 font-medium tabular-nums">
+													{formatNumber(ingredient.quantity)} {ingredient.quantityType === 'GRAMS' ? 'g' : ingredient.quantityType}
+												</p>
+											</div>
+										</div>
+									{/each}
+								</div>
+							</section>
+						{/if}
 
 						<div class="flex flex-col-reverse gap-2 border-t border-[hsl(var(--border))] pt-5 sm:flex-row sm:justify-end">
 							<Button variant="secondary" type="button" onclick={closeModal}>Cerrar</Button>

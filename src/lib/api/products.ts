@@ -1,4 +1,4 @@
-import type { Product, ProductFormValues } from '$lib/products';
+import type { Product, ProductFormValues, ProductDerivedProduct } from '$lib/products';
 import { request } from '$lib/api/backend';
 import { appendProductFilters, type ProductFilters } from '$lib/product-filters';
 
@@ -27,9 +27,7 @@ type ProductPayload = {
 	};
 	photo: string | null;
 	supermarkets: { id: number; name: string }[];
-	derivedProduct?: {
-		stockFromComposition: boolean;
-	} | null;
+	derivedProduct?: ProductDerivedProduct | null;
 };
 
 export type PaginatedResponse<T> = {

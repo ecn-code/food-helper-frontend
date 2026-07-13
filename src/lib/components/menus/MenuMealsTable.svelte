@@ -6,7 +6,6 @@
 
 	type FilterMode = 'menu' | 'dates';
 	type ViewMode = 'table' | 'calendar';
-	type PlanningState = 'DRAFT' | 'ESTABLISHED' | 'CLOSED';
 	type MenuStatsCard = {
 		label: string;
 		value: string;
@@ -38,7 +37,6 @@
 	let {
 		menus,
 		loaded,
-		menuStateByMenuId = () => null,
 		onEditMenu = null,
 		onDeleteMenu = null,
 		selectedMenuId: selectedMenuIdProp = null,
@@ -46,7 +44,6 @@
 	}: {
 		menus: EstablishedWeekMenu[];
 		loaded: boolean;
-		menuStateByMenuId?: (menuId: number) => PlanningState | null;
 		onEditMenu?: ((menu: EstablishedWeekMenu) => void | Promise<void>) | null;
 		onDeleteMenu?: ((menu: EstablishedWeekMenu) => void | Promise<void>) | null;
 		selectedMenuId?: number | null;
@@ -65,7 +62,7 @@
 	const selectedMenu = $derived(
 		orderedMenus.find((menu) => String(menu.id) === selectedMenuId) ?? null
 	);
-	const selectedMenuState = $derived(selectedMenu ? menuStateByMenuId(selectedMenu.id) : null);
+	const selectedMenuState = $derived(selectedMenu?.state ?? null);
 	const rows = $derived(buildRows(orderedMenus, filterMode, selectedMenuId, dateFrom, dateTo));
 	const calendarDates = $derived(buildCalendarDates(rows, filterMode, selectedMenu, dateFrom, dateTo));
 	const calendarDayParts = $derived(buildCalendarDayParts(rows, filterMode, selectedMenu));
@@ -426,7 +423,7 @@
 						</span>
 						{#if selectedMenuState}
 							<span class="inline-flex w-fit rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]">
-								{selectedMenuState === 'DRAFT' ? 'Borrador' : selectedMenuState === 'ESTABLISHED' ? 'En curso' : 'Cerrado'}
+								{selectedMenuState === 'ESTABLISHED' ? 'En curso' : 'Cerrado'}
 							</span>
 						{/if}
 					{/if}
@@ -511,7 +508,7 @@
 						aria-label="Editar menú"
 						title="Editar menú"
 						onclick={() => onEditMenu?.(selectedMenu)}
-						disabled={!onEditMenu || selectedMenuState === 'CLOSED'}
+						disabled={!onEditMenu || !selectedMenu?.canEdit}
 						data-testid="menu-edit-button"
 					>
 						<Pencil class="size-4" aria-hidden="true" />
@@ -523,7 +520,7 @@
 						aria-label="Borrar menú"
 						title="Borrar menú"
 						onclick={() => onDeleteMenu?.(selectedMenu)}
-						disabled={!onDeleteMenu || selectedMenuState === 'CLOSED'}
+						disabled={!onDeleteMenu || !selectedMenu?.canDelete}
 						data-testid="menu-delete-button"
 					>
 						<Trash2 class="size-4" aria-hidden="true" />

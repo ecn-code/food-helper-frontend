@@ -593,6 +593,16 @@ test('crea el producto derivado indicando nombre y unidades', async ({ page, req
 	await expect(page.getByTestId('recipe-view-modal')).toBeVisible();
 	await expect(page.getByTestId('recipe-view-modal')).toContainText('Producto propio');
 	await page.getByTestId('recipe-view-modal').getByRole('button', { name: 'Cerrar modal' }).click();
+
+	await page.getByRole('link', { name: 'Productos' }).click();
+	await expect(page.getByTestId('product-list')).toContainText(derivedProductName);
+	const derivedProductCard = page.locator('[data-testid^="product-card-"]').filter({ hasText: derivedProductName });
+	await derivedProductCard.getByRole('button', { name: 'Ver' }).click();
+	await expect(page.getByTestId('product-view-modal')).toBeVisible();
+	await expect(page.getByTestId('product-view-modal')).toContainText('Composición');
+	await expect(page.getByTestId('product-view-modal')).toContainText('Apple');
+	await expect(page.getByTestId('product-view-modal')).toContainText('100 g');
+	await page.getByTestId('product-view-modal').getByRole('button', { name: 'Cerrar modal' }).click();
 });
 
 test('envía el número de personas al crear una planificación', async ({ page, request }) => {

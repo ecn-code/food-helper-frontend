@@ -19,12 +19,20 @@ export type EstablishedWeekMenuUsedStock = EstablishedWeekMenuUsedStockResponse;
 export type EstablishedWeekMenuWeekStockItem = EstablishedWeekMenuWeekStockItemResponse;
 export type EstablishedWeekMenuShoppingListItem = EstablishedWeekMenuShoppingListItemResponse;
 export type EstablishedWeekMenuStockSummary = EstablishedWeekMenuStockSummaryResponse;
+export type CurrentWeekMenuState = 'ESTABLISHED' | 'CLOSED';
 
 export type EstablishedWeekMenu = {
 	id: number;
 	proposedWeekMenuId: number;
 	payerUserId: number;
 	payerUsername: string;
+	personIds: number[];
+	state: CurrentWeekMenuState;
+	isActive: boolean;
+	canEdit: boolean;
+	canDelete: boolean;
+	canClose: boolean;
+	canUndo: boolean;
 	startDate: string;
 	endDate: string;
 	days: EstablishedWeekMenuDay[];
@@ -42,6 +50,13 @@ export function toEstablishedWeekMenuModel(menu: EstablishedWeekMenuResponse): E
 		proposedWeekMenuId: menu.planningId,
 		payerUserId: menu.payerUserId,
 		payerUsername: menu.payerUsername,
+		personIds: [...menu.personIds],
+		state: menu.state,
+		isActive: menu.isActive,
+		canEdit: menu.canEdit,
+		canDelete: menu.canDelete,
+		canClose: menu.canClose,
+		canUndo: menu.canUndo,
 		startDate: menu.startDate,
 		endDate: menu.endDate,
 		days: [...menu.days].sort((left, right) => left.date.localeCompare(right.date)).map(toProposedWeekMenuDayModel),

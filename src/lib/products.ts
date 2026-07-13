@@ -7,6 +7,20 @@ export type NutritionalValues = {
 	fats: number;
 };
 
+export type ProductDerivedIngredient = {
+	productId: number;
+	productName: string;
+	quantity: number;
+	quantityType: string;
+	nutritionalValues: NutritionalValues;
+};
+
+export type ProductDerivedProduct = {
+	stockFromComposition: boolean;
+	recipeId?: number | null;
+	ingredients?: ProductDerivedIngredient[];
+};
+
 export type Product = {
 	id: number;
 	name: string;
@@ -17,9 +31,7 @@ export type Product = {
 	nutritionalValues: NutritionalValues;
 	photo: string | null;
 	supermarkets: { id: number; name: string }[];
-	derivedProduct?: {
-		stockFromComposition: boolean;
-	} | null;
+	derivedProduct?: ProductDerivedProduct | null;
 };
 
 export type ProductFormValues = {

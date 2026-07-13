@@ -229,6 +229,32 @@ function productById(id) {
 	return products.find((product) => product.id === id) || null;
 }
 
+function recipeIngredientPayloads(recipe) {
+	return recipe.ingredients.map((ingredient) => ingredientPayload(productById(ingredient.productId), ingredient.grams));
+}
+
+function productDerivedComposition(product) {
+	if (product.derivedProduct?.ingredients?.length) {
+		return product.derivedProduct;
+	}
+
+	const linkedRecipe = recipes.find((recipe) => recipe.derivedProduct?.productId === product.id);
+	if (!linkedRecipe?.derivedProduct) return product.derivedProduct ?? null;
+
+	return {
+		stockFromComposition: linkedRecipe.derivedProduct.stockFromComposition,
+		recipeId: linkedRecipe.id,
+		ingredients: recipeIngredientPayloads(linkedRecipe)
+	};
+}
+
+function productResponse(product) {
+	return {
+		...product,
+		derivedProduct: productDerivedComposition(product)
+	};
+}
+
 function stockEntryById(id) {
 	return stockEntries.find((entry) => entry.id === id) || null;
 }
@@ -753,12 +779,20 @@ function replaceWeekStock(menu, requestedWeekStock) {
 }
 
 function establishedWeekMenuResponse(menu) {
+	const isClosed = Boolean(menu.stats);
 	return {
 		id: menu.id,
 		planningId: menu.proposedWeekMenuId,
 		proposedWeekMenuId: menu.proposedWeekMenuId,
 		payerUserId: menu.payerUserId ?? 1,
 		payerUsername: menu.payerUsername ?? 'elias',
+		personIds: Array.isArray(menu.personIds) ? menu.personIds : [],
+		state: isClosed ? 'CLOSED' : 'ESTABLISHED',
+		isActive: !isClosed,
+		canEdit: !isClosed,
+		canDelete: !isClosed,
+		canClose: !isClosed,
+		canUndo: isClosed,
 		startDate: menu.startDate,
 		endDate: menu.endDate,
 		days: menu.days,
@@ -1088,6 +1122,8 @@ function ingredientPayload(product, grams) {
 	return {
 		productId: product.id,
 		productName: product.name,
+		quantity: grams,
+		quantityType: 'GRAMS',
 		grams,
 		nutritionalValues: {
 			calories: Number((product.nutritionalValues.calories * factor).toFixed(2)),
@@ -1112,7 +1148,7 @@ function recipeTotals(ingredients) {
 }
 
 function recipeResponse(recipe) {
-	const ingredients = recipe.ingredients.map((ingredient) => ingredientPayload(productById(ingredient.productId), ingredient.grams));
+	const ingredients = recipeIngredientPayloads(recipe);
 	const totals = recipeTotals(ingredients);
 	return {
 		id: recipe.id,
@@ -1123,6 +1159,42 @@ function recipeResponse(recipe) {
 		products: ingredients,
 		derivedProduct: recipe.derivedProduct,
 		photo: recipe.photo
+	};
+}
+
+function syncDerivedProductProduct(recipe) {
+	if (!recipe.derivedProduct) return;
+
+	const ingredients = recipeIngredientPayloads(recipe);
+	const nutritionalValues = recipeTotals(ingredients);
+	const productRecord = {
+		id: recipe.derivedProduct.productId,
+		name: recipe.derivedProduct.name,
+		description: recipe.description,
+		gramsPerUnit: Number(recipe.derivedProduct.unitsProduced),
+		nutritionBasis: 'PER_100_GRAMS',
+		defaultPrice: null,
+		nutritionalValues,
+		photo: recipe.photo,
+		supermarketIds: [],
+		supermarkets: [],
+		derivedProduct: {
+			stockFromComposition: recipe.derivedProduct.stockFromComposition,
+			recipeId: recipe.id,
+			ingredients
+		}
+	};
+
+	const existingIndex = products.findIndex((product) => product.id === productRecord.id);
+	if (existingIndex >= 0) {
+		products[existingIndex] = productRecord;
+	} else {
+		products.push(productRecord);
+	}
+
+	recipe.derivedProduct = {
+		...recipe.derivedProduct,
+		ingredients
 	};
 }
 
@@ -1921,11 +1993,17 @@ const server = http.createServer(async (req, res) => {
 					stockFromComposition: payload.stockFromComposition
 				};
 			}
+			if (recipe.derivedProduct) {
+				syncDerivedProductProduct(recipe);
+			}
 			sendJson(res, 200, recipeResponse(recipe));
 			return;
 		}
 
 		if (req.method === 'DELETE') {
+			if (recipe.derivedProduct?.productId) {
+				products = products.filter((product) => product.id !== recipe.derivedProduct.productId);
+			}
 			recipes = recipes.filter((item) => item.id !== id);
 			res.writeHead(204, {
 				'access-control-allow-origin': '*',
@@ -1966,6 +2044,7 @@ const server = http.createServer(async (req, res) => {
 			ingredients: recipeResponse(recipe).products
 		};
 		recipe.derivedProduct = created;
+		syncDerivedProductProduct(recipe);
 		sendJson(res, 201, created);
 		return;
 	}
@@ -2292,10 +2371,16 @@ const server = http.createServer(async (req, res) => {
 
 	const establishedWeekMenuMatch = url.pathname.match(/^\/api\/v1\/(?:established-week-menus|menus)\/(\d+)$/);
 	if (req.method === 'GET' && url.pathname === '/api/v1/menus') {
-		const menus = [...establishedWeekMenus]
-			.sort((left, right) => right.startDate.localeCompare(left.startDate) || right.id - left.id)
-			.map((menu) => establishedWeekMenuResponse(menu));
-		sendJson(res, 200, menus);
+		const state = String(url.searchParams.get('state') ?? '').toUpperCase();
+		const wantsPagination = url.searchParams.has('page') || url.searchParams.has('size') || url.searchParams.has('state');
+		let menus = [...establishedWeekMenus].sort((left, right) => right.startDate.localeCompare(left.startDate) || right.id - left.id);
+		if (state === 'CLOSED') {
+			menus = menus.filter((menu) => Boolean(menu.stats));
+		} else if (state === 'ESTABLISHED') {
+			menus = menus.filter((menu) => !menu.stats);
+		}
+		const payload = wantsPagination ? paginate(menus.map((menu) => establishedWeekMenuResponse(menu)), url) : menus.map((menu) => establishedWeekMenuResponse(menu));
+		sendJson(res, 200, payload);
 		return;
 	}
 	if (establishedWeekMenuMatch && req.method === 'GET') {
@@ -2644,7 +2729,7 @@ const server = http.createServer(async (req, res) => {
 	}
 
 	if (req.method === 'GET' && url.pathname === '/api/v1/products') {
-		sendJson(res, 200, paginate(filterProducts(url), url));
+		sendJson(res, 200, paginate(filterProducts(url).map(productResponse), url));
 		return;
 	}
 
@@ -2691,7 +2776,7 @@ const server = http.createServer(async (req, res) => {
 				supermarkets: supermarkets.filter((item) => (payload.supermarketIds ?? []).map(Number).includes(item.id))
 			};
 			products.push(created);
-			sendJson(res, 201, created);
+			sendJson(res, 201, productResponse(created));
 			return;
 		}
 
@@ -2746,7 +2831,7 @@ const server = http.createServer(async (req, res) => {
 			}
 			product.supermarketIds = Array.isArray(payload.supermarketIds) ? payload.supermarketIds.map(Number) : [];
 			product.supermarkets = supermarkets.filter((item) => product.supermarketIds.includes(item.id));
-			sendJson(res, 200, product);
+			sendJson(res, 200, productResponse(product));
 			return;
 		}
 

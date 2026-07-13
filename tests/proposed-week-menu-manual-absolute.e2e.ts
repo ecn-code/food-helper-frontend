@@ -93,3 +93,73 @@ test('allows saving a manual proposed week day even when the catalog is empty', 
 	await expect(page.getByTestId('success-banner')).toHaveText('Menu diario guardado correctamente');
 	await expect(page.getByTestId('validation-dialog')).toHaveCount(0);
 });
+
+test('saves a catalog proposed week day and shows a dialog when the backend rejects it', async ({ page, request }) => {
+	const backendBaseUrl =
+		process.env.MOCK_BACKEND_URL || `http://127.0.0.1:${process.env.MOCK_BACKEND_PORT || 4010}`;
+	await request.post(`${backendBaseUrl}/__reset`);
+
+	await page.goto('/');
+
+	await page.getByTestId('login-username').fill('elias');
+	await page.getByTestId('login-password').fill('secret-password');
+	await page.getByTestId('login-submit').click();
+
+	await page.getByRole('link', { name: 'Planificación' }).click();
+	await page.getByRole('button', { name: 'Nueva semana' }).click();
+
+	await page.getByTestId('week-start-date').fill('2026-06-15');
+	await page.getByTestId('week-end-date').fill('2026-06-21');
+	await page.getByTestId('week-create-form').getByRole('button', { name: 'Crear semana' }).click();
+
+	await page.getByTestId('week-day-action-2026-06-15').click();
+	await page.getByRole('button', { name: 'Catálogo' }).click();
+	await expect(page.getByTestId('product-picker-modal')).toBeVisible();
+	await page.getByTestId('product-picker-option-1').click();
+	await page.getByTestId('week-product-quantity-value-0-0').fill('2');
+
+	await Promise.all([
+		page.waitForResponse((response) =>
+			response.request().method() === 'PUT' &&
+			response.url().includes('/api/v1/planning/') &&
+			response.url().endsWith('/days') &&
+			response.status() === 200
+		),
+		page.getByRole('button', { name: 'Guardar menu' }).click()
+	]);
+	await expect(page.getByTestId('success-banner')).toHaveText('Menu diario guardado correctamente');
+
+	await page.getByTestId('week-day-action-2026-06-15').click();
+
+	await page.route('**/api/v1/planning/*/days', async (route) => {
+		if (route.request().method() !== 'PUT') {
+			await route.continue();
+			return;
+		}
+
+		await route.fulfill({
+			status: 400,
+			contentType: 'application/json',
+			body: JSON.stringify({
+				status: 400,
+				error: 'Bad Request',
+				message: 'product units must be greater than 0',
+				path: '/api/v1/planning/1/days'
+			})
+		});
+	});
+
+	await Promise.all([
+		page.waitForResponse((response) =>
+			response.request().method() === 'PUT' &&
+			response.url().includes('/api/v1/planning/') &&
+			response.url().endsWith('/days') &&
+			response.status() === 400
+		),
+		page.getByRole('button', { name: 'Guardar menu' }).click()
+	]);
+
+	await expect(page.getByTestId('validation-dialog')).toBeVisible();
+	await expect(page.getByTestId('validation-dialog')).toContainText('No se pudo guardar el menú diario');
+	await expect(page.getByTestId('validation-dialog')).toContainText('product units must be greater than 0');
+});

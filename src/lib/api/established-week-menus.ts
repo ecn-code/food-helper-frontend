@@ -2,6 +2,14 @@ import { request } from '$lib/api/backend';
 import type { NutritionalRulesEvaluation, NutritionalValues } from '$lib/api/proposed-week-menus';
 import type { ProposedWeekMenuDayResponse } from '$lib/api/proposed-week-menus';
 
+export type PaginatedResponse<T> = {
+	items: T[];
+	page: number;
+	size: number;
+	totalElements: number;
+	totalPages: number;
+};
+
 export type EstablishedWeekMenuDayCaloriesResponse = {
 	date: string;
 	calories: number;
@@ -69,6 +77,13 @@ export type EstablishedWeekMenuResponse = {
 	planningId: number;
 	payerUserId: number;
 	payerUsername: string;
+	personIds: number[];
+	state: 'ESTABLISHED' | 'CLOSED';
+	isActive: boolean;
+	canEdit: boolean;
+	canDelete: boolean;
+	canClose: boolean;
+	canUndo: boolean;
 	startDate: string;
 	endDate: string;
 	days: ProposedWeekMenuDayResponse[];
@@ -84,6 +99,21 @@ function authHeaders(authorization: string) {
 	return {
 		Authorization: authorization
 	};
+}
+
+export type ListMenusParams = {
+	page?: number;
+	size?: number;
+	state?: 'ESTABLISHED' | 'CLOSED';
+};
+
+function buildMenusQuery(params: ListMenusParams = {}) {
+	const query = new URLSearchParams();
+	if (params.page !== undefined) query.set('page', String(Math.max(0, Math.trunc(params.page))));
+	if (params.size !== undefined) query.set('size', String(Math.min(100, Math.max(1, Math.trunc(params.size)))));
+	if (params.state) query.set('state', params.state);
+	const suffix = query.size ? `?${query.toString()}` : '';
+	return suffix;
 }
 
 export async function publishProposedWeekMenu(
@@ -117,6 +147,12 @@ export async function listMenus(authorization: string) {
 	});
 }
 
+export async function listMenusPage(authorization: string, params: ListMenusParams = {}) {
+	return await request<PaginatedResponse<EstablishedWeekMenuResponse>>(`/api/v1/menus${buildMenusQuery(params)}`, {
+		headers: authHeaders(authorization)
+	});
+}
+
 export async function undoEstablishedWeekMenu(id: number, authorization: string) {
 	await request<void>(`/api/v1/menus/${id}`, {
 		method: 'DELETE',
@@ -145,8 +181,7 @@ export type MenuStatsResponse = { menuId: number; period: MenuPeriodStats; month
 export async function closeMenu(id: number, personIds: number[], authorization: string) {
 	return await request<MenuStatsResponse>(`/api/v1/menus/${id}/close`, {
 		method: 'POST',
-		headers: authHeaders(authorization)
-		,
+		headers: authHeaders(authorization),
 		body: JSON.stringify({
 			personIds: personIds.map((personId) => Number(personId))
 		})

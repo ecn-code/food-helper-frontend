@@ -44,21 +44,92 @@ test('cierra un menú con varias personas y rechaza el cierre sin selección', a
 	await page.getByTestId('week-end-date').fill('2026-07-07');
 	await page.getByTestId('week-create-form').getByRole('button', { name: 'Crear semana' }).click();
 	await page.getByRole('button', { name: 'Establecer semana' }).click();
+	const publishResponsePromise = page.waitForResponse((response) =>
+		response.request().method() === 'POST' &&
+		response.url().includes('/api/v1/planning/') &&
+		response.url().endsWith('/menu') &&
+		response.status() === 201
+	);
+	await expect(page.getByTestId('week-publish-modal')).toBeVisible();
+	await page.getByRole('checkbox', { name: collaborator }).check();
 	await page.getByTestId('week-publish-modal').getByRole('button', { name: 'Establecer semana' }).click();
+	const publishResponse = await publishResponsePromise;
+	const establishedMenu = await publishResponse.json();
+	await page.getByRole('link', { name: 'Menú', exact: true }).click();
+	await page.getByTestId('menu-period-selector').selectOption(String(establishedMenu.id));
 
-	await expect(page.getByTestId('menu-completion-panel')).toContainText('Menú establecido');
-	await page.getByTestId('menu-completion-panel').getByRole('button', { name: 'Cerrar menú' }).click();
+	await page.getByTestId('menu-week-close-menu').click();
 	await expect(page.getByTestId('close-menu-dialog')).toBeVisible();
+	await expect(page.getByTestId('close-menu-dialog')).toContainText('Resumen previo al cierre');
+	await expect(page.getByTestId('close-menu-dialog')).toContainText('Movimiento previsto en la hucha');
+	await expect(page.getByTestId('close-menu-dialog')).toContainText('Stock final estimado');
+	await expect(page.getByRole('checkbox', { name: 'elias' })).toBeChecked();
+	await expect(page.getByRole('checkbox', { name: collaborator })).toBeChecked();
 
 	await page.getByRole('checkbox', { name: 'elias' }).uncheck();
 	await page.getByRole('checkbox', { name: collaborator }).uncheck();
-	await page.getByTestId('close-menu-dialog').getByRole('button', { name: 'Cerrar menú' }).click();
+	await page.getByTestId('close-menu-dialog').getByRole('button', { name: 'Confirmar cierre' }).click();
 	await expect(page.getByTestId('close-menu-dialog')).toContainText('Selecciona al menos una persona.');
+	await page.getByTestId('validation-dialog-close').click();
+	await page.getByTestId('close-menu-dialog').getByRole('button', { name: 'Cancelar' }).click();
+	await expect(page.getByTestId('close-menu-dialog')).toHaveCount(0);
+	await page.getByRole('button', { name: 'Ir a planificación' }).click();
+	await expect(page).toHaveURL(/#planning$/);
+	await page.getByRole('link', { name: 'Menú', exact: true }).click();
+	await expect(page.getByTestId('close-menu-dialog')).toHaveCount(0);
+	await page.getByTestId('menu-week-close-menu').click();
 
 	await page.getByRole('checkbox', { name: 'elias' }).check();
 	await page.getByRole('checkbox', { name: collaborator }).check();
-	await page.getByTestId('close-menu-dialog').getByRole('button', { name: 'Cerrar menú' }).click();
-	await expect(page.getByTestId('menu-completion-panel')).toContainText('Cerrado');
+	await page.getByTestId('close-menu-dialog').getByRole('button', { name: 'Confirmar cierre' }).click();
+	await expect(page.getByTestId('menu-week-panel')).toHaveCount(0);
+});
+
+test('muestra el mensaje del backend cuando el cierre del menú falla con 400', async ({ page, request }) => {
+	const collaborator = `friend-${Date.now()}`;
+	await registerUser(request, collaborator);
+
+	await page.goto('/');
+	await loginAs(page, 'elias');
+
+	await page.getByRole('link', { name: 'Planificación' }).click();
+	await page.getByRole('button', { name: 'Nueva semana' }).click();
+	await page.getByTestId('week-start-date').fill('2026-07-01');
+	await page.getByTestId('week-end-date').fill('2026-07-07');
+	await page.getByTestId('week-create-form').getByRole('button', { name: 'Crear semana' }).click();
+	await page.getByRole('button', { name: 'Establecer semana' }).click();
+	const publishResponsePromise = page.waitForResponse((response) =>
+		response.request().method() === 'POST' &&
+		response.url().includes('/api/v1/planning/') &&
+		response.url().endsWith('/menu') &&
+		response.status() === 201
+	);
+	await expect(page.getByTestId('week-publish-modal')).toBeVisible();
+	await page.getByRole('checkbox', { name: collaborator }).check();
+	await page.getByTestId('week-publish-modal').getByRole('button', { name: 'Establecer semana' }).click();
+	const publishResponse = await publishResponsePromise;
+	const establishedMenu = await publishResponse.json();
+	await page.getByRole('link', { name: 'Menú', exact: true }).click();
+	await page.getByTestId('menu-period-selector').selectOption(String(establishedMenu.id));
+
+	await page.route('**/api/v1/menus/*/close', async (route) => {
+		await route.fulfill({
+			status: 400,
+			contentType: 'application/json',
+			body: JSON.stringify({
+				timestamp: '2026-07-12T11:28:36.973220Z',
+				status: 400,
+				error: 'Bad Request',
+				message: 'Menu can only be closed after its end date',
+				path: `/api/v1/menus/${establishedMenu.id}/close`
+			})
+		});
+	});
+
+	await page.getByTestId('menu-week-close-menu').click();
+	await page.getByTestId('close-menu-dialog').getByRole('button', { name: 'Confirmar cierre' }).click();
+	await expect(page.getByTestId('close-menu-dialog')).toContainText('Menu can only be closed after its end date');
+	await expect(page.getByTestId('close-menu-dialog')).toBeVisible();
 });
 
 test('permite ajustar el stock temporal del menu y reducir la lista de la compra', async ({ page }) => {
@@ -148,16 +219,11 @@ test('permite ajustar el stock temporal del menu y reducir la lista de la compra
 	await expect(menuSelector).toBeVisible();
 	await expect(menuSelector).not.toHaveValue('');
 	await expect(menuSelector.locator('option:checked')).not.toHaveText('');
-	await page.evaluate((menuId) => {
-		const select = document.querySelector('[data-testid="menu-period-selector"]') as HTMLSelectElement | null;
-		if (!select) return;
-		select.value = String(menuId);
-		select.dispatchEvent(new Event('change', { bubbles: true }));
-	}, establishedMenu.id);
+	await menuSelector.selectOption(String(establishedMenu.id));
 	await expect(menuSelector).toHaveValue(String(establishedMenu.id));
 	await expect(menuSelector.locator('option:checked')).toHaveAttribute('value', String(establishedMenu.id));
 
-	await expect(page.getByTestId('menu-week-panel')).toBeVisible();
+	await expect(page.getByTestId('menu-week-panel')).toBeVisible({ timeout: 10000 });
 	await expect(page.getByTestId('menu-week-panel')).toContainText('1 productos pendientes');
 	await expect(page.getByTestId('menu-week-panel')).toContainText('Apple');
 
@@ -189,6 +255,10 @@ test('permite ajustar el stock temporal del menu y reducir la lista de la compra
 	await expect(page.getByTestId('menu-week-stock-item-0')).toContainText('1 uds · 2,50 €');
 	await expect(page.getByTestId('menu-week-stock-item-1')).toContainText('Apple');
 	await expect(page.getByTestId('menu-week-stock-item-1')).toContainText('2 uds · 3,10 €');
+
+	await page.getByTestId('menu-week-close-menu').click();
+	await page.getByTestId('close-menu-dialog').getByRole('button', { name: 'Confirmar cierre' }).click();
+	await expect(page.getByTestId('menu-week-panel')).toHaveCount(0);
 });
 
 test('limita la cantidad del stock global al maximo disponible', async ({ page, request }) => {
@@ -245,12 +315,7 @@ test('limita la cantidad del stock global al maximo disponible', async ({ page, 
 	await page.reload();
 	await page.getByTestId('app-ready').waitFor();
 	await page.getByRole('link', { name: 'Menú', exact: true }).click();
-	await page.evaluate((menuId) => {
-		const select = document.querySelector('[data-testid="menu-period-selector"]') as HTMLSelectElement | null;
-		if (!select) return;
-		select.value = String(menuId);
-		select.dispatchEvent(new Event('change', { bubbles: true }));
-	}, establishedMenu.id);
+	await page.getByTestId('menu-period-selector').selectOption(String(establishedMenu.id));
 
 	const panelContent = page.locator('#menu-week-panel-content');
 	if (!(await panelContent.isVisible())) {

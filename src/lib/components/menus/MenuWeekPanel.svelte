@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { ChevronDown, ChevronUp, Package, Plus, Search, Share2, Trash2, Users, X } from '@lucide/svelte';
+	import { ChevronDown, ChevronUp, CircleCheck, Package, Plus, Search, Share2, Trash2, Users, X } from '@lucide/svelte';
 	import StockProductSearch from '$lib/components/stock/StockProductSearch.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import { ApiError, isSessionExpiredError } from '$lib/api/backend';
@@ -14,11 +14,13 @@
 	let {
 		menu,
 		authorization,
-		onUpdated
+		onUpdated,
+		onCloseMenu
 	}: {
 		menu: EstablishedWeekMenu;
 		authorization: string;
 		onUpdated?: (menu: EstablishedWeekMenu) => void | Promise<void>;
+		onCloseMenu?: () => void | Promise<void>;
 	} = $props();
 
 	let supermarkets = $state<Supermarket[]>([]);
@@ -494,6 +496,12 @@
 					Mostrar
 				{/if}
 			</Button>
+			{#if onCloseMenu}
+				<Button type="button" variant="secondary" onclick={onCloseMenu} data-testid="menu-week-close-menu">
+					<CircleCheck class="size-4" />
+					Cerrar menú
+				</Button>
+			{/if}
 		</div>
 	</div>
 
