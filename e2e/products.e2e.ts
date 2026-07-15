@@ -75,9 +75,7 @@ async function createRecipeApi(
 	name: string,
 	productId: number
 ) {
-	const ingredient = useRealBackend
-		? { productId, quantity: 100, quantityType: 'GRAMS' }
-		: { productId, grams: 100 };
+	const ingredient = { productId, quantity: 100, quantityType: 'GRAMS' };
 
 	const response = await request.post(`${backendUrl}/api/v1/recipes`, {
 		headers: {
@@ -130,7 +128,9 @@ async function selectedTextLength(locator: Locator) {
 }
 
 async function chooseProductFromPicker(page: Page, triggerTestId: string, productId: number, search = '') {
-	await page.getByTestId(triggerTestId).click();
+	if (!(await page.getByTestId('product-picker-modal').isVisible())) {
+		await page.getByTestId(triggerTestId).click();
+	}
 	await expect(page.getByTestId('product-picker-modal')).toBeVisible();
 	if (search) {
 		await page.getByTestId('product-picker-filter-search').fill(search);
@@ -441,8 +441,10 @@ test('muestra el producto que antes caduca al actualizar el stock', async ({ pag
 	await page.getByRole('button', { name: 'Guardar stock' }).click();
 	await expect(page.getByTestId('success-banner')).toContainText('Stock guardado correctamente');
 
-	const metrics = page.locator('section[aria-label="Metricas del catalogo"]');
-	await expect(metrics).toContainText('Producto que antes caduca');
+	await page.getByRole('link', { name: 'Stock' }).click();
+	await expect(page).toHaveURL(/\/stock$/);
+	const metrics = page.getByTestId('stock-stats-panel');
+	await expect(metrics).toContainText('Antes caduca');
 	await expect(metrics).toContainText('Rice');
 	await expect(metrics).toContainText('2029');
 });
@@ -471,6 +473,9 @@ test('edita una entrada de stock sin pasar por borrado', async ({ page, request 
 	await page.getByRole('button', { name: 'Guardar stock' }).click();
 	await expect(page.getByTestId('success-banner')).toContainText('Stock guardado correctamente');
 
+	await page.getByRole('link', { name: 'Stock' }).click();
+	await expect(page).toHaveURL(/\/stock$/);
+	await expect(page.getByTestId('stock-count')).toContainText('1');
 	await page.getByTestId('stock-edit-button-1').click();
 	await expect(page.getByTestId('stock-modal')).toBeVisible();
 	await expect(page.getByRole('heading', { level: 2, name: 'Editar stock' })).toBeVisible();
@@ -479,10 +484,7 @@ test('edita una entrada de stock sin pasar por borrado', async ({ page, request 
 
 	await expect(page.getByTestId('success-banner')).toContainText('Stock actualizado correctamente');
 	await expect(page.getByTestId('stock-modal')).toHaveCount(0);
-	const inventorySection = page.locator('section').filter({
-		has: page.getByRole('heading', { level: 2, name: 'Inventario' })
-	});
-	await expect(inventorySection.locator('table')).toContainText('3,10 €');
+	await expect(page.getByTestId('stock-block-list')).toContainText('3,10 €');
 	expect(stockRequests.some((request) => request.method === 'PUT' && request.path === '/api/v1/stock/1')).toBe(
 		true
 	);
@@ -835,14 +837,19 @@ test('crea una planificación y añade un menu diario con productos', async ({ p
 
 	await page.getByTestId(`week-day-action-${startDate}`).click();
 	await expect(page.getByTestId('week-day-modal')).toBeVisible();
-	await page.getByRole('button', { name: 'Catálogo' }).click();
 	await page.getByTestId('week-day-date').fill(startDate);
 	await page.getByTestId('week-section-day-part-0').selectOption({ label: 'Comida' });
+	await page.getByRole('button', { name: 'Catálogo' }).click();
 	await chooseProductFromPicker(page, 'week-product-id-0-0', 1);
-	await page.getByTestId('week-product-units-0-0').fill('2');
-	await page.getByTestId('week-product-grams-0-0').fill('300');
-	await page.getByTestId('week-product-sort-0-0').fill('10');
-	await page.getByRole('button', { name: 'Guardar menu' }).click();
+	await page.getByTestId('week-product-quantity-value-0-0').fill('2');
+	const [firstDayRequest] = await Promise.all([
+		page.waitForRequest((request) => request.method() === 'PUT' && request.url().endsWith('/days')),
+		page.getByRole('button', { name: 'Guardar menu' }).click()
+	]);
+	expect(firstDayRequest.postDataJSON()).toEqual({
+		date: startDate,
+		sections: [{ dayPartId: 2, products: [{ productId: 1, sortOrder: 10, units: 2 }] }]
+	});
 
 	await expect(page.getByTestId('success-banner')).toContainText('Menu diario guardado correctamente');
 	await expect(page.getByTestId(`week-day-card-${startDate}`)).toContainText('Comida');
@@ -851,14 +858,25 @@ test('crea una planificación y añade un menu diario con productos', async ({ p
 	const secondDate = '2030-01-02';
 	await page.getByTestId(`week-day-action-${secondDate}`).click();
 	await expect(page.getByTestId('week-day-modal')).toBeVisible();
-	await page.getByRole('button', { name: 'Catálogo' }).click();
 	await page.getByTestId('week-day-date').fill(secondDate);
 	await page.getByTestId('week-section-day-part-0').selectOption({ label: 'Cena' });
+	await page.getByRole('button', { name: 'Catálogo' }).click();
 	await chooseProductFromPicker(page, 'week-product-id-0-0', 2);
-	await page.getByTestId('week-product-units-0-0').fill('2');
-	await page.getByTestId('week-product-grams-0-0').fill('300');
-	await page.getByTestId('week-product-sort-0-0').fill('10');
-	await page.getByRole('button', { name: 'Guardar menu' }).click();
+	await page.getByTestId('week-product-quantity-value-0-0').fill('300');
+	const [secondDayRequest, secondDayResponse] = await Promise.all([
+		page.waitForRequest((request) => request.method() === 'PUT' && request.url().endsWith('/days')),
+		page.waitForResponse((response) => response.request().method() === 'PUT' && response.url().endsWith('/days')),
+		page.getByRole('button', { name: 'Guardar menu' }).click()
+	]);
+	expect(secondDayRequest.postDataJSON()).toEqual({
+		date: secondDate,
+		sections: [{ dayPartId: 3, products: [{ productId: 2, sortOrder: 10, grams: 300 }] }]
+	});
+	const secondDayBody = await secondDayResponse.json();
+	expect(secondDayBody.stockSummary.requirements).toEqual([
+		expect.objectContaining({ productId: 1, requiredUnits: 2, estimatedCost: 5 }),
+		expect.objectContaining({ productId: 2, requiredUnits: 1, estimatedCost: 1.25 })
+	]);
 
 	await expect(page.getByTestId('success-banner')).toContainText('Menu diario guardado correctamente');
 	await expect(page.getByTestId(`week-day-card-${secondDate}`)).toContainText('Cena');
@@ -869,13 +887,14 @@ test('crea una planificación y añade un menu diario con productos', async ({ p
 	await expect(page.getByTestId('week-calories-card')).toContainText('273');
 	await expect(page.getByTestId('week-calories-card')).toContainText('01/01/2030');
 	await expect(page.getByTestId('week-distinct-products-card')).toContainText('2');
-	await expect(page.getByTestId('week-cost-card')).toContainText('7,50');
+	await expect(page.getByTestId('week-cost-card')).toContainText('6,25');
 	await page.getByRole('button', { name: 'Ver stock' }).click();
 	await expect(page.getByTestId('week-stock-summary')).toBeVisible();
 	await expect(page.getByTestId('week-stock-summary')).toContainText('Apple');
 	await expect(page.getByTestId('week-stock-summary')).toContainText('Rice');
 	await expect(page.getByTestId('week-stock-row-1')).toContainText('5,00');
-	await expect(page.getByTestId('week-stock-row-2')).toContainText('2,50');
+	await expect(page.getByTestId('week-stock-row-2')).toContainText('1,25');
+	await page.getByRole('button', { name: 'Cerrar stock' }).click();
 
 	await page.getByRole('button', { name: 'Lista de compra' }).click();
 	await expect(page.getByTestId('shopping-list-dialog')).toBeVisible();
@@ -900,7 +919,7 @@ test('enfoca el buscador al abrir el selector de productos desde planificación'
 	await expect(page.getByTestId('week-day-modal')).toBeVisible();
 	await page.getByTestId('week-section-day-part-0').selectOption({ label: 'Comida' });
 
-	await page.getByTestId('week-product-id-0-0').click();
+	await page.getByRole('button', { name: 'Catálogo' }).click();
 	await expect(page.getByTestId('product-picker-modal')).toBeVisible();
 	await expect(page.getByTestId('product-picker-filter-search')).toBeFocused();
 
@@ -1108,7 +1127,6 @@ test('permite configurar partes del dia fuera del menu semanal', async ({ page, 
 	await expect(page.getByTestId('day-part-modal')).toBeVisible();
 	await page.getByTestId('day-part-name').fill(dayPartName);
 	await page.getByTestId('day-part-description').fill('Tentempie de media tarde');
-	await page.getByTestId('day-part-sort').fill('30');
 	await page.getByRole('button', { name: 'Guardar parte' }).click();
 
 	await expect(page.getByTestId('success-banner')).toContainText('Parte del dia creada correctamente');
@@ -1268,6 +1286,7 @@ test('cierra sesion y vuelve al acceso', async ({ page, request }) => {
 	await registerUser(request, username);
 	await login(page, username);
 
+	await page.getByText(username, { exact: true }).click();
 	await page.getByTestId('logout-button').click();
 	await expect(page.getByTestId('login-screen')).toBeVisible();
 

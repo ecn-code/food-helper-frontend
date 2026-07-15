@@ -75,7 +75,7 @@ test('shows menu stats in comidas header with table and calendar views', async (
 		await route.fallback();
 	});
 
-	await page.goto('/#menus');
+	await page.goto('/menus/current');
 	await expect(page.getByRole('heading', { name: 'Menú' })).toBeVisible();
 	await expect(page.getByRole('heading', { name: /^Comidas$/ })).toBeVisible();
 	await expect(page.getByTestId('menu-stats-panel')).toBeVisible({ timeout: 15000 });
@@ -173,7 +173,7 @@ test('shows menus before planning finishes loading', async ({ page, request }) =
 		await route.fulfill({ response });
 	});
 
-	await page.goto('/#menus');
+	await page.goto('/menus/current');
 	await expect(page.getByRole('heading', { name: 'Menú' })).toBeVisible();
 	await expect(page.getByTestId('menu-meals-rows')).toBeVisible({ timeout: 15000 });
 	await expect(page.getByTestId('section-loading-overlay')).toHaveCount(0);

@@ -12,7 +12,7 @@ test('uses the product default price when a proposed week has no stock', async (
 	await page.getByTestId('login-username').fill('elias');
 	await page.getByTestId('login-password').fill('secret-password');
 	await page.getByTestId('login-submit').click();
-	await expect(page.getByTestId('logout-button')).toBeVisible();
+	await expect(page.getByRole('heading', { level: 1, name: 'Productos' })).toBeVisible();
 
 	const session = await page.evaluate(() => {
 		const raw = localStorage.getItem('foodhelper_session');
@@ -40,17 +40,18 @@ test('uses the product default price when a proposed week has no stock', async (
 	expect(productResponse.ok()).toBeTruthy();
 	const product = await productResponse.json();
 
-	const weekResponse = await page.request.post(`${backendBaseUrl}/api/v1/proposed-week-menus`, {
+	const weekResponse = await page.request.post(`${backendBaseUrl}/api/v1/planning`, {
 		headers: authHeaders,
 		data: {
 			startDate: '2026-06-15',
-			endDate: '2026-06-21'
+			endDate: '2026-06-21',
+			users: 1
 		}
 	});
 	expect(weekResponse.ok()).toBeTruthy();
 	const week = await weekResponse.json();
 
-	const dayResponse = await page.request.put(`${backendBaseUrl}/api/v1/proposed-week-menus/${week.id}/days`, {
+	const dayResponse = await page.request.put(`${backendBaseUrl}/api/v1/planning/${week.id}/days`, {
 		headers: authHeaders,
 		data: {
 			date: '2026-06-15',
@@ -74,7 +75,7 @@ test('uses the product default price when a proposed week has no stock', async (
 		localStorage.setItem('foodhelper_selected_planning_menu_id', String(weekId));
 	}, week.id);
 
-	await page.goto('/#week');
+	await page.goto('/planning');
 	await page.reload();
 
 	await page.getByRole('link', { name: 'Planificación' }).click();

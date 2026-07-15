@@ -1,6 +1,12 @@
 import { expect, test } from '@playwright/test';
 
 test('deletes the active proposed week menu completely', async ({ page }) => {
+	if (process.env.E2E_REAL_BACKEND !== '1') {
+		const mockBackendUrl =
+			process.env.MOCK_BACKEND_URL || `http://127.0.0.1:${process.env.MOCK_BACKEND_PORT || 4010}`;
+		await page.request.post(`${mockBackendUrl}/__reset`);
+	}
+
 	await page.goto('/');
 
 	await page.getByTestId('login-username').fill('elias');

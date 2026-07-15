@@ -520,6 +520,7 @@ function proposedWeekMenuResponse(menu) {
 		});
 
 	const totals = days.reduce((accumulator, day) => addNutrition(accumulator, day.nutritionalValues), nutritionalZero());
+	const coverage = calculateMenuCoverage(menu, stockEntries.map((entry) => ({ ...entry })));
 
 	return {
 		id: menu.id,
@@ -527,11 +528,12 @@ function proposedWeekMenuResponse(menu) {
 		endDate: menu.endDate,
 		days,
 		nutritionalValues: totals,
+		stockSummary: coverage.stockSummary,
 		nutritionalRules: evaluateNutritionalRules(totals, days.length)
 	};
 }
 
-function calculateMenuCoverage(menu, stockSnapshot) {
+function calculateMenuCoverage(menu, stockSnapshot, consumeStock = false) {
 	const days = [...menu.days]
 		.sort((left, right) => left.date.localeCompare(right.date))
 		.map((day) => {
@@ -599,7 +601,7 @@ function calculateMenuCoverage(menu, stockSnapshot) {
 	}
 
 	const requirements = [...totalRequirements.values()].map((requirement) => {
-		const lots = [...(stockByProduct.get(requirement.productId) ?? [])].sort(sortStockEntries);
+		const lots = sortStockEntries(stockByProduct.get(requirement.productId) ?? []);
 		let remainingUnits = requirement.requiredUnits;
 		let availableUnits = 0;
 		let coveredUnits = 0;
@@ -616,6 +618,11 @@ function calculateMenuCoverage(menu, stockSnapshot) {
 			coveredUnits += consumedUnits;
 			estimatedCost += consumedUnits * Number(lot.price ?? 0);
 			remainingUnits -= consumedUnits;
+		}
+
+		const defaultPrice = Number(productById(requirement.productId)?.defaultPrice ?? 0);
+		if (remainingUnits > 0 && Number.isFinite(defaultPrice) && defaultPrice > 0) {
+			estimatedCost += remainingUnits * defaultPrice;
 		}
 
 		return {
@@ -656,7 +663,7 @@ function calculateMenuCoverage(menu, stockSnapshot) {
 
 	for (const requirement of requirements) {
 		let remainingUnits = requirement.requiredUnits;
-		const lots = [...(stockByProduct.get(requirement.productId) ?? [])].sort(sortStockEntries);
+		const lots = sortStockEntries(stockByProduct.get(requirement.productId) ?? []);
 
 		for (const lot of lots) {
 			const lotQuantity = Number(lot.quantity ?? 0);
@@ -669,8 +676,7 @@ function calculateMenuCoverage(menu, stockSnapshot) {
 		}
 	}
 
-	const usedStock = [...stockSnapshot]
-		.sort(sortStockEntries)
+	const usedStock = sortStockEntries(stockSnapshot)
 		.flatMap((lot) => {
 			const consumedUnits = stockConsumption.get(lot.id) ?? 0;
 			if (consumedUnits <= 0) return [];
@@ -696,12 +702,14 @@ function calculateMenuCoverage(menu, stockSnapshot) {
 			missingUnits: requirement.missingUnits
 		}));
 
-	for (const entry of stockEntries) {
-		const consumedUnits = stockConsumption.get(entry.id) ?? 0;
-		if (consumedUnits <= 0) continue;
-		entry.quantity = Number((entry.quantity - consumedUnits).toFixed(2));
+	if (consumeStock) {
+		for (const entry of stockEntries) {
+			const consumedUnits = stockConsumption.get(entry.id) ?? 0;
+			if (consumedUnits <= 0) continue;
+			entry.quantity = Number((entry.quantity - consumedUnits).toFixed(2));
+		}
+		stockEntries = stockEntries.filter((entry) => entry.quantity > 0);
 	}
-	stockEntries = stockEntries.filter((entry) => entry.quantity > 0);
 
 	return {
 		days,
@@ -1024,7 +1032,8 @@ function menuStatsResponse(menu) {
 }
 
 function validateProposedWeekMenuPayload(payload) {
-	if (!Number.isInteger(Number(payload.users)) || Number(payload.users) < 1) return 'users must be greater than 0';
+	const users = payload.users ?? 1;
+	if (!Number.isInteger(Number(users)) || Number(users) < 1) return 'users must be greater than 0';
 	if (!payload.startDate || !payload.endDate) return 'startDate and endDate are required';
 	if (Number.isNaN(Date.parse(payload.startDate)) || Number.isNaN(Date.parse(payload.endDate))) {
 		return 'startDate and endDate must be valid dates';
@@ -1286,9 +1295,10 @@ function validateRecipePayload(payload) {
 
 	for (const ingredient of payload.products) {
 		const product = productById(Number(ingredient.productId));
-		const grams = Number(ingredient.grams);
+		const quantity = Number(ingredient.quantity);
 		if (!product) return 'ingredient product not found';
-		if (Number.isNaN(grams) || grams <= 0) return 'ingredient grams must be greater than 0';
+		if (Number.isNaN(quantity) || quantity <= 0) return 'ingredient quantity must be greater than 0';
+		if (ingredient.quantityType !== 'GRAMS') return 'ingredient quantityType must be GRAMS';
 	}
 
 	return null;
@@ -1942,7 +1952,7 @@ const server = http.createServer(async (req, res) => {
 			instructions: String(payload.instructions).trim(),
 			ingredients: payload.products.map((ingredient) => ({
 				productId: Number(ingredient.productId),
-				grams: Number(ingredient.grams)
+				grams: Number(ingredient.quantity)
 			})),
 			derivedProduct: null,
 			photo: payload.photo ? createMediaRecord(payload.photo) : null
@@ -1985,7 +1995,7 @@ const server = http.createServer(async (req, res) => {
 			recipe.instructions = String(payload.instructions).trim();
 			recipe.ingredients = payload.products.map((ingredient) => ({
 				productId: Number(ingredient.productId),
-				grams: Number(ingredient.grams)
+				grams: Number(ingredient.quantity)
 			}));
 			if (typeof payload.stockFromComposition === 'boolean' && recipe.derivedProduct) {
 				recipe.derivedProduct = {
@@ -2064,7 +2074,7 @@ const server = http.createServer(async (req, res) => {
 
 		const created = {
 			id: nextProposedWeekMenuId++,
-			users: Number(payload.users),
+			users: Number(payload.users ?? 1),
 			startDate: String(payload.startDate),
 			endDate: String(payload.endDate),
 			days: []
@@ -2347,7 +2357,7 @@ const server = http.createServer(async (req, res) => {
 				return;
 			}
 		}
-		const coverage = calculateMenuCoverage(menu, stockEntries.map((entry) => ({ ...entry })));
+		const coverage = calculateMenuCoverage(menu, stockEntries.map((entry) => ({ ...entry })), true);
 		const established = {
 			id: nextEstablishedWeekMenuId++,
 			proposedWeekMenuId: menu.id,

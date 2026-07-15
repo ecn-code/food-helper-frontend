@@ -74,7 +74,7 @@ test('cierra un menú con varias personas y rechaza el cierre sin selección', a
 	await page.getByTestId('close-menu-dialog').getByRole('button', { name: 'Cancelar' }).click();
 	await expect(page.getByTestId('close-menu-dialog')).toHaveCount(0);
 	await page.getByRole('button', { name: 'Ir a planificación' }).click();
-	await expect(page).toHaveURL(/#planning$/);
+	await expect(page).toHaveURL(/\/planning$/);
 	await page.getByRole('link', { name: 'Menú', exact: true }).click();
 	await expect(page.getByTestId('close-menu-dialog')).toHaveCount(0);
 	await page.getByTestId('menu-week-close-menu').click();
@@ -211,6 +211,7 @@ test('permite ajustar el stock temporal del menu y reducir la lista de la compra
 		}
 	});
 	expect(dummyPublishResponse.ok()).toBeTruthy();
+	const dummyEstablishedMenu = await dummyPublishResponse.json();
 
 	await page.reload();
 	await page.getByTestId('app-ready').waitFor();
@@ -256,9 +257,20 @@ test('permite ajustar el stock temporal del menu y reducir la lista de la compra
 	await expect(page.getByTestId('menu-week-stock-item-1')).toContainText('Apple');
 	await expect(page.getByTestId('menu-week-stock-item-1')).toContainText('2 uds · 3,10 €');
 
+	await expect(menuSelector).toHaveValue(String(establishedMenu.id));
 	await page.getByTestId('menu-week-close-menu').click();
-	await page.getByTestId('close-menu-dialog').getByRole('button', { name: 'Confirmar cierre' }).click();
-	await expect(page.getByTestId('menu-week-panel')).toHaveCount(0);
+	await Promise.all([
+		page.waitForResponse(
+			(response) =>
+				response.request().method() === 'POST' &&
+				response.url().endsWith(`/api/v1/menus/${establishedMenu.id}/close`) &&
+				response.status() === 200
+		),
+		page.getByTestId('close-menu-dialog').getByRole('button', { name: 'Confirmar cierre' }).click()
+	]);
+	await expect(page.getByTestId('close-menu-dialog')).toHaveCount(0);
+	await expect(menuSelector).toHaveValue(String(dummyEstablishedMenu.id));
+	await expect(page.getByTestId('menu-week-panel')).toBeVisible();
 });
 
 test('limita la cantidad del stock global al maximo disponible', async ({ page, request }) => {
@@ -426,7 +438,7 @@ test('recuerda el estado colapsado del bloque de menú en el navegador', async (
 		localStorage.setItem('foodhelper_selected_menu_id', String(menuId));
 	}, establishedMenu.id);
 
-	await page.goto('/#menus');
+	await page.goto('/menus/current');
 
 	const panel = page.getByTestId('menu-week-panel');
 	const content = page.locator('#menu-week-panel-content');

@@ -19,21 +19,21 @@ export default defineConfig({
 				command: `PUBLIC_BACKEND_BASE_URL=${resolvedBackendBaseUrl} npm run build && PUBLIC_BACKEND_BASE_URL=${resolvedBackendBaseUrl} npm run preview -- --host 127.0.0.1 --port ${frontendPort}`,
 				port: frontendPort,
 				reuseExistingServer: !process.env.CI,
-				timeout: 120000
+				timeout: 240000
 			}
 		: [
 				{
 					command: `MOCK_BACKEND_PORT=${mockBackendPort} node tests/mock-backend.mjs`,
 					port: mockBackendPort,
 					reuseExistingServer: !process.env.CI,
-					timeout: 120000
+					timeout: 240000
 				},
 				{
 					command:
 						`PUBLIC_BACKEND_BASE_URL=${resolvedBackendBaseUrl} npm run build && PUBLIC_BACKEND_BASE_URL=${resolvedBackendBaseUrl} npm run preview -- --host 127.0.0.1 --port ${frontendPort}`,
 					port: frontendPort,
 					reuseExistingServer: !process.env.CI,
-					timeout: 120000
+					timeout: 240000
 				}
 			],
 	testMatch: '**/*.e2e.{ts,js}'
