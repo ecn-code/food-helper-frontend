@@ -76,9 +76,11 @@ test('shows menu stats in comidas header with table and calendar views', async (
 	});
 
 	await page.goto('/menus/current');
-	await expect(page.getByRole('heading', { name: 'Menú' })).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Menú', exact: true })).toBeVisible();
 	await expect(page.getByRole('heading', { name: /^Comidas$/ })).toBeVisible();
 	await expect(page.getByTestId('menu-stats-panel')).toBeVisible({ timeout: 15000 });
+	await expect(page.getByTestId('menu-stats-panel')).toContainText('Calorías medias');
+	await expect(page.getByTestId('menu-stats-panel')).toContainText('kcal por día planificado');
 	await expect(page.getByTestId('menu-edit-button')).toBeVisible({ timeout: 15000 });
 	await expect(page.getByTestId('menu-delete-button')).toBeVisible({ timeout: 15000 });
 	await expect(page.getByTestId('menu-meals-rows')).toContainText('Desayuno', { timeout: 15000 });
@@ -88,12 +90,17 @@ test('shows menu stats in comidas header with table and calendar views', async (
 	await page.getByTestId('menu-view-mode-calendar').click();
 	await expect(page.getByTestId('menu-calendar-view')).toBeVisible();
 	await expect(page.getByTestId('menu-calendar-grid')).toContainText('Sin comida');
+	await expect(page.getByTestId(`menu-calendar-day-calories-${startDate}`)).toHaveText('(78 kcal)');
+	await expect(page.getByTestId(`menu-calendar-day-part-calories-${startDate}-1`)).toContainText('(78 kcal)');
+	await expect(page.getByTestId(`menu-calendar-day-calories-${endDate}`)).toHaveText('(0 kcal)');
+	await expect(page.getByTestId(`menu-calendar-day-part-calories-${endDate}-1`)).toContainText('(0 kcal)');
 
 	await page.getByTestId('menu-filter-mode-dates').click();
 	await page.getByTestId('menu-date-from').fill(startDate);
 	await page.getByTestId('menu-date-to').fill(endDate);
 	await expect(page.getByTestId('menu-stats-panel')).toBeVisible();
 	await expect(page.getByTestId('menu-stats-panel')).toContainText('Días visibles');
+	await expect(page.getByTestId('menu-stats-panel')).toContainText('Calorías medias');
 
 	await page.getByTestId('menu-filter-mode-menu').click();
 	await page.getByTestId('menu-edit-button').click();
@@ -174,7 +181,7 @@ test('shows menus before planning finishes loading', async ({ page, request }) =
 	});
 
 	await page.goto('/menus/current');
-	await expect(page.getByRole('heading', { name: 'Menú' })).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Menú', exact: true })).toBeVisible();
 	await expect(page.getByTestId('menu-meals-rows')).toBeVisible({ timeout: 15000 });
 	await expect(page.getByTestId('section-loading-overlay')).toHaveCount(0);
 });

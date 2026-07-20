@@ -1,8 +1,6 @@
 <script lang="ts">
 	import { Droplets, Drumstick, Flame, Wheat } from '@lucide/svelte';
-	import type { NutritionalRulesEvaluation } from '$lib/api/proposed-week-menus';
-	import type { NutritionalValues } from '$lib/products';
-	import { evaluateNutritionRules } from '$lib/nutritional-rules';
+	import type { NutritionalRuleSetEvaluation } from '$lib/api/proposed-week-menus';
 	import {
 		emptyNutrientRuleEvaluation,
 		formatNumber,
@@ -13,13 +11,10 @@
 	} from '$lib/components/planning/nutritional-evaluation';
 
 	let {
-		values,
-		rules
+		evaluation
 	}: {
-		values: NutritionalValues;
-		rules: NutritionalRulesEvaluation;
+		evaluation: NutritionalRuleSetEvaluation;
 	} = $props();
-	const evaluation = $derived(evaluateNutritionRules(values, rules).daily);
 </script>
 
 <div

@@ -13,17 +13,18 @@ test('keeps multiple proposed weeks selectable', async ({ page }) => {
 	await page.getByTestId('week-start-date').fill('2026-06-15');
 	await page.getByTestId('week-end-date').fill('2026-06-21');
 	await page.getByTestId('week-create-form').getByRole('button', { name: 'Crear semana' }).click();
-	await expect(page.getByTestId('week-date-range')).toContainText('15/06/2026');
+	await expect(page.getByTestId('planning-menu-selector').locator('option:checked')).toContainText('15/06/2026');
+	await expect(page.getByTestId('week-users-count')).toHaveText('1 persona');
 
 	await page.getByRole('button', { name: 'Nueva semana' }).click();
 	await page.getByTestId('week-start-date').fill('2026-06-22');
 	await page.getByTestId('week-end-date').fill('2026-06-28');
 	await page.getByTestId('week-create-form').getByRole('button', { name: 'Crear semana' }).click();
-	await expect(page.getByTestId('week-date-range')).toContainText('22/06/2026');
+	await expect(page.getByTestId('planning-menu-selector').locator('option:checked')).toContainText('22/06/2026');
 
 	// Reloading exercises selection from GET /api/v1/planning instead of the in-memory active menu.
 	await page.reload();
-	await expect(page.getByTestId('week-date-range')).toContainText('22/06/2026');
+	await expect(page.getByTestId('planning-menu-selector').locator('option:checked')).toContainText('22/06/2026');
 
 	const selector = page.getByTestId('planning-menu-selector');
 	await expect(selector).toBeVisible();
@@ -44,11 +45,9 @@ test('keeps multiple proposed weeks selectable', async ({ page }) => {
 	await selector.selectOption(firstMenuId);
 	await expect(selector).toHaveValue(firstMenuId);
 	await expect(selector.locator('option:checked')).toContainText('15/06/2026');
-	await expect(page.getByTestId('week-date-range')).toContainText('15/06/2026');
 	await expect.poll(() => page.evaluate(() => localStorage.getItem('foodhelper_selected_planning_menu_id'))).toBe(firstMenuId);
 
 	await selector.selectOption(secondMenuId);
 	await expect(selector).toHaveValue(secondMenuId);
 	await expect(selector.locator('option:checked')).toContainText('22/06/2026');
-	await expect(page.getByTestId('week-date-range')).toContainText('22/06/2026');
 });

@@ -5,6 +5,7 @@ export type StockEntryPayload = {
 	productId: number;
 	productName: string;
 	quantity: number;
+	isStockInUnits: boolean;
 	price: number;
 	expirationDate: string | null;
 	entryDate: string;

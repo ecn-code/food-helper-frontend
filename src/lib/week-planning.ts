@@ -9,6 +9,7 @@ export type WeekDayCalories = {
 export type WeekStockRequirement = {
 	productId: number;
 	productName: string;
+	isStockInUnits: boolean;
 	requiredUnits: number;
 	availableUnits: number;
 	coveredUnits: number;
@@ -94,6 +95,9 @@ export function buildWeekPlanningSummary(
 			requirements: menu.stockSummary.requirements.map((requirement) => ({
 				productId: requirement.productId,
 				productName: requirement.productName,
+				// Keep old API deployments readable while they are upgraded. The backend
+				// contract makes this field mandatory, so false is only a compatibility fallback.
+				isStockInUnits: requirement.isStockInUnits ?? false,
 				requiredUnits: roundUnits(requirement.requiredUnits),
 				availableUnits: roundUnits(requirement.availableUnits),
 				coveredUnits: roundUnits(requirement.coveredUnits),

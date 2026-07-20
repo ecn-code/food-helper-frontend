@@ -107,10 +107,12 @@ export type ProposedWeekMenuDayResponse = {
 	date: string;
 	sections: ProposedWeekMenuSectionResponse[];
 	nutritionalValues: NutritionalValues;
+	dailyNutritionalEvaluation?: NutritionalRuleSetEvaluationResponse;
 };
 
 export type ProposedWeekMenuResponse = {
 	id: number;
+	users?: number | null;
 	startDate: string;
 	endDate: string;
 	days: ProposedWeekMenuDayResponse[];

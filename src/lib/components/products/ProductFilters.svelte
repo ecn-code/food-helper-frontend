@@ -60,7 +60,7 @@
 
 <div class="space-y-4 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4 shadow-sm">
 	<label class="block min-w-0">
-		<span class={fieldLabelClass}>Filtro rápido</span>
+		<span class={fieldLabelClass}>Filtro rápido <span class="font-normal text-[hsl(var(--muted-foreground))]">(La búsqueda rápida actúa sobre nombre y descripción.)</span></span>
 		<div class="relative">
 			<Search class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[hsl(var(--muted-foreground))]" aria-hidden="true" />
 			<input
@@ -82,10 +82,7 @@
 		description="Define los límites nutricionales por 100 g. Todos los valores guardados se combinarán."
 	/>
 
-	<div class="flex flex-wrap items-center justify-between gap-3">
-		<p class="text-xs text-[hsl(var(--muted-foreground))]">
-			La búsqueda rápida actúa sobre nombre y descripción.
-		</p>
+	<div class="flex flex-wrap items-center justify-end gap-3">
 		{#if hasActiveProductFilters(filters)}
 			<Button type="button" variant="ghost" size="sm" onclick={onClear}>
 				<X class="size-4" aria-hidden="true" />

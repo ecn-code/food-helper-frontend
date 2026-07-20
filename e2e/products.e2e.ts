@@ -194,7 +194,7 @@ test('lista, crea, edita y elimina productos desde la web', async ({ page, reque
 	await expect(page.getByTestId('create-modal')).toBeVisible();
 	await page.getByTestId('create-name').fill(productName);
 	await page.getByTestId('create-description').fill('Tomate maduro de temporada');
-	await page.getByTestId('create-default-price').fill('2.49');
+	await page.getByTestId('create-default-price').fill('0.0068');
 	await page.getByTestId('create-calories').fill('18');
 	await page.getByTestId('create-carbohydrates').fill('3.9');
 	await page.getByTestId('create-proteins').fill('0.9');
@@ -209,14 +209,14 @@ test('lista, crea, edita y elimina productos desde la web', async ({ page, reque
 	await createdCard.getByRole('button', { name: 'Ver' }).click();
 	await expect(page.getByTestId('product-view-modal')).toBeVisible();
 	await expect(page.getByTestId('product-view-modal')).toContainText(productName);
-	await expect(page.getByTestId('product-view-modal')).toContainText(/2[,\.]49\s?€/);
+	await expect(page.getByTestId('product-view-modal')).toContainText(/0[,\.]0068\s?€/);
 	await page.getByTestId('product-view-modal').getByRole('button', { name: 'Cerrar modal' }).click();
 	await createdCard.getByRole('button', { name: 'Editar' }).click();
 
 	await expect(page.getByTestId('edit-modal')).toBeVisible();
 	await page.getByTestId('edit-name').fill(updatedName);
 	await page.getByTestId('edit-description').fill('Tomate pera con sabor intenso');
-	await page.getByTestId('edit-default-price').fill('2.79');
+	await page.getByTestId('edit-default-price').fill('0.0042');
 	await page.getByTestId('edit-calories').fill('20');
 	await page.getByTestId('edit-carbohydrates').fill('4.2');
 	await page.getByTestId('edit-proteins').fill('1');
@@ -230,7 +230,7 @@ test('lista, crea, edita y elimina productos desde la web', async ({ page, reque
 
 	const updatedCardView = page.locator('[data-testid^="product-card-"]').filter({ hasText: updatedName });
 	await updatedCardView.getByRole('button', { name: 'Ver' }).click();
-	await expect(page.getByTestId('product-view-modal')).toContainText(/2[,\.]79\s?€/);
+	await expect(page.getByTestId('product-view-modal')).toContainText(/0[,\.]0042\s?€/);
 	await page.getByTestId('product-view-modal').getByRole('button', { name: 'Cerrar modal' }).click();
 
 	const updatedCard = page.locator('[data-testid^="product-card-"]').filter({ hasText: updatedName });
@@ -425,7 +425,7 @@ test('muestra el producto que antes caduca al actualizar el stock', async ({ pag
 	await appleCard.getByRole('button', { name: 'Añadir stock' }).click();
 	await expect(page.getByTestId('stock-modal')).toBeVisible();
 	await page.getByTestId('stock-quantity').fill('3');
-	await page.getByTestId('stock-price').fill('2.50');
+	await page.getByTestId('stock-price').fill('0.0068');
 	await page.getByTestId('stock-expiration-date').fill('2030-01-01');
 	await page.getByTestId('stock-entry-date').fill('2026-06-16');
 	await page.getByRole('button', { name: 'Guardar stock' }).click();
@@ -479,12 +479,12 @@ test('edita una entrada de stock sin pasar por borrado', async ({ page, request 
 	await page.getByTestId('stock-edit-button-1').click();
 	await expect(page.getByTestId('stock-modal')).toBeVisible();
 	await expect(page.getByRole('heading', { level: 2, name: 'Editar stock' })).toBeVisible();
-	await page.getByTestId('stock-price').fill('3.10');
+	await page.getByTestId('stock-price').fill('0.0042');
 	await page.getByRole('button', { name: 'Guardar cambios' }).click();
 
 	await expect(page.getByTestId('success-banner')).toContainText('Stock actualizado correctamente');
 	await expect(page.getByTestId('stock-modal')).toHaveCount(0);
-	await expect(page.getByTestId('stock-block-list')).toContainText('3,10 €');
+	await expect(page.getByTestId('stock-block-list')).toContainText('0,0042 €');
 	expect(stockRequests.some((request) => request.method === 'PUT' && request.path === '/api/v1/stock/1')).toBe(
 		true
 	);
@@ -854,6 +854,7 @@ test('crea una planificación y añade un menu diario con productos', async ({ p
 	await expect(page.getByTestId('success-banner')).toContainText('Menu diario guardado correctamente');
 	await expect(page.getByTestId(`week-day-card-${startDate}`)).toContainText('Comida');
 	await expect(page.getByTestId(`week-day-card-${startDate}`)).toContainText('Apple');
+	await expect(page.getByTestId(`week-day-calories-${startDate}`)).toContainText('104 kcal');
 
 	const secondDate = '2030-01-02';
 	await page.getByTestId(`week-day-action-${secondDate}`).click();

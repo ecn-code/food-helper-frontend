@@ -38,6 +38,7 @@ export function readProductValues(formData: FormData): ProductFormValues {
 		name: readString(formData, 'name'),
 		description: readString(formData, 'description'),
 		gramsPerUnit: readString(formData, 'gramsPerUnit'),
+		isStockInUnits: formData.get('isStockInUnits') === 'on',
 		defaultPrice: readString(formData, 'defaultPrice'),
 		calories: readString(formData, 'calories'),
 		carbohydrates: readString(formData, 'carbohydrates'),
@@ -113,7 +114,7 @@ export function validateRegisterForm(values: RegisterValues) {
 
 export function validateProductForm(values: ProductFormValues) {
 	const fieldErrors: ProductFormErrors = {};
-	const decimalFields: Array<keyof Omit<ProductFormValues, 'name' | 'description' | 'defaultPrice'>> = [
+	const decimalFields: Array<keyof Omit<ProductFormValues, 'name' | 'description' | 'defaultPrice' | 'isStockInUnits'>> = [
 		'gramsPerUnit',
 		'calories',
 		'carbohydrates',

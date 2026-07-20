@@ -18,6 +18,11 @@ export type EstablishedWeekMenuDayCaloriesResponse = {
 export type EstablishedWeekMenuRequirementResponse = {
 	productId: number;
 	productName: string;
+	/**
+	 * True when every quantity in this requirement is expressed as product units
+	 * instead of grams. It mirrors the product's `isStockInUnits` setting.
+	 */
+	isStockInUnits: boolean;
 	requiredUnits: number;
 	availableUnits: number;
 	coveredUnits: number;
@@ -53,6 +58,20 @@ export type EstablishedWeekMenuWeekStockItemResponse = {
 	productName: string;
 	quantity: number;
 	price: number;
+};
+
+export type EstablishedWeekMenuRecipeProductionResponse = {
+	id: number;
+	recipeId: number;
+	recipeName: string;
+	productId: number;
+	productName: string;
+	units: number;
+	sortOrder: number;
+	transferred: boolean;
+	transferType: string | null;
+	stockEntryId: number | null;
+	transferredAt: string | null;
 };
 
 export type EstablishedWeekMenuShoppingListItemResponse = {
@@ -91,6 +110,7 @@ export type EstablishedWeekMenuResponse = {
 	stockSummary: EstablishedWeekMenuStockSummaryResponse;
 	usedStock: EstablishedWeekMenuUsedStockResponse[];
 	weekStock: EstablishedWeekMenuWeekStockItemResponse[];
+	recipeProductions: EstablishedWeekMenuRecipeProductionResponse[];
 	shoppingList: EstablishedWeekMenuShoppingListItemResponse[];
 	nutritionalRules?: NutritionalRulesEvaluation;
 };
@@ -178,12 +198,34 @@ export type MenuPeriodStats = {
 };
 export type MenuStatsResponse = { menuId: number; period: MenuPeriodStats; month: MenuPeriodStats };
 
-export async function closeMenu(id: number, personIds: number[], authorization: string) {
+export type MenuRangeStatsResponse = {
+	from: string;
+	to: string;
+	plannedDays: number;
+	calories: number;
+	distinctProducts: number;
+	estimatedCost: number;
+	menuIds: number[];
+};
+
+export async function getMenuRangeStats(from: string, to: string, authorization: string) {
+	const query = new URLSearchParams({ from, to });
+	return await request<MenuRangeStatsResponse>(`/api/v1/menus/stats?${query.toString()}`, {
+		headers: authHeaders(authorization)
+	});
+}
+
+export async function closeMenu(
+	id: number,
+	options: { personIds: number[]; excludedPositiveStockProductIds: number[] },
+	authorization: string
+) {
 	return await request<MenuStatsResponse>(`/api/v1/menus/${id}/close`, {
 		method: 'POST',
 		headers: authHeaders(authorization),
 		body: JSON.stringify({
-			personIds: personIds.map((personId) => Number(personId))
+			personIds: options.personIds.map((personId) => Number(personId)),
+			excludedPositiveStockProductIds: options.excludedPositiveStockProductIds.map((productId) => Number(productId))
 		})
 	});
 }

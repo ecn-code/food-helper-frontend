@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { Search, X } from '@lucide/svelte';
+	import { CircleCheck, LayoutGrid, List, Plus, Search, X } from '@lucide/svelte';
 	import { listProductsPage } from '$lib/api/products';
 	import Button from '$lib/components/ui/Button.svelte';
 	import ProductFiltersPanel from '$lib/components/products/ProductFilters.svelte';
@@ -8,6 +8,8 @@
 	import type { Product } from '$lib/products';
 
 	const PAGE_SIZE = 24;
+	type ViewMode = 'block' | 'list';
+	type DayPartOption = { id: string | number; name: string };
 
 	let {
 		title,
@@ -16,6 +18,9 @@
 		products,
 		selectedProductId = '',
 		onSelect,
+		dayParts = [],
+		initialDayPartId = '',
+		onAdd,
 		onClose,
 		testId = 'product-picker-modal'
 	}: {
@@ -25,6 +30,9 @@
 		products: Product[];
 		selectedProductId?: number | string | null;
 		onSelect: (product: Product) => void;
+		dayParts?: DayPartOption[];
+		initialDayPartId?: string;
+		onAdd?: (product: Product, dayPartId: string, keepOpen: boolean) => void;
 		onClose: () => void;
 		testId?: string;
 	} = $props();
@@ -37,6 +45,10 @@
 	let visibleProductsError = $state<string | null>(null);
 	let visibleProductsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 	let visibleProductsRequestToken = 0;
+	let viewMode = $state<ViewMode>('block');
+	let selectedDayPartId = $state('');
+	let addFeedback = $state<string | null>(null);
+	let addFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
 
 	function normalizedSelectedProductId() {
 		const numeric = Number(selectedProductId);
@@ -65,6 +77,20 @@
 
 	function selectProduct(product: Product) {
 		onSelect(product);
+	}
+
+	function addProduct(product: Product, keepOpen: boolean) {
+		if (!onAdd || !selectedDayPartId) return;
+		onAdd(product, selectedDayPartId, keepOpen);
+		if (keepOpen) {
+			const dayPartName = dayParts.find((dayPart) => String(dayPart.id) === selectedDayPartId)?.name ?? 'la parte del día seleccionada';
+			addFeedback = `“${product.name}” añadido a ${dayPartName}.`;
+			if (addFeedbackTimer !== null) clearTimeout(addFeedbackTimer);
+			addFeedbackTimer = setTimeout(() => {
+				addFeedback = null;
+				addFeedbackTimer = null;
+			}, 4_000);
+		}
 	}
 
 	function cancelVisibleProductsRefresh() {
@@ -126,10 +152,12 @@
 	}
 
 	onMount(() => {
+		selectedDayPartId = initialDayPartId;
 		refreshVisibleProducts(true);
 
 		return () => {
 			cancelVisibleProductsRefresh();
+			if (addFeedbackTimer !== null) clearTimeout(addFeedbackTimer);
 		};
 	});
 </script>
@@ -155,6 +183,17 @@
 		</div>
 
 		<div class="max-h-[calc(100vh-8rem)] overflow-y-auto p-5">
+			{#if onAdd}
+				<label class="mb-4 block min-w-0">
+					<span class="mb-1.5 block text-sm font-medium text-[hsl(var(--foreground))]">Parte del día</span>
+					<select class="h-10 w-full rounded-md border border-[hsl(var(--input))] bg-[hsl(var(--card))] px-3 text-sm text-[hsl(var(--foreground))] shadow-sm focus:border-[hsl(var(--ring))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--ring)/0.14)]" bind:value={selectedDayPartId} data-testid="product-picker-day-part">
+						<option value="">Selecciona una parte del día</option>
+						{#each dayParts as dayPart}
+							<option value={String(dayPart.id)}>{dayPart.name}</option>
+						{/each}
+					</select>
+				</label>
+			{/if}
 			<ProductFiltersPanel
 				filters={filters}
 				onChange={updateFilters}
@@ -162,8 +201,14 @@
 				testIdPrefix="product-picker-filter"
 				focusOnMount={true}
 			/>
+			{#if addFeedback}
+				<p class="mt-3 flex items-center gap-2 rounded-md border border-[hsl(var(--primary)/0.28)] bg-[hsl(var(--primary)/0.08)] px-3 py-2 text-sm text-[hsl(var(--foreground))]" role="status" data-testid="product-picker-add-feedback">
+					<CircleCheck class="size-4 shrink-0 text-[hsl(var(--primary))]" aria-hidden="true" />
+					{addFeedback}
+				</p>
+			{/if}
 
-			<div class="mt-4 flex items-center justify-between gap-3 text-sm">
+			<div class="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm">
 				<p class="text-[hsl(var(--muted-foreground))]">
 					{#if visibleProductsLoading && !visibleProductsLoaded}
 						Buscando...
@@ -175,6 +220,16 @@
 					<p class="text-xs text-[hsl(var(--muted-foreground))]">
 						Seleccionado: <span class="font-medium text-[hsl(var(--foreground))]">{selectedProduct()?.name}</span>
 					</p>
+				{/if}
+				{#if onAdd}
+					<div class="flex items-center gap-1 rounded-md border border-[hsl(var(--border))] p-1" aria-label="Modo de vista">
+						<Button type="button" variant={viewMode === 'block' ? 'secondary' : 'ghost'} size="icon" onclick={() => (viewMode = 'block')} aria-label="Vista en bloques" title="Vista en bloques">
+							<LayoutGrid class="size-4" aria-hidden="true" />
+						</Button>
+						<Button type="button" variant={viewMode === 'list' ? 'secondary' : 'ghost'} size="icon" onclick={() => (viewMode = 'list')} aria-label="Vista en lista" title="Vista en lista">
+							<List class="size-4" aria-hidden="true" />
+						</Button>
+					</div>
 				{/if}
 			</div>
 
@@ -192,18 +247,35 @@
 						Prueba a quitar filtros o a buscar por otro nombre.
 					</p>
 				</div>
+			{:else if onAdd && viewMode === 'list'}
+				<div class="mt-4 space-y-3">
+					{#each displayedProducts() as product (product.id)}
+						<article class="flex flex-col gap-4 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4 sm:flex-row sm:items-center sm:justify-between">
+							<div class="min-w-0">
+								<p class="font-medium text-[hsl(var(--foreground))]">{product.name}</p>
+								<p class="mt-1 break-words text-sm text-[hsl(var(--muted-foreground))]">{product.description}</p>
+							</div>
+							<div class="flex shrink-0 flex-wrap gap-2">
+								<Button type="button" variant="secondary" size="sm" onclick={() => addProduct(product, true)} disabled={!selectedDayPartId}>
+									<Plus class="size-4" aria-hidden="true" /> Añadir y seguir
+								</Button>
+								<Button type="button" size="sm" onclick={() => addProduct(product, false)} disabled={!selectedDayPartId} data-testid={`product-picker-option-${product.id}`}>
+									<Plus class="size-4" aria-hidden="true" /> Añadir
+								</Button>
+							</div>
+						</article>
+					{/each}
+				</div>
 			{:else}
 				<div class="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
 					{#each displayedProducts() as product (product.id)}
-						<button
-							type="button"
+						<article
 							class={`rounded-lg border p-4 text-left shadow-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))] ${
 								product.id === normalizedSelectedProductId()
 									? 'border-[hsl(var(--primary)/0.4)] bg-[hsl(var(--primary)/0.06)]'
 									: 'border-[hsl(var(--border))] bg-[hsl(var(--card))] hover:border-[hsl(var(--primary)/0.24)] hover:bg-[hsl(var(--secondary)/0.24)]'
 							}`}
-							onclick={() => selectProduct(product)}
-							data-testid={`product-picker-option-${product.id}`}
+							data-testid={onAdd ? undefined : `product-picker-card-${product.id}`}
 						>
 							<div class="flex items-start justify-between gap-3">
 								<div class="min-w-0">
@@ -248,7 +320,21 @@
 									</dd>
 								</div>
 							</dl>
-						</button>
+							{#if onAdd}
+								<div class="mt-4 flex flex-wrap gap-2 border-t border-[hsl(var(--border))] pt-3">
+									<Button type="button" variant="secondary" size="sm" onclick={() => addProduct(product, true)} disabled={!selectedDayPartId}>
+										<Plus class="size-4" aria-hidden="true" /> Añadir y seguir
+									</Button>
+									<Button type="button" size="sm" onclick={() => addProduct(product, false)} disabled={!selectedDayPartId} data-testid={`product-picker-option-${product.id}`}>
+										<Plus class="size-4" aria-hidden="true" /> Añadir
+									</Button>
+								</div>
+							{:else}
+								<Button type="button" variant="secondary" size="sm" class="mt-4 w-full" onclick={() => selectProduct(product)} data-testid={`product-picker-option-${product.id}`}>
+									Seleccionar
+								</Button>
+							{/if}
+						</article>
 					{/each}
 				</div>
 			{/if}

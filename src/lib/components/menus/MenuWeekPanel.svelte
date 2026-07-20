@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { ChevronDown, ChevronUp, CircleCheck, Package, Plus, Search, Share2, Trash2, Users, X } from '@lucide/svelte';
+	import { ChevronDown, ChevronUp, CircleCheck, FileJson2, Package, Plus, Search, Share2, Trash2, Users, X } from '@lucide/svelte';
+	import MenuItemImportDialog from '$lib/components/menus/MenuItemImportDialog.svelte';
 	import StockProductSearch from '$lib/components/stock/StockProductSearch.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import { ApiError, isSessionExpiredError } from '$lib/api/backend';
@@ -36,6 +37,7 @@
 	let stockMovementError = $state('');
 	let savingWeekStock = $state(false);
 	let savingStockMovement = $state(false);
+	let importDialogOpen = $state(false);
 	let stockDialogMode = $state<'shopping-list' | 'catalog' | 'global-stock' | null>(null);
 	let shoppingListProductId = $state('');
 	let shoppingListQuantity = $state('');
@@ -95,7 +97,7 @@
 		if (typeof value !== 'number' || !Number.isFinite(value)) {
 			return '—';
 		}
-		return new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR', maximumFractionDigits: 2 }).format(value);
+		return new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR', maximumFractionDigits: 4 }).format(value);
 	}
 
 	function openStockDialog(mode: NonNullable<typeof stockDialogMode>) {
@@ -602,6 +604,10 @@
 					</div>
 
 					<div class="mt-4 flex flex-wrap gap-2">
+						<Button type="button" onclick={() => importDialogOpen = true} data-testid="menu-week-open-json-import">
+							<FileJson2 class="size-4" />
+							Importar JSON
+						</Button>
 						<Button type="button" variant="secondary" onclick={() => openStockDialog('shopping-list')} data-testid="menu-week-open-shopping-list-dialog">
 							Desde lista
 						</Button>
@@ -922,3 +928,18 @@
 	{/if}
 	</div>
 	</section>
+
+{#if importDialogOpen}
+	<MenuItemImportDialog
+		menuId={menu.id}
+		{authorization}
+		onClose={() => importDialogOpen = false}
+		onImported={async (updatedMenu) => {
+			const normalizedMenu = toEstablishedWeekMenuModel(updatedMenu);
+			await onUpdated?.(normalizedMenu);
+			weekStockDraft = normalizedMenu.weekStock.map((item) => ({ ...item }));
+			usedStock = normalizedMenu.usedStock.map((item) => ({ ...item }));
+			shoppingList = normalizedMenu.shoppingList.map((item) => ({ ...item }));
+		}}
+	/>
+{/if}

@@ -45,6 +45,7 @@ let nextProposedWeekMenuId = 1;
 let nextProposedWeekMenuDayId = 1;
 let nextProposedWeekMenuSectionId = 1;
 let nextEstablishedWeekMenuId = 1;
+let nextRecipeProductionId = 1;
 const defaultProposedWeekMenuDayParts = [
 	{ id: 1, name: 'Desayuno', description: 'Primera comida del dia', sortOrder: 10 },
 	{ id: 2, name: 'Comida', description: 'Comida principal del dia', sortOrder: 20 },
@@ -58,6 +59,7 @@ let products = [
 		name: 'Apple',
 		description: 'Fresh apple',
 		gramsPerUnit: 150,
+		isStockInUnits: false,
 		nutritionBasis: 'PER_UNIT',
 		defaultPrice: null,
 		nutritionalValues: {
@@ -73,6 +75,7 @@ let products = [
 		name: 'Rice',
 		description: 'Dry white rice',
 		gramsPerUnit: 1000,
+		isStockInUnits: false,
 		nutritionBasis: 'PER_100_GRAMS',
 		defaultPrice: null,
 		nutritionalValues: {
@@ -119,6 +122,7 @@ function resetAuth() {
 	nextProposedWeekMenuDayId = 1;
 	nextProposedWeekMenuSectionId = 1;
 	nextEstablishedWeekMenuId = 1;
+	nextRecipeProductionId = 1;
 	proposedWeekMenuDayParts = defaultProposedWeekMenuDayParts.map((dayPart) => ({ ...dayPart }));
 	nextProposedWeekMenuDayPartId = 4;
 }
@@ -515,6 +519,7 @@ function proposedWeekMenuResponse(menu) {
 				id: day.id,
 				date: day.date,
 				sections,
+				recipeProductions: day.recipeProductions ?? [],
 				nutritionalValues: dayTotals
 			};
 		});
@@ -808,6 +813,7 @@ function establishedWeekMenuResponse(menu) {
 		stockSummary: menu.stockSummary,
 		usedStock: menu.usedStock,
 		weekStock: menu.weekStock ?? [],
+		recipeProductions: menu.recipeProductions ?? [],
 		shoppingList: menu.shoppingList,
 		nutritionalRules: evaluateNutritionalRules(menu.nutritionalValues, menu.days.length)
 	};
@@ -1313,11 +1319,14 @@ function validateDerivedProductPayload(payload) {
 }
 
 function stockResponse(entry) {
+	const product = productById(entry.productId);
+	const isStockInUnits = Boolean(product?.isStockInUnits);
 	return {
 		id: entry.id,
 		productId: entry.productId,
 		productName: entry.productName,
-		quantity: entry.quantity,
+		quantity: isStockInUnits ? entry.quantity / Number(product.gramsPerUnit) : entry.quantity,
+		isStockInUnits,
 		price: entry.price,
 		expirationDate: entry.expirationDate,
 		entryDate: entry.entryDate
@@ -1481,6 +1490,7 @@ function reset() {
 			name: 'Apple',
 			description: 'Fresh apple',
 			gramsPerUnit: 150,
+			isStockInUnits: false,
 			nutritionBasis: 'PER_UNIT',
 			defaultPrice: null,
 			nutritionalValues: {
@@ -1496,6 +1506,7 @@ function reset() {
 			name: 'Rice',
 			description: 'Dry white rice',
 			gramsPerUnit: 1000,
+			isStockInUnits: false,
 			nutritionBasis: 'PER_100_GRAMS',
 			defaultPrice: null,
 			nutritionalValues: {
@@ -2023,6 +2034,11 @@ const server = http.createServer(async (req, res) => {
 			res.end();
 			return;
 		}
+
+		if (req.method === 'GET') {
+			sendJson(res, 200, productResponse(product));
+			return;
+		}
 	}
 
 	const derivedMatch = url.pathname.match(/^\/api\/v1\/recipes\/(\d+)\/derived-product$/);
@@ -2230,7 +2246,23 @@ const server = http.createServer(async (req, res) => {
 						: undefined,
 					sortOrder: Number(product.sortOrder)
 				}))
-			}))
+			})),
+			recipeProductions: (payload.recipeProductions ?? []).map((production) => {
+				const recipe = recipeById(Number(production.recipeId));
+				return {
+					id: nextRecipeProductionId++,
+					recipeId: Number(production.recipeId),
+					recipeName: recipe?.name ?? `Recipe ${production.recipeId}`,
+					productId: recipe?.derivedProduct?.productId ?? Number(production.productId),
+					productName: recipe?.derivedProduct?.name ?? String(production.productName ?? recipe?.name ?? `Recipe ${production.recipeId}`),
+					units: Number(production.units),
+					sortOrder: Number(production.sortOrder),
+					transferred: false,
+					transferType: null,
+					stockEntryId: null,
+					transferredAt: null
+				};
+			})
 		};
 
 		const existingIndex = menu.days.findIndex((day) => day.date === createdDay.date);
@@ -2371,6 +2403,7 @@ const server = http.createServer(async (req, res) => {
 			stockSummary: coverage.stockSummary,
 			usedStock: coverage.usedStock,
 			weekStock: [],
+			recipeProductions: menu.days.flatMap((day) => day.recipeProductions ?? []).map((item) => ({ ...item })),
 			shoppingList: coverage.shoppingList
 		};
 		establishedWeekMenus.push(established);
@@ -2380,6 +2413,36 @@ const server = http.createServer(async (req, res) => {
 	}
 
 	const establishedWeekMenuMatch = url.pathname.match(/^\/api\/v1\/(?:established-week-menus|menus)\/(\d+)$/);
+	if (req.method === 'GET' && url.pathname === '/api/v1/menus/stats') {
+		const from = String(url.searchParams.get('from') ?? '');
+		const to = String(url.searchParams.get('to') ?? '');
+		if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) {
+			sendJson(res, 400, errorBody(400, 'Bad Request', 'from and to must be a valid date range', url.pathname));
+			return;
+		}
+
+		let plannedDays = 0;
+		let calories = 0;
+		let estimatedCost = 0;
+		const productIds = new Set();
+		const menuIds = [];
+		for (const menu of establishedWeekMenus) {
+			const includedDays = menu.days.filter((day) => day.date >= from && day.date <= to);
+			if (includedDays.length === 0) continue;
+			menuIds.push(menu.id);
+			plannedDays += includedDays.length;
+			estimatedCost += Number(menu.stockSummary?.estimatedCost ?? 0);
+			for (const day of includedDays) {
+				calories += Number(day.nutritionalValues?.calories ?? 0);
+				for (const section of day.sections) {
+					for (const product of section.products) productIds.add(product.productId ?? product.productName);
+				}
+			}
+		}
+
+		sendJson(res, 200, { from, to, plannedDays, calories, distinctProducts: productIds.size, estimatedCost, menuIds });
+		return;
+	}
 	if (req.method === 'GET' && url.pathname === '/api/v1/menus') {
 		const state = String(url.searchParams.get('state') ?? '').toUpperCase();
 		const wantsPagination = url.searchParams.has('page') || url.searchParams.has('size') || url.searchParams.has('state');
@@ -2415,6 +2478,104 @@ const server = http.createServer(async (req, res) => {
 		}
 
 		sendJson(res, 200, menu.usedStock);
+		return;
+	}
+
+	const menuItemImportMatch = url.pathname.match(/^\/api\/v1\/menus\/(\d+)\/item-imports$/);
+	if (menuItemImportMatch && req.method === 'POST') {
+		const id = Number(menuItemImportMatch[1]);
+		const menu = establishedWeekMenuById(id);
+		if (!menu) {
+			sendJson(res, 404, errorBody(404, 'Not Found', 'Established week menu not found', url.pathname));
+			return;
+		}
+		if (menu.stats) {
+			sendJson(res, 400, errorBody(400, 'Bad Request', 'Closed menus cannot be modified', url.pathname));
+			return;
+		}
+
+		const payload = await parseBody(req);
+		if (!Array.isArray(payload?.items) || payload.items.length === 0) {
+			sendJson(res, 400, errorBody(400, 'Bad Request', 'items must contain at least one item', url.pathname));
+			return;
+		}
+
+		const validated = [];
+		for (const item of payload.items) {
+			const product = productById(Number(item?.productId));
+			const quantity = Number(item?.quantity);
+			const price = Number(item?.price);
+			const destination = String(item?.destination ?? '');
+			if (!product) {
+				sendJson(res, 404, errorBody(404, 'Not Found', 'Product not found', url.pathname));
+				return;
+			}
+			if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(price) || price < 0) {
+				sendJson(res, 400, errorBody(400, 'Bad Request', 'Items require a positive quantity and a non-negative price', url.pathname));
+				return;
+			}
+			if (!['MENU_STOCK', 'MONEY_BOX', 'GLOBAL_STOCK'].includes(destination)) {
+				sendJson(res, 400, errorBody(400, 'Bad Request', 'Invalid item destination', url.pathname));
+				return;
+			}
+
+			let moneyBox = null;
+			if (destination === 'MONEY_BOX') {
+				const moneyBoxId = Number(item.moneyBoxId);
+				const user = [...users.values()].find((candidate) => candidate.id === moneyBoxId && !deletedUserMoneyBoxIds.has(candidate.id));
+				const manualBox = manualMoneyBoxes.find((candidate) => candidate.id === moneyBoxId);
+				if (!user && !manualBox) {
+					sendJson(res, 404, errorBody(404, 'Not Found', 'Money box not found', url.pathname));
+					return;
+				}
+				moneyBox = { id: moneyBoxId, userId: user?.id ?? null };
+			}
+
+			const expirationDate = item.expirationDate == null || item.expirationDate === '' ? null : String(item.expirationDate);
+			if (destination === 'GLOBAL_STOCK' && expirationDate && !/^\d{4}-\d{2}-\d{2}$/.test(expirationDate)) {
+				sendJson(res, 400, errorBody(400, 'Bad Request', 'expirationDate must be a valid date', url.pathname));
+				return;
+			}
+			validated.push({ product, quantity, price, destination, moneyBox, expirationDate });
+		}
+
+		const importedWeekStock = validated
+			.filter((item) => item.destination === 'MENU_STOCK')
+			.map((item) => ({ productId: item.product.id, productName: item.product.name, quantity: item.quantity, price: item.price }));
+		const weekStockUpdate = replaceWeekStock(menu, [...(menu.weekStock ?? []), ...importedWeekStock]);
+		const createdMoneyMovements = validated
+			.filter((item) => item.destination === 'MONEY_BOX')
+			.map((item) => ({
+				id: nextMoneyMovementId++,
+				moneyBoxId: item.moneyBox.id,
+				userId: item.moneyBox.userId,
+				amount: -Number((item.quantity * item.price).toFixed(2)),
+				description: `Compra: ${item.product.name}`,
+				menuId: null,
+				createdAt: new Date().toISOString()
+			}));
+		const today = new Date().toISOString().slice(0, 10);
+		const createdStockEntries = validated
+			.filter((item) => item.destination === 'GLOBAL_STOCK')
+			.map((item) => ({
+				id: nextStockId++,
+				productId: item.product.id,
+				productName: item.product.name,
+				quantity: item.quantity,
+				price: item.price,
+				expirationDate: item.expirationDate,
+				entryDate: today
+			}));
+
+		menu.weekStock = weekStockUpdate.weekStock;
+		menu.shoppingList = weekStockUpdate.shoppingList;
+		moneyMovements.push(...createdMoneyMovements);
+		stockEntries.push(...createdStockEntries);
+		sendJson(res, 200, {
+			menu: establishedWeekMenuResponse(menu),
+			moneyBoxMovements: createdMoneyMovements,
+			globalStockEntries: createdStockEntries
+		});
 		return;
 	}
 
@@ -2580,6 +2741,49 @@ const server = http.createServer(async (req, res) => {
 		if (personIds.length === 0) {
 			sendJson(res, 400, errorBody(400, 'Bad Request', 'personIds must contain at least one person', url.pathname));
 			return;
+		}
+		const excludedIds = Array.isArray(payload?.excludedPositiveStockProductIds)
+			? payload.excludedPositiveStockProductIds.map(Number)
+			: [];
+		const excludedSet = new Set(excludedIds);
+		const candidateIds = new Set([
+			...(menu.weekStock ?? []).filter((item) => Number(item.quantity) > 0).map((item) => Number(item.productId)),
+			...(menu.recipeProductions ?? []).filter((item) => !item.transferred && Number(item.units) > 0).map((item) => Number(item.productId))
+		]);
+		if (excludedIds.some((value) => !Number.isInteger(value) || value <= 0) || excludedSet.size !== excludedIds.length || excludedIds.some((value) => !candidateIds.has(value))) {
+			sendJson(res, 400, errorBody(400, 'Bad Request', 'excludedPositiveStockProductIds must contain unique positive products from the menu', url.pathname));
+			return;
+		}
+		if (payload?.transferWeekStock !== false) {
+			for (const item of menu.weekStock ?? []) {
+				if (Number(item.quantity) <= 0 || excludedSet.has(Number(item.productId))) continue;
+				stockEntries.push({
+					id: nextStockId++,
+					productId: Number(item.productId),
+					productName: item.productName,
+					quantity: Number(item.quantity),
+					price: Number(item.price ?? 0),
+					expirationDate: null,
+					entryDate: menu.endDate
+				});
+			}
+		}
+		for (const production of menu.recipeProductions ?? []) {
+			if (production.transferred || Number(production.units) <= 0 || excludedSet.has(Number(production.productId))) continue;
+			const stockEntry = {
+				id: nextStockId++,
+				productId: Number(production.productId),
+				productName: production.productName,
+				quantity: Number(production.units),
+				price: 0,
+				expirationDate: null,
+				entryDate: menu.endDate
+			};
+			stockEntries.push(stockEntry);
+			production.transferred = true;
+			production.transferType = 'AUTO';
+			production.stockEntryId = stockEntry.id;
+			production.transferredAt = new Date().toISOString();
 		}
 		menu.personIds = personIds;
 		menu.stats = menuStatsResponse(menu);
@@ -2770,6 +2974,7 @@ const server = http.createServer(async (req, res) => {
 				name: String(payload.name).trim(),
 				description: String(payload.description).trim(),
 				gramsPerUnit: Number(payload.gramsPerUnit),
+				isStockInUnits: Boolean(payload.isStockInUnits),
 				nutritionBasis: 'PER_100_GRAMS',
 				defaultPrice:
 					payload.defaultPrice === undefined || payload.defaultPrice === null || String(payload.defaultPrice).trim() === ''
@@ -2825,6 +3030,7 @@ const server = http.createServer(async (req, res) => {
 			product.name = String(payload.name).trim();
 			product.description = String(payload.description).trim();
 			product.gramsPerUnit = Number(payload.gramsPerUnit);
+			product.isStockInUnits = Boolean(payload.isStockInUnits);
 			product.nutritionBasis = product.nutritionBasis ?? 'PER_100_GRAMS';
 			product.defaultPrice =
 				payload.defaultPrice === undefined || payload.defaultPrice === null || String(payload.defaultPrice).trim() === ''
@@ -2857,6 +3063,11 @@ const server = http.createServer(async (req, res) => {
 				'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS'
 			});
 			res.end();
+			return;
+		}
+
+		if (req.method === 'GET') {
+			sendJson(res, 200, productResponse(product));
 			return;
 		}
 	}

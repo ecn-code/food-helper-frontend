@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { CalendarDays, CalendarRange, Flame, LayoutList, Pencil, Trash2, Utensils } from '@lucide/svelte';
+	import { getMenuRangeStats, type MenuRangeStatsResponse } from '$lib/api/established-week-menus';
 	import type { EstablishedWeekMenu } from '$lib/established-week-menus';
 	import Button from '$lib/components/ui/Button.svelte';
 	import MetricCard from '$lib/components/ui/MetricCard.svelte';
@@ -18,6 +19,7 @@
 		dayPartId: number;
 		dayPart: string;
 		products: string[];
+		calories: number;
 		sortOrder: number;
 		menuId: number;
 		menuLabel: string;
@@ -25,6 +27,7 @@
 	type CalendarGroup = {
 		key: string;
 		products: string[];
+		calories: number;
 	};
 	type CalendarCell = {
 		key: string;
@@ -37,6 +40,7 @@
 	let {
 		menus,
 		loaded,
+		authorization = '',
 		onEditMenu = null,
 		onDeleteMenu = null,
 		selectedMenuId: selectedMenuIdProp = null,
@@ -44,6 +48,7 @@
 	}: {
 		menus: EstablishedWeekMenu[];
 		loaded: boolean;
+		authorization?: string;
 		onEditMenu?: ((menu: EstablishedWeekMenu) => void | Promise<void>) | null;
 		onDeleteMenu?: ((menu: EstablishedWeekMenu) => void | Promise<void>) | null;
 		selectedMenuId?: number | null;
@@ -55,6 +60,10 @@
 	let selectedMenuId = $state('');
 	let dateFrom = $state('');
 	let dateTo = $state('');
+	let rangeStats = $state<MenuRangeStatsResponse | null>(null);
+	let rangeStatsLoading = $state(false);
+	let rangeStatsError = $state('');
+	let rangeStatsRequest = 0;
 
 	const orderedMenus = $derived(
 		[...menus].sort((left, right) => right.startDate.localeCompare(left.startDate) || right.id - left.id)
@@ -67,7 +76,7 @@
 	const calendarDates = $derived(buildCalendarDates(rows, filterMode, selectedMenu, dateFrom, dateTo));
 	const calendarDayParts = $derived(buildCalendarDayParts(rows, filterMode, selectedMenu));
 	const calendarCells = $derived(buildCalendarCells(rows));
-	const statsCards = $derived(buildStatsCards(filterMode, selectedMenu, orderedMenus, dateFrom, dateTo));
+	const statsCards = $derived(buildStatsCards(filterMode, selectedMenu, dateFrom, dateTo, rangeStats, rangeStatsLoading, rangeStatsError));
 	const statsSummaryLabel = $derived(buildStatsSummaryLabel(filterMode, selectedMenu, dateFrom, dateTo));
 
 	$effect(() => {
@@ -91,6 +100,31 @@
 		}
 	});
 
+	$effect(() => {
+		const requestId = ++rangeStatsRequest;
+		rangeStats = null;
+		rangeStatsError = '';
+
+		if (filterMode !== 'dates' || !authorization || !dateFrom || !dateTo || dateFrom > dateTo) {
+			rangeStatsLoading = false;
+			return;
+		}
+
+		rangeStatsLoading = true;
+		void getMenuRangeStats(dateFrom, dateTo, authorization)
+			.then((response) => {
+				if (requestId === rangeStatsRequest) rangeStats = response;
+			})
+			.catch(() => {
+				if (requestId === rangeStatsRequest) {
+					rangeStatsError = 'No se pudieron cargar las estadísticas del rango.';
+				}
+			})
+			.finally(() => {
+				if (requestId === rangeStatsRequest) rangeStatsLoading = false;
+			});
+	});
+
 	function buildRows(
 		availableMenus: EstablishedWeekMenu[],
 		mode: FilterMode,
@@ -112,6 +146,7 @@
 						dayPartId: section.dayPartId,
 						dayPart: section.name,
 						products: section.products.map((product) => product.productName),
+						calories: Number(section.nutritionalValues.calories ?? 0),
 						sortOrder: section.sortOrder,
 						menuId: menu.id,
 						menuLabel: menuLabel(menu)
@@ -183,7 +218,8 @@
 
 			cell.groups.push({
 				key: row.key,
-				products: row.products
+				products: row.products,
+				calories: row.calories
 			});
 			cells.set(key, cell);
 		}
@@ -191,12 +227,22 @@
 		return cells;
 	}
 
+	function caloriesForDate(date: string) {
+		return rows.reduce((total, row) => row.date === date ? total + row.calories : total, 0);
+	}
+
+	function caloriesForCell(cell: CalendarCell | undefined) {
+		return cell?.groups.reduce((total, group) => total + group.calories, 0) ?? 0;
+	}
+
 	function buildStatsCards(
 		mode: FilterMode,
 		selectedMenuValue: EstablishedWeekMenu | null,
-		availableMenus: EstablishedWeekMenu[],
 		from: string,
-		to: string
+		to: string,
+		rangeStatsValue: MenuRangeStatsResponse | null,
+		isRangeStatsLoading: boolean,
+		rangeStatsFailure: string
 	): MenuStatsCard[] {
 		if (mode === 'menu') {
 			if (!selectedMenuValue) return [];
@@ -209,9 +255,9 @@
 					tone: 'default'
 				},
 				{
-					label: 'Calorías',
-					value: formatNumber(selectedMenuValue.nutritionalValues.calories),
-					hint: 'Total del menú',
+					label: 'Calorías medias',
+					value: formatNumber(selectedMenuValue.stockSummary.calories.averagePerPlannedDay),
+					hint: 'kcal por día planificado',
 					tone: 'primary'
 				},
 				{
@@ -229,83 +275,45 @@
 			];
 		}
 
-		const stats = aggregateRangeStats(availableMenus, from, to);
+		const rangeLabel = from && to ? `Rango filtrado: ${formatShortDate(from)} – ${formatShortDate(to)}` : 'Selecciona un rango válido';
+		if (!rangeStatsValue) {
+			const hint = isRangeStatsLoading ? 'Calculando en el servidor…' : rangeStatsFailure || rangeLabel;
+			return [
+				{ label: 'Días visibles', value: isRangeStatsLoading ? '…' : '—', hint, tone: 'default' },
+				{ label: 'Calorías medias', value: isRangeStatsLoading ? '…' : '—', hint, tone: 'primary' },
+				{ label: 'Productos distintos', value: isRangeStatsLoading ? '…' : '—', hint, tone: 'accent' },
+				{ label: 'Coste estimado', value: isRangeStatsLoading ? '…' : '—', hint, tone: 'default' }
+			];
+		}
+
+		const averageCaloriesPerPlannedDay =
+			rangeStatsValue.plannedDays > 0 ? rangeStatsValue.calories / rangeStatsValue.plannedDays : 0;
 		return [
 			{
 				label: 'Días visibles',
-				value: String(stats.plannedDays),
-				hint: stats.rangeLabel,
+				value: String(rangeStatsValue.plannedDays),
+				hint: rangeLabel,
 				tone: 'default'
 			},
 			{
-				label: 'Calorías',
-				value: formatNumber(stats.calories),
-				hint: 'Suma de los días filtrados',
+				label: 'Calorías medias',
+				value: formatNumber(averageCaloriesPerPlannedDay),
+				hint: 'kcal por día planificado',
 				tone: 'primary'
 			},
 			{
 				label: 'Productos distintos',
-				value: String(stats.distinctProducts),
+				value: String(rangeStatsValue.distinctProducts),
 				hint: 'Productos únicos del rango',
 				tone: 'accent'
 			},
 			{
 				label: 'Coste estimado',
-				value: formatCurrency(stats.estimatedCost),
-				hint: 'Estimación proporcional al rango',
+				value: formatCurrency(rangeStatsValue.estimatedCost),
+				hint: 'Coste calculado para el rango',
 				tone: 'default'
 			}
 		];
-	}
-
-	function aggregateRangeStats(availableMenus: EstablishedWeekMenu[], from: string, to: string) {
-		let plannedDays = 0;
-		let calories = 0;
-		let estimatedCost = 0;
-		const productIds = new Set<string>();
-		const dates = new Set<string>();
-
-		for (const menu of availableMenus) {
-			const includedDays = menu.days.filter((day) => isDateWithinRange(day.date, from, to));
-			if (includedDays.length === 0) continue;
-
-			plannedDays += includedDays.length;
-			calories += includedDays.reduce((sum, day) => sum + Number(day.nutritionalValues.calories ?? 0), 0);
-			estimatedCost += Number(menu.stockSummary.estimatedCost ?? 0) * (includedDays.length / Math.max(menu.days.length, 1));
-
-			for (const day of includedDays) {
-				dates.add(day.date);
-				for (const section of day.sections) {
-					for (const product of section.products) {
-						const key = product.productId === null ? `name:${product.productName}` : `id:${product.productId}`;
-						productIds.add(key);
-					}
-				}
-			}
-		}
-
-		const sortedDates = [...dates].sort((left, right) => left.localeCompare(right));
-		const lastDate = sortedDates[sortedDates.length - 1] ?? sortedDates[0];
-		const rangeLabel =
-			sortedDates.length === 0
-				? 'Sin días en el rango seleccionado'
-				: sortedDates.length === 1
-					? `Día filtrado: ${formatShortDate(sortedDates[0])}`
-					: `Rango filtrado: ${formatShortDate(sortedDates[0])} – ${formatShortDate(lastDate)}`;
-
-		return {
-			plannedDays,
-			calories,
-			distinctProducts: productIds.size,
-			estimatedCost,
-			rangeLabel
-		};
-	}
-
-	function isDateWithinRange(date: string, from: string, to: string) {
-		if (from && date < from) return false;
-		if (to && date > to) return false;
-		return true;
 	}
 
 	function buildStatsSummaryLabel(mode: FilterMode, selectedMenuValue: EstablishedWeekMenu | null, from: string, to: string) {
@@ -643,7 +651,12 @@
 						</div>
 						{#each calendarDates as date (date)}
 							<div class="border-r border-[hsl(var(--border))] px-4 py-3 last:border-r-0">
-								<p class="text-sm font-semibold capitalize text-[hsl(var(--foreground))]">{formatDay(date)}</p>
+								<p class="text-sm font-semibold capitalize text-[hsl(var(--foreground))]">
+									{formatDay(date)}
+									<span class="whitespace-nowrap font-medium tabular-nums text-amber-700" data-testid={`menu-calendar-day-calories-${date}`}>
+										({formatNumber(caloriesForDate(date))} kcal)
+									</span>
+								</p>
 							</div>
 						{/each}
 					</div>
@@ -659,9 +672,15 @@
 								</div>
 								{#each calendarDates as date (date)}
 									{@const cell = calendarCells.get(`${date}-${dayPart.dayPartId}`)}
-									<div class="min-h-24 border-r border-[hsl(var(--border))] bg-[hsl(var(--card))] p-3 last:border-r-0">
+									<div
+										class="min-h-24 border-r border-[hsl(var(--border))] bg-[hsl(var(--card))] p-3 last:border-r-0"
+										data-testid={`menu-calendar-day-part-calories-${date}-${dayPart.dayPartId}`}
+									>
 										{#if cell && cell.groups.length > 0}
 											<div class="space-y-2">
+												<p class="text-xs font-medium tabular-nums text-amber-700">
+													({formatNumber(caloriesForCell(cell))} kcal)
+												</p>
 												{#each cell.groups as group (group.key)}
 													<ul class="list-disc space-y-1 pl-4 text-sm text-[hsl(var(--foreground))]">
 														{#if group.products.length > 0}
@@ -676,7 +695,10 @@
 											</div>
 										{:else}
 											<div class="grid h-full min-h-18 place-items-center rounded-md border border-dashed border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.14)] text-sm text-[hsl(var(--muted-foreground))]">
-												Sin comida
+												<div class="text-center">
+													<p>Sin comida</p>
+													<p class="mt-1 text-xs tabular-nums text-amber-700">(0 kcal)</p>
+												</div>
 											</div>
 										{/if}
 									</div>

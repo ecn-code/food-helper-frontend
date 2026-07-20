@@ -1,5 +1,6 @@
 import type {
 	EstablishedWeekMenuResponse,
+	EstablishedWeekMenuRecipeProductionResponse,
 	EstablishedWeekMenuShoppingListItemResponse,
 	EstablishedWeekMenuStockSummaryResponse,
 	EstablishedWeekMenuUsedStockResponse,
@@ -17,6 +18,7 @@ export type EstablishedWeekMenuProduct = ProposedWeekMenuProduct;
 
 export type EstablishedWeekMenuUsedStock = EstablishedWeekMenuUsedStockResponse;
 export type EstablishedWeekMenuWeekStockItem = EstablishedWeekMenuWeekStockItemResponse;
+export type EstablishedWeekMenuRecipeProduction = EstablishedWeekMenuRecipeProductionResponse;
 export type EstablishedWeekMenuShoppingListItem = EstablishedWeekMenuShoppingListItemResponse;
 export type EstablishedWeekMenuStockSummary = EstablishedWeekMenuStockSummaryResponse;
 export type CurrentWeekMenuState = 'ESTABLISHED' | 'CLOSED';
@@ -40,6 +42,7 @@ export type EstablishedWeekMenu = {
 	stockSummary: EstablishedWeekMenuStockSummary;
 	usedStock: EstablishedWeekMenuUsedStock[];
 	weekStock: EstablishedWeekMenuWeekStockItem[];
+	recipeProductions: EstablishedWeekMenuRecipeProduction[];
 	shoppingList: EstablishedWeekMenuShoppingListItem[];
 	nutritionalRules?: NutritionalRulesEvaluation;
 };
@@ -64,6 +67,7 @@ export function toEstablishedWeekMenuModel(menu: EstablishedWeekMenuResponse): E
 		stockSummary: menu.stockSummary,
 		usedStock: menu.usedStock,
 		weekStock: menu.weekStock,
+		recipeProductions: menu.recipeProductions ?? [],
 		shoppingList: menu.shoppingList,
 		nutritionalRules: normalizeNutritionalRulesEvaluation(menu.nutritionalRules)
 	};

@@ -17,6 +17,7 @@ type ProductPayload = {
 	name: string;
 	description: string;
 	gramsPerUnit: number;
+	isStockInUnits: boolean;
 	nutritionBasis: 'PER_100_GRAMS' | 'PER_UNIT';
 	defaultPrice: number | null;
 	nutritionalValues: {
@@ -63,6 +64,7 @@ function toPayload(values: ProductRequestValues) {
 		name: values.name.trim(),
 		description: values.description.trim(),
 		gramsPerUnit: Number(values.gramsPerUnit),
+		isStockInUnits: values.isStockInUnits,
 		defaultPrice: String(values.defaultPrice ?? '').trim() === '' ? null : Number(values.defaultPrice),
 		calories: Number(values.calories),
 		carbohydrates: Number(values.carbohydrates),
@@ -79,6 +81,7 @@ function fromPayload(product: ProductPayload): Product {
 		name: product.name,
 		description: product.description,
 		gramsPerUnit: product.gramsPerUnit,
+		isStockInUnits: product.isStockInUnits ?? false,
 		nutritionBasis: product.nutritionBasis,
 		defaultPrice: product.defaultPrice,
 		nutritionalValues: product.nutritionalValues,

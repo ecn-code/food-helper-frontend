@@ -9,6 +9,7 @@
 		getMenuStats,
 		listMenuShoppingList,
 		type EstablishedWeekMenuShoppingListItemResponse,
+		type EstablishedWeekMenuRecipeProductionResponse,
 		type EstablishedWeekMenuUsedStockResponse,
 		type MenuStatsResponse
 	} from '$lib/api/established-week-menus';
@@ -16,6 +17,7 @@
 	import { listSupermarkets, type Supermarket } from '$lib/api/supermarkets';
 	import { listUsers, type UserResponse } from '$lib/api/users';
 	import ShoppingListDialog from '$lib/components/planning/ShoppingListDialog.svelte';
+	import { aggregatePositiveStockProducts } from '$lib/menu-close-stock';
 
 	let {
 		menuId,
@@ -26,6 +28,7 @@
 		initialShoppingList,
 		initialUsedStock,
 		initialWeekStock,
+		initialRecipeProductions,
 		showPanel = true,
 		openToken = 0,
 		onClosed
@@ -38,6 +41,7 @@
 		initialShoppingList: EstablishedWeekMenuShoppingListItemResponse[];
 		initialUsedStock: EstablishedWeekMenuUsedStockResponse[];
 		initialWeekStock: { productId: number; productName: string; quantity: number; price: number }[];
+		initialRecipeProductions: EstablishedWeekMenuRecipeProductionResponse[];
 		showPanel?: boolean;
 		openToken?: number;
 		onClosed?: () => void | Promise<void>;
@@ -49,6 +53,7 @@
 	let shoppingList = $state<EstablishedWeekMenuShoppingListItemResponse[]>([]);
 	let usedStock = $state<EstablishedWeekMenuUsedStockResponse[]>([]);
 	let weekStock = $state<{ productId: number; productName: string; quantity: number; price: number }[]>([]);
+	let recipeProductions = $state<EstablishedWeekMenuRecipeProductionResponse[]>([]);
 	let stockEntries = $state<StockEntryPayload[]>([]);
 	let supermarketId = $state('');
 	let error = $state('');
@@ -58,6 +63,7 @@
 	let shoppingListDialogError = $state('');
 	let closeDialogOpen = $state(false);
 	let selectedPersonIds = $state<string[]>([]);
+	let includedPositiveProductIds = $state<number[]>([]);
 	let closing = $state(false);
 	let stockPreviewLoading = $state(false);
 	let stockPreviewError = $state('');
@@ -86,6 +92,7 @@
 		shoppingList = initialShoppingList.map((item) => ({ ...item }));
 		usedStock = initialUsedStock;
 		weekStock = initialWeekStock.map((item) => ({ ...item }));
+		recipeProductions = initialRecipeProductions.map((item) => ({ ...item }));
 		stockEntries = [];
 		stockPreviewError = '';
 		stockPreviewLoading = false;
@@ -120,6 +127,7 @@
 		initialShoppingList;
 		initialUsedStock;
 		initialWeekStock;
+		initialRecipeProductions;
 		syncMenuSnapshot();
 	});
 
@@ -165,6 +173,7 @@
 		error = '';
 		closeDialogOpen = true;
 		selectedPersonIds = initialSelectedPersonIds();
+		includedPositiveProductIds = positiveProductIds();
 		void loadStockPreview();
 	}
 
@@ -176,7 +185,11 @@
 	}
 
 	async function loadStockPreview() {
-		const relevantProductIds = [...new Set([...usedStock.map((item) => item.productId), ...weekStock.map((item) => item.productId)])];
+		const relevantProductIds = [...new Set([
+			...usedStock.map((item) => item.productId),
+			...weekStock.map((item) => item.productId),
+			...recipeProductions.filter((item) => !item.transferred).map((item) => item.productId)
+		])];
 		if (relevantProductIds.length === 0) {
 			stockEntries = [];
 			stockPreviewError = '';
@@ -205,6 +218,14 @@
 		}
 	}
 
+	function togglePositiveProduct(productId: number) {
+		if (includedPositiveProductIds.includes(productId)) {
+			includedPositiveProductIds = includedPositiveProductIds.filter((item) => item !== productId);
+		} else {
+			includedPositiveProductIds = [...includedPositiveProductIds, productId];
+		}
+	}
+
 	async function finish() {
 		if (closing) return;
 		const numericPersonIds = selectedPersonIds.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0);
@@ -220,7 +241,11 @@
 		closing = true;
 		error = '';
 		try {
-			stats = await closeMenu(menuId, numericPersonIds, authorization);
+			const positiveIds = positiveProductIds();
+			stats = await closeMenu(menuId, {
+				personIds: numericPersonIds,
+				excludedPositiveStockProductIds: positiveIds.filter((productId) => !includedPositiveProductIds.includes(productId))
+			}, authorization);
 			closeDialogOpen = false;
 			usedStock = initialUsedStock;
 			await onClosed?.();
@@ -246,8 +271,14 @@
 		currentUnits: number;
 		usedUnits: number;
 		positiveUnits: number;
+		weekStockUnits: number;
+		recipeProductionUnits: number;
 		finalUnits: number;
 	};
+
+	function positiveProductIds() {
+		return aggregatePositiveStockProducts(weekStock, recipeProductions).map((item) => item.productId);
+	}
 
 	function stockPreviewRows(): StockPreviewRow[] {
 		const rowsByProduct = new Map<number, StockPreviewRow>();
@@ -260,6 +291,8 @@
 				currentUnits: 0,
 				usedUnits: 0,
 				positiveUnits: 0,
+				weekStockUnits: 0,
+				recipeProductionUnits: 0,
 				finalUnits: 0
 			};
 			rowsByProduct.set(productId, created);
@@ -274,12 +307,16 @@
 			getRow(item.productId, item.productName).usedUnits += Number(item.usedUnits ?? 0);
 		}
 
-		for (const item of weekStock) {
-			getRow(item.productId, item.productName).positiveUnits += Number(item.quantity ?? 0);
+		for (const item of aggregatePositiveStockProducts(weekStock, recipeProductions)) {
+			const row = getRow(item.productId, item.productName);
+			row.weekStockUnits = item.weekStockUnits;
+			row.recipeProductionUnits = item.recipeProductionUnits;
+			row.positiveUnits = item.positiveUnits;
 		}
 
 		for (const row of rowsByProduct.values()) {
-			row.finalUnits = Math.max(0, row.currentUnits - row.usedUnits + row.positiveUnits);
+			const includedPositiveUnits = includedPositiveProductIds.includes(row.productId) ? row.positiveUnits : 0;
+			row.finalUnits = Math.max(0, row.currentUnits + includedPositiveUnits);
 		}
 
 		return [...rowsByProduct.values()].sort((left, right) => left.productName.localeCompare(right.productName));
@@ -290,7 +327,7 @@
 		return {
 			currentUnits: rows.reduce((sum, row) => sum + row.currentUnits, 0),
 			usedUnits: rows.reduce((sum, row) => sum + row.usedUnits, 0),
-			positiveUnits: rows.reduce((sum, row) => sum + row.positiveUnits, 0),
+			positiveUnits: rows.reduce((sum, row) => sum + (includedPositiveProductIds.includes(row.productId) ? row.positiveUnits : 0), 0),
 			finalUnits: rows.reduce((sum, row) => sum + row.finalUnits, 0)
 		};
 	}
@@ -448,9 +485,9 @@
 							<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Se generará un cargo para {payerUsername}.</p>
 						</div>
 						<div class="rounded-md border bg-[hsl(var(--card))] p-3">
-							<p class="text-xs text-[hsl(var(--muted-foreground))]">Positivos del menú</p>
-							<p class="mt-1 text-lg font-semibold tabular-nums">{number(weekStock.reduce((sum, item) => sum + Number(item.quantity ?? 0), 0))} uds</p>
-							<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Se muestran por línea para revisar su impacto antes de confirmar.</p>
+							<p class="text-xs text-[hsl(var(--muted-foreground))]">Positivos al stock global</p>
+							<p class="mt-1 text-lg font-semibold tabular-nums">{number(stockPreviewTotals().positiveUnits)} uds</p>
+							<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Solo se añadirán los productos seleccionados.</p>
 						</div>
 						<div class="rounded-md border bg-[hsl(var(--card))] p-3">
 							<p class="text-xs text-[hsl(var(--muted-foreground))]">Stock final estimado</p>
@@ -471,18 +508,32 @@
 									<tr>
 										<th class="px-3 py-2 text-left font-medium">Producto</th>
 										<th class="px-3 py-2 text-right font-medium">Actual</th>
-										<th class="px-3 py-2 text-right font-medium">Usado</th>
+										<th class="px-3 py-2 text-right font-medium">Usado histórico</th>
 										<th class="px-3 py-2 text-right font-medium">Positivos</th>
+										<th class="px-3 py-2 text-center font-medium">Añadir</th>
 										<th class="px-3 py-2 text-right font-medium">Final</th>
 									</tr>
 								</thead>
 								<tbody class="divide-y">
 									{#each stockPreviewRows() as row (row.productId)}
-										<tr>
-											<td class="px-3 py-2">{row.productName}</td>
-											<td class="px-3 py-2 text-right tabular-nums">{number(row.currentUnits)}</td>
-											<td class="px-3 py-2 text-right tabular-nums">-{number(row.usedUnits)}</td>
-											<td class="px-3 py-2 text-right tabular-nums">+{number(row.positiveUnits)}</td>
+									<tr>
+										<td class="px-3 py-2">{row.productName}</td>
+										<td class="px-3 py-2 text-right tabular-nums">{number(row.currentUnits)}</td>
+										<td class="px-3 py-2 text-right tabular-nums">{number(row.usedUnits)}</td>
+										<td class="px-3 py-2 text-right tabular-nums">+{number(row.positiveUnits)}</td>
+										<td class="px-3 py-2 text-center">
+											{#if row.positiveUnits > 0}
+												<input
+													type="checkbox"
+													checked={includedPositiveProductIds.includes(row.productId)}
+													onchange={() => togglePositiveProduct(row.productId)}
+													aria-label={`Añadir ${row.productName} al stock global`}
+													data-testid={`close-positive-stock-${row.productId}`}
+												/>
+											{:else}
+												<span class="text-[hsl(var(--muted-foreground))]">—</span>
+											{/if}
+										</td>
 											<td class="px-3 py-2 text-right tabular-nums font-medium">{number(row.finalUnits)}</td>
 										</tr>
 									{/each}
@@ -493,11 +544,27 @@
 							{#each stockPreviewRows() as row (row.productId)}
 								<div class="rounded-md border bg-[hsl(var(--card))] p-3">
 									<div class="flex items-start justify-between gap-3">
-										<p class="text-sm font-medium">{row.productName}</p>
+										<div class="min-w-0">
+											<p class="text-sm font-medium break-words">{row.productName}</p>
+											{#if row.positiveUnits > 0}
+												<label class="mt-2 flex items-center gap-2 text-xs">
+													<input
+														type="checkbox"
+														checked={includedPositiveProductIds.includes(row.productId)}
+														onchange={() => togglePositiveProduct(row.productId)}
+														data-testid={`close-positive-stock-mobile-${row.productId}`}
+													/>
+													<span>Añadir al stock global</span>
+												</label>
+											{/if}
+										</div>
 										<p class="text-sm font-semibold tabular-nums">{number(row.finalUnits)} uds</p>
 									</div>
 									<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
-										Actual {number(row.currentUnits)} uds · usado {number(row.usedUnits)} uds · positivos +{number(row.positiveUnits)} uds
+										Actual {number(row.currentUnits)} uds · usado histórico {number(row.usedUnits)} uds · positivos +{number(row.positiveUnits)} uds
+										{#if row.weekStockUnits > 0 && row.recipeProductionUnits > 0}
+											({number(row.weekStockUnits)} temporales + {number(row.recipeProductionUnits)} de recetas)
+										{/if}
 									</p>
 								</div>
 							{/each}

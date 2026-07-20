@@ -3,11 +3,12 @@ import type {
 	ProposedWeekMenuDayPartResponse,
 	ProposedWeekMenuProductResponse,
 	ProposedWeekMenuResponse,
+	NutritionalRuleSetEvaluation,
 	NutritionalRulesEvaluation,
 	ProposedWeekMenuSectionResponse
 } from '$lib/api/proposed-week-menus';
 import type { EstablishedWeekMenuStockSummaryResponse } from '$lib/api/established-week-menus';
-import { normalizeNutritionalRulesEvaluation } from '$lib/nutritional-rules';
+import { normalizeNutritionalRulesEvaluation, normalizeNutritionalRuleSetEvaluation } from '$lib/nutritional-rules';
 import { productQuantityMode, type NutritionalValues, type Product } from '$lib/products';
 
 export type ProposedWeekMenuCreateFormValues = {
@@ -68,6 +69,7 @@ export type ProposedWeekMenuDay = {
 	date: string;
 	sections: ProposedWeekMenuSection[];
 	nutritionalValues: NutritionalValues;
+	dailyNutritionalEvaluation?: NutritionalRuleSetEvaluation;
 };
 
 export type ProposedWeekMenuSection = {
@@ -98,6 +100,7 @@ export type ProposedWeekMenuProduct = {
 
 export type ProposedWeekMenu = {
 	id: number;
+	users: number;
 	startDate: string;
 	endDate: string;
 	days: ProposedWeekMenuDay[];
@@ -167,6 +170,7 @@ export function emptyProposedWeekMenuDayForm(date = ''): ProposedWeekMenuDayForm
 export function toProposedWeekMenuModel(menu: ProposedWeekMenuResponse): ProposedWeekMenu {
 	return {
 		id: menu.id,
+		users: Number(menu.users ?? 1),
 		startDate: menu.startDate,
 		endDate: menu.endDate,
 		days: sortByDate(menu.days).map(toProposedWeekMenuDayModel),
@@ -181,7 +185,10 @@ export function toProposedWeekMenuDayModel(day: ProposedWeekMenuDayResponse): Pr
 		id: day.id,
 		date: day.date,
 		sections: sortBySortOrder(day.sections).map(toProposedWeekMenuSectionModel),
-		nutritionalValues: day.nutritionalValues
+		nutritionalValues: day.nutritionalValues,
+		dailyNutritionalEvaluation: day.dailyNutritionalEvaluation
+			? normalizeNutritionalRuleSetEvaluation(day.dailyNutritionalEvaluation)
+			: undefined
 	};
 }
 

@@ -20,7 +20,13 @@
 	}
 
 	function formatCurrency(value: number | null) {
-		return value == null ? '—' : new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR' }).format(value);
+		return value == null
+			? '—'
+			: new Intl.NumberFormat('es-ES', {
+					style: 'currency',
+					currency: 'EUR',
+					maximumFractionDigits: 4
+				}).format(value);
 	}
 
 	function formatDate(value: string | null) {

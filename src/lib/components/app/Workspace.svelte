@@ -7,14 +7,17 @@
 		CircleCheck,
 		Clock,
 		CalendarClock,
+		CalendarDays,
 		Database,
 		Droplets,
 		Drumstick,
 		Eye,
+		EyeOff,
 		File as FileIcon,
 		Flame,
 		LayoutList,
 		Leaf,
+		Lightbulb,
 		LogIn,
 		LogOut,
 		Package,
@@ -33,12 +36,16 @@
 		WifiOff,
 		Search,
 		Percent,
+		Trophy,
 		ChevronLeft,
 		ChevronRight,
+		Copy,
+		ClipboardPaste,
 		Store,
 		PiggyBank,
 		SlidersHorizontal,
 		ChevronDown,
+		Filter,
 		X
 	} from '@lucide/svelte';
 	import { tick } from 'svelte';
@@ -94,6 +101,8 @@
 	import {
 		emptyProductForm,
 		toProductFormValues,
+		stockQuantityLabel,
+		stockQuantityToStoredGrams,
 		type NutritionalValues,
 		type Product,
 		productQuantityMode,
@@ -137,6 +146,7 @@
 		toProposedWeekMenuModel,
 		nextProposedWeekMenuProductSortOrder,
 		type ProposedWeekMenu,
+		type ProposedWeekMenuDay,
 		type ProposedWeekMenuCreateFormErrors,
 		type ProposedWeekMenuCreateFormValues,
 		type ProposedWeekMenuDayFormErrors,
@@ -146,6 +156,7 @@
 		type ProposedWeekMenuDayProductFormValues,
 		type ProposedWeekMenuDayProductFormErrors,
 		type ProposedWeekMenuDayPart,
+		type ProposedWeekMenuSection,
 		type ProposedWeekMenuSectionFormErrors,
 		type ProposedWeekMenuSectionFormValues
 	} from '$lib/proposed-week-menus';
@@ -165,8 +176,28 @@
 	import MenuWeekPanel from '$lib/components/menus/MenuWeekPanel.svelte';
 	import MenuMealsTable from '$lib/components/menus/MenuMealsTable.svelte';
 	import PlanningCouponsPanel from '$lib/components/planning/PlanningCouponsPanel.svelte';
+	import PlanningCalendar from '$lib/components/planning/PlanningCalendar.svelte';
 	import ValidationDialog from '$lib/components/ui/ValidationDialog.svelte';
-	import { listCoupons, type CouponResponse } from '$lib/api/coupons';
+	import {
+		createCoupon,
+		deleteCoupon,
+		listCoupons,
+		updateCoupon,
+		type CouponDefinitionRequest,
+		type CouponResponse
+	} from '$lib/api/coupons';
+	import {
+		createChallenge,
+		deleteChallenge,
+		listChallenges,
+		redeemChallenge,
+		updateChallenge,
+		type ChallengeDefinitionRequest,
+		type ChallengeResponse
+	} from '$lib/api/challenges';
+	import ChallengesPanel from '$lib/components/challenges/ChallengesPanel.svelte';
+	import ChallengeDefinitionsPanel from '$lib/components/challenges/ChallengeDefinitionsPanel.svelte';
+	import CouponDefinitionsPanel from '$lib/components/coupons/CouponDefinitionsPanel.svelte';
 	import { listSupermarkets, type Supermarket } from '$lib/api/supermarkets';
 	import {
 		listPlanning,
@@ -195,6 +226,7 @@
 		validateStockForm
 	} from '$lib/forms';
 	import { sectionPath, type AppSection } from '$lib/navigation';
+	import { evaluateArithmeticExpression } from '$lib/arithmetic-expression';
 
 	let { section }: { section: AppSection } = $props();
 
@@ -327,6 +359,7 @@
 	type StockPanel = 'inventory' | 'history';
 	type ProductViewMode = 'block' | 'list';
 	type RecipeViewMode = 'block' | 'list';
+	type PlanningViewMode = 'list' | 'calendar';
 	// The planning section now comes from the backend planning catalog, not localStorage.
 	type PlanningMenu = PlanningMenuResponse & {
 		label: string;
@@ -353,6 +386,10 @@
 				sectionIndex: number;
 				productIndex: number;
 				selectedProductId: string;
+		  }
+		| {
+				type: 'week-day-add';
+				dayPartId: string;
 		  };
 
 	type SignedPhoto = string;
@@ -461,6 +498,7 @@
 	let modalMode = $state<ModalMode>(null);
 	let authMode = $state<AuthMode>('login');
 	let createDraft = $state<ProductFormValues>(emptyProductForm());
+	let createProductPasteFeedback = $state<{ text: string; isError: boolean } | null>(null);
 	let editDraft = $state<ProductFormValues>(emptyProductForm());
 	let stockDraft = $state<StockFormValues>(emptyStockForm());
 	let recipeCreateDraft = $state<RecipeFormValues>(emptyRecipeForm());
@@ -507,6 +545,10 @@
 	let stockProductFilter = $state('');
 	let stockExpiresBefore = $state('');
 	let stockStatsOpen = $state(false);
+	let planningEvaluationOpen = $state(true);
+	let planningHeaderOpen = $state(true);
+	let planningViewMode = $state<PlanningViewMode>('list');
+	let planningDayFilter = $state<string[]>([]);
 	let stockViewMode = $state<StockViewMode>('block');
 	let stockPanel = $state<StockPanel>('inventory');
 	let productStatsOpen = $state(false);
@@ -526,6 +568,16 @@
 	let dayPartOrderBusy = $state(false);
 	let editingWeekDayDate = $state<string | null>(null);
 	let weekDayDraft = $state<ProposedWeekMenuDayFormValues>(emptyProposedWeekMenuDayForm());
+	let weekDayClipboard = $state<ProposedWeekMenuSectionFormValues[] | null>(null);
+	let weekDayClipboardMessage = $state<string | null>(null);
+	let weekDayClipboardImportOpen = $state(false);
+	let weekDayClipboardImportText = $state('');
+	let weekDayClipboardImportInput = $state<HTMLTextAreaElement | null>(null);
+	let weekDaySectionClipboard = $state<ProposedWeekMenuSectionFormValues | null>(null);
+	let weekDaySectionClipboardMessage = $state<{ sectionIndex: number; text: string } | null>(null);
+	let weekDaySaving = $state(false);
+	let weekDayCopyFeedback = $state<{ date: string; message: string } | null>(null);
+	let weekDayAiCopyFeedback = $state<{ date: string; message: string; isError: boolean } | null>(null);
 	let createPhotoInput = $state<HTMLInputElement | null>(null);
 	let editPhotoInput = $state<HTMLInputElement | null>(null);
 	let productFilters = $state<ProductFiltersState>(emptyProductFilters());
@@ -556,6 +608,9 @@
 	let visibleProductsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 	const planningSummary = $derived(weekPlanningSummary());
 	const planningDayList = $derived(weekDays());
+	const filteredPlanningDayList = $derived(
+		planningDayFilter.length > 0 ? planningDayList.filter((date) => planningDayFilter.includes(date)) : planningDayList
+	);
 	const activeEstablishedMenu = $derived(
 		data.establishedWeekMenu ?? menus.find((menu) => menu.isActive) ?? menus.find((menu) => menu.state === 'ESTABLISHED') ?? null
 	);
@@ -575,6 +630,14 @@
 	let globalCouponsPayerUserId = $state<number | null>(null);
 	let globalCouponsLoading = $state(false);
 	let globalCouponsError = $state<string | null>(null);
+	let challenges = $state<ChallengeResponse[]>([]);
+	let challengesLoaded = $state(false);
+	let challengesLoadedAt = $state(0);
+	let challengesPayerUserId = $state<number | null>(null);
+	let challengesLoading = $state(false);
+	let challengesError = $state<string | null>(null);
+	let redeemingChallengeCode = $state<string | null>(null);
+	let catalogMutationBusy = $state(false);
 	let planningCoupons = $state<PlanningCouponResponse[]>([]);
 	let planningCouponsLoaded = $state(false);
 	let planningCouponsLoadedAt = $state(0);
@@ -653,6 +716,8 @@
 	let recipesIntersectionObserver: IntersectionObserver | null = null;
 	let refreshCatalogToken = $state(0);
 	const stockStatsStorageKey = 'foodhelper_stock_stats_open';
+	const planningEvaluationStorageKey = 'foodhelper_planning_evaluation_open';
+	const planningHeaderStorageKey = 'foodhelper_planning_header_open';
 	const stockViewModeStorageKey = 'foodhelper_stock_view_mode';
 	const productStatsStorageKey = 'foodhelper_product_stats_open';
 	const productViewModeStorageKey = 'foodhelper_product_view_mode';
@@ -675,6 +740,7 @@
 			name: `Producto ${productId}`,
 			description: '',
 			gramsPerUnit: 100,
+			isStockInUnits: false,
 			nutritionBasis: 'PER_100_GRAMS',
 			defaultPrice: null,
 			nutritionalValues: {
@@ -762,6 +828,7 @@
 		if (section === 'stock') return 'Stock';
 		if (section === 'planning') return 'Planificación';
 		if (section === 'coupons') return 'Cupones';
+		if (section === 'challenges') return 'Challenges';
 		if (section === 'menus') return 'Menú';
 		if (section === 'closed-menus') return 'Menús cerrados';
 		if (section === 'people-weights') return 'Pesos';
@@ -815,6 +882,22 @@
 		globalCouponsPayerUserId = null;
 		globalCouponsLoading = false;
 		globalCouponsError = null;
+	}
+
+	function challengesCacheFresh(payerUserId: number | null, force = false) {
+		if (force || !challengesLoaded || !challengesLoadedAt) return false;
+		if (challengesPayerUserId !== payerUserId) return false;
+		return Date.now() - challengesLoadedAt < WEEK_MENU_CACHE_TTL_MS;
+	}
+
+	function resetChallenges() {
+		challenges = [];
+		challengesLoaded = false;
+		challengesLoadedAt = 0;
+		challengesPayerUserId = null;
+		challengesLoading = false;
+		challengesError = null;
+		redeemingChallengeCode = null;
 	}
 
 	function planningCouponsCacheFresh(planningId: number | null, payerUserId: number | null, force = false) {
@@ -1123,6 +1206,46 @@
 		closeProductPicker();
 	}
 
+	function addWeekDayProductFromPicker(selectedProduct: Product, dayPartId: string, keepOpen: boolean) {
+		const normalizedDayPartId = dayPartId.trim();
+		if (!normalizedDayPartId) return;
+
+		rememberSelectedProduct(selectedProduct);
+		const quantityMode = productQuantityMode(selectedProduct);
+		const addProduct = (products: ProposedWeekMenuDayProductFormValues[]) => [
+			...products,
+			{
+				...createDayProductDraft(products),
+				type: 'catalog' as const,
+				quantityMode,
+				productId: String(selectedProduct.id),
+				productName: selectedProduct.name,
+				units: '',
+				grams: '',
+				calories: '',
+				carbohydrates: '',
+				proteins: '',
+				fats: ''
+			}
+		];
+
+		const sectionIndex = weekDayDraft.sections.findIndex((section) => section.dayPartId === normalizedDayPartId);
+		weekDayDraft = {
+			...weekDayDraft,
+			sections:
+				sectionIndex >= 0
+					? weekDayDraft.sections.map((section, index) =>
+							index === sectionIndex ? { ...section, products: addProduct(section.products) } : section
+						)
+					: [
+							...weekDayDraft.sections,
+							{ ...emptyProposedWeekMenuSectionForm(), dayPartId: normalizedDayPartId, products: addProduct([]) }
+						]
+		};
+
+		if (!keepOpen) closeProductPicker();
+	}
+
 	function rememberSelectedProduct(product: Product) {
 		data.selectedProducts = [product, ...data.selectedProducts.filter((item) => item.id !== product.id)];
 	}
@@ -1178,6 +1301,7 @@
 		data.users = [];
 		data.planningMenus = [];
 		resetGlobalCoupons();
+		resetChallenges();
 		resetPlanningCoupons();
 		data.productsLoaded = false;
 		data.recipesLoaded = false;
@@ -1676,6 +1800,114 @@
 		}
 	}
 
+	async function loadChallenges(session = authSession, payerUserId = Number(couponPayerUserId), force = false) {
+		if (!session) return;
+		if (!Number.isFinite(payerUserId) || payerUserId <= 0) {
+			resetChallenges();
+			return;
+		}
+		if (challengesCacheFresh(payerUserId, force)) return;
+
+		challengesLoading = true;
+		challengesLoaded = false;
+		challengesError = null;
+		try {
+			challenges = await listChallenges(payerUserId, authorizationHeader(session));
+			challengesLoaded = true;
+			challengesLoadedAt = Date.now();
+			challengesPayerUserId = payerUserId;
+		} catch (error) {
+			if (handleExpiredSession(error)) return;
+			challenges = [];
+			challengesLoaded = true;
+			challengesLoadedAt = Date.now();
+			challengesPayerUserId = payerUserId;
+			challengesError = error instanceof ApiError ? error.message : 'No se pudieron cargar los challenges.';
+		} finally {
+			challengesLoading = false;
+		}
+	}
+
+	async function redeemSelectedChallenge(challenge: ChallengeResponse) {
+		if (!authSession || redeemingChallengeCode) return;
+		const payerUserId = Number(couponPayerUserId);
+		if (!Number.isFinite(payerUserId) || payerUserId <= 0) return;
+
+		redeemingChallengeCode = challenge.code;
+		challengesError = null;
+		try {
+			await redeemChallenge(challenge.code, payerUserId, authorizationHeader(authSession));
+			await loadChallenges(authSession, payerUserId, true);
+		} catch (error) {
+			if (handleExpiredSession(error)) return;
+			challengesError = error instanceof ApiError ? error.message : 'No se pudo canjear el challenge.';
+		} finally {
+			redeemingChallengeCode = null;
+		}
+	}
+
+	async function saveCouponDefinition(code: string | null, values: CouponDefinitionRequest) {
+		if (!authSession || catalogMutationBusy) return;
+		catalogMutationBusy = true;
+		globalCouponsError = null;
+		try {
+			if (code) await updateCoupon(code, values, authorizationHeader(authSession));
+			else await createCoupon(values, authorizationHeader(authSession));
+			await loadGlobalCoupons(authSession, Number(couponPayerUserId), true);
+		} catch (error) {
+			if (handleExpiredSession(error)) return;
+			globalCouponsError = error instanceof ApiError ? error.message : 'No se pudo guardar el cupón.';
+		} finally {
+			catalogMutationBusy = false;
+		}
+	}
+
+	async function removeCouponDefinition(coupon: CouponResponse) {
+		if (!authSession || catalogMutationBusy || !confirm(`¿Eliminar el cupón “${coupon.name}”?`)) return;
+		catalogMutationBusy = true;
+		globalCouponsError = null;
+		try {
+			await deleteCoupon(coupon.code, authorizationHeader(authSession));
+			await loadGlobalCoupons(authSession, Number(couponPayerUserId), true);
+		} catch (error) {
+			if (handleExpiredSession(error)) return;
+			globalCouponsError = error instanceof ApiError ? error.message : 'No se pudo eliminar el cupón.';
+		} finally {
+			catalogMutationBusy = false;
+		}
+	}
+
+	async function saveChallengeDefinition(code: string | null, values: ChallengeDefinitionRequest) {
+		if (!authSession || catalogMutationBusy) return;
+		catalogMutationBusy = true;
+		challengesError = null;
+		try {
+			if (code) await updateChallenge(code, values, authorizationHeader(authSession));
+			else await createChallenge(values, authorizationHeader(authSession));
+			await loadChallenges(authSession, Number(couponPayerUserId), true);
+		} catch (error) {
+			if (handleExpiredSession(error)) return;
+			challengesError = error instanceof ApiError ? error.message : 'No se pudo guardar el challenge.';
+		} finally {
+			catalogMutationBusy = false;
+		}
+	}
+
+	async function removeChallengeDefinition(challenge: ChallengeResponse) {
+		if (!authSession || catalogMutationBusy || !confirm(`¿Eliminar el challenge “${challenge.name}”?`)) return;
+		catalogMutationBusy = true;
+		challengesError = null;
+		try {
+			await deleteChallenge(challenge.code, authorizationHeader(authSession));
+			await loadChallenges(authSession, Number(couponPayerUserId), true);
+		} catch (error) {
+			if (handleExpiredSession(error)) return;
+			challengesError = error instanceof ApiError ? error.message : 'No se pudo eliminar el challenge.';
+		} finally {
+			catalogMutationBusy = false;
+		}
+	}
+
 	async function loadPlanningCoupons(
 		session = authSession,
 		planningId = activeProposedWeekMenuId,
@@ -2068,6 +2300,17 @@
 		}
 	}
 
+	async function refreshChallengesView(session = authSession, force = false) {
+		if (!session) {
+			resetChallenges();
+			return;
+		}
+		ensureDefaultCouponPayerUserId(session);
+		if (force || !data.usersLoaded) await loadUsers(session);
+		ensureDefaultCouponPayerUserId(session);
+		await loadChallenges(session, Number(couponPayerUserId), force);
+	}
+
 	async function refreshPublishCouponsView(session = authSession, force = false) {
 		if (!session) {
 			resetPlanningCoupons();
@@ -2188,6 +2431,11 @@
 			return;
 		}
 
+		if (currentSection === 'challenges') {
+			await refreshChallengesView(session, force);
+			return;
+		}
+
 		if (currentSection === 'menus') {
 			await refreshMenusView(session, force);
 			return;
@@ -2218,10 +2466,13 @@
 	onMount(() => {
 		hydrated = true;
 		sessionNow = Date.now();
-			const sessionTimer = window.setInterval(() => {
-				sessionNow = Date.now();
-			}, 1000);
-			setSection(section, { updateHash: false });
+		const sessionTimer = window.setInterval(() => {
+			sessionNow = Date.now();
+			if (authSession && new Date(authSession.expiresAt).getTime() <= sessionNow) {
+				openSessionExpiredDialog();
+			}
+		}, 1000);
+		setSection(section, { updateHash: false });
 		sessionExpiredListener = (event: Event) => {
 			const detail = (event as CustomEvent<{ message?: string }>).detail;
 			openSessionExpiredDialog(detail?.message);
@@ -2269,6 +2520,13 @@
 				typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches;
 			const storedStockStatsOpen = typeof window !== 'undefined' ? window.localStorage.getItem(stockStatsStorageKey) : null;
 			stockStatsOpen = storedStockStatsOpen === null ? !prefersCompactStockList : storedStockStatsOpen === '1';
+			const storedPlanningEvaluationOpen =
+				typeof window !== 'undefined' ? window.localStorage.getItem(planningEvaluationStorageKey) : null;
+			planningEvaluationOpen =
+				storedPlanningEvaluationOpen === null ? !prefersCompactStockList : storedPlanningEvaluationOpen === '1';
+			const storedPlanningHeaderOpen =
+				typeof window !== 'undefined' ? window.localStorage.getItem(planningHeaderStorageKey) : null;
+			planningHeaderOpen = storedPlanningHeaderOpen === null ? !prefersCompactStockList : storedPlanningHeaderOpen === '1';
 			const storedStockViewMode = typeof window !== 'undefined' ? window.localStorage.getItem(stockViewModeStorageKey) : null;
 			stockViewMode =
 				storedStockViewMode === 'list' || storedStockViewMode === 'block'
@@ -2512,6 +2770,7 @@
 				name: stockEntry.productName,
 				description: '',
 				gramsPerUnit: 0,
+				isStockInUnits: stockEntry.isStockInUnits,
 				nutritionBasis: 'PER_100_GRAMS',
 				defaultPrice: null,
 				nutritionalValues: {
@@ -2668,6 +2927,10 @@
 	function openWeekDayModal(date: string) {
 		const day = data.proposedWeekMenu?.days.find((item) => item.date === date) ?? null;
 		editingWeekDayDate = date;
+		weekDayClipboardMessage = null;
+		weekDayClipboardImportOpen = false;
+		weekDayClipboardImportText = '';
+		weekDaySectionClipboardMessage = null;
 		weekDayDraft = toProposedWeekMenuDayFormValues(day, data.products);
 		if (!day) {
 			weekDayDraft = {
@@ -2694,23 +2957,11 @@
 	}
 
 	function addWeekDayProduct(sectionIndex: number) {
-		const productIndex = weekDayDraft.sections[sectionIndex]?.products.length ?? 0;
-		weekDayDraft = {
-			...weekDayDraft,
-			sections: weekDayDraft.sections.map((section, currentIndex) =>
-				currentIndex === sectionIndex
-					? {
-							...section,
-							products: [...section.products, createDayProductDraft(section.products)]
-						}
-					: section
-			)
-		};
+		const dayPartId =
+			weekDayDraft.sections[sectionIndex]?.dayPartId || String(orderedProposedWeekMenuDayParts()[0]?.id ?? '');
 		openProductPicker({
-			type: 'week-day',
-			sectionIndex,
-			productIndex,
-			selectedProductId: ''
+			type: 'week-day-add',
+			dayPartId
 		});
 	}
 
@@ -2726,6 +2977,300 @@
 					: section
 			)
 		};
+	}
+
+	function planningDayClipboardText(sections: ProposedWeekMenuSectionFormValues[]) {
+		return JSON.stringify({ type: 'foodhelper/planning-day', version: 1, sections });
+	}
+
+	function copiedPlanningDaySections(text: string): ProposedWeekMenuSectionFormValues[] | null {
+		try {
+			const value: unknown = JSON.parse(text);
+			if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+			const clipboard = value as Record<string, unknown>;
+			if (clipboard.type !== 'foodhelper/planning-day' || clipboard.version !== 1 || !Array.isArray(clipboard.sections)) {
+				return null;
+			}
+
+			return clipboard.sections.map((section) => {
+				if (!section || typeof section !== 'object' || Array.isArray(section)) throw new Error('Invalid section');
+				const sectionValue = section as Record<string, unknown>;
+				if (typeof sectionValue.dayPartId !== 'string' || !Array.isArray(sectionValue.products)) {
+					throw new Error('Invalid section');
+				}
+
+				return {
+					dayPartId: sectionValue.dayPartId,
+					products: sectionValue.products.map((product) => {
+						if (!product || typeof product !== 'object' || Array.isArray(product)) throw new Error('Invalid product');
+						const productValue = product as Record<string, unknown>;
+						const stringFields = [
+							'productId', 'productName', 'units', 'grams', 'calories', 'carbohydrates', 'proteins', 'fats', 'sortOrder'
+						] as const;
+						if (
+							(productValue.type !== 'catalog' && productValue.type !== 'manual') ||
+							(productValue.quantityMode !== 'units' && productValue.quantityMode !== 'grams') ||
+							stringFields.some((field) => typeof productValue[field] !== 'string')
+						) {
+							throw new Error('Invalid product');
+						}
+
+						return {
+							type: productValue.type as 'catalog' | 'manual',
+							quantityMode: productValue.quantityMode as 'units' | 'grams',
+							productId: productValue.productId as string,
+							productName: productValue.productName as string,
+							units: productValue.units as string,
+							grams: productValue.grams as string,
+							calories: productValue.calories as string,
+							carbohydrates: productValue.carbohydrates as string,
+							proteins: productValue.proteins as string,
+							fats: productValue.fats as string,
+							sortOrder: productValue.sortOrder as string
+						};
+					})
+				};
+			});
+		} catch {
+			return null;
+		}
+	}
+
+	async function copyWeekDay(day: ProposedWeekMenuDay) {
+		const sections = toProposedWeekMenuDayFormValues(day, data.products).sections;
+		weekDayClipboard = sections;
+		weekDayCopyFeedback = {
+			date: day.date,
+			message: 'Menú diario copiado. Ya puedes pegarlo en otro día o en el servidor.'
+		};
+
+		try {
+			if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
+			await navigator.clipboard.writeText(planningDayClipboardText(sections));
+		} catch {
+			weekDayCopyFeedback = {
+				date: day.date,
+				message: 'Menú copiado en esta pestaña. Para usarlo en otro entorno, usa un navegador con acceso al portapapeles.'
+			};
+		}
+	}
+
+	function pasteWeekDaySections(sections: ProposedWeekMenuSectionFormValues[]) {
+		weekDayDraft = {
+			...weekDayDraft,
+			sections: sections.map((section) => ({
+				...section,
+				products: section.products.map((product, productIndex) => ({
+					...product,
+					sortOrder: String((productIndex + 1) * 10)
+				}))
+			}))
+		};
+		weekDayClipboardMessage = 'Menú diario pegado. Guarda los cambios para aplicarlo.';
+		weekDayClipboardImportOpen = false;
+		weekDayClipboardImportText = '';
+	}
+
+	function importCopiedWeekDay(text = weekDayClipboardImportText) {
+		const sections = copiedPlanningDaySections(text);
+		if (!sections) {
+			weekDayClipboardMessage = 'El contenido pegado no es un menú diario de FoodHelper válido.';
+			return;
+		}
+		weekDayClipboard = sections;
+		pasteWeekDaySections(sections);
+	}
+
+	async function pasteCopiedWeekDay() {
+		try {
+			if (!navigator.clipboard?.readText) throw new Error('Clipboard API unavailable');
+			const sections = copiedPlanningDaySections(await navigator.clipboard.readText());
+			if (sections) {
+				weekDayClipboard = sections;
+				pasteWeekDaySections(sections);
+				return;
+			}
+		} catch {
+			// HTTP deployments may not expose the Clipboard API. Offer a paste field below.
+		}
+
+		if (weekDayClipboard) {
+			pasteWeekDaySections(weekDayClipboard);
+			return;
+		}
+
+		weekDayClipboardImportOpen = true;
+		weekDayClipboardMessage = 'Pega aquí el menú copiado desde el otro entorno.';
+		await tick();
+		weekDayClipboardImportInput?.focus();
+	}
+
+	async function copyWeekDaySection(section: ProposedWeekMenuSection) {
+		weekDaySectionClipboard = {
+			dayPartId: String(section.dayPartId),
+			products: section.products.map((product) => ({
+				type: product.productId === null ? 'manual' : 'catalog',
+				quantityMode: product.productId === null ? 'units' : catalogQuantityMode(product.productId),
+				productId: product.productId === null ? '' : String(product.productId),
+				productName: product.productName,
+				units: product.units === null ? '' : String(product.units),
+				grams: product.grams === null ? '' : String(product.grams),
+				calories: String(product.nutritionalValues.calories),
+				carbohydrates: String(product.nutritionalValues.carbohydrates),
+				proteins: String(product.nutritionalValues.proteins),
+				fats: String(product.nutritionalValues.fats),
+				sortOrder: String(product.sortOrder)
+			}))
+		};
+		weekDaySectionClipboardMessage = null;
+
+		try {
+			if (!navigator.clipboard?.writeText) return;
+			await navigator.clipboard.writeText('');
+		} catch {
+			// The in-app copy remains available when the browser cannot clear its clipboard.
+		}
+	}
+
+	function manualDayProductFromClipboard(
+		text: string,
+		existingProducts: ProposedWeekMenuDayProductFormValues[]
+	): ProposedWeekMenuDayProductFormValues | null {
+		try {
+			const value: unknown = JSON.parse(text);
+			if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+
+			const product = value as Record<string, unknown>;
+			const nutritionFields = ['calories', 'carbohydrates', 'proteins', 'fats'] as const;
+			if (
+				product.type !== 'manual' ||
+				typeof product.productName !== 'string' ||
+				product.productName.trim() === '' ||
+				nutritionFields.some((field) => typeof product[field] !== 'number' || !Number.isFinite(product[field]) || product[field] < 0)
+			) {
+				return null;
+			}
+
+			return {
+				...createManualDayProductDraft(existingProducts),
+				type: 'manual',
+				productName: product.productName.trim(),
+				calories: String(product.calories),
+				carbohydrates: String(product.carbohydrates),
+				proteins: String(product.proteins),
+				fats: String(product.fats)
+			};
+		} catch {
+			return null;
+		}
+	}
+
+	function pasteWeekDaySectionFromClipboard(sectionIndex: number, product: ProposedWeekMenuDayProductFormValues) {
+		weekDayDraft = {
+			...weekDayDraft,
+			sections: weekDayDraft.sections.map((section, currentIndex) =>
+				currentIndex === sectionIndex ? { ...section, products: [...section.products, product] } : section
+			)
+		};
+		weekDaySectionClipboardMessage = {
+			sectionIndex,
+			text: `Producto manual \"${product.productName}\" añadido.`
+		};
+	}
+
+	function pasteCopiedWeekDaySection(sectionIndex: number) {
+		if (!weekDaySectionClipboard) {
+			weekDaySectionClipboardMessage = {
+				sectionIndex,
+				text: 'Pega un JSON manual válido o copia una sección desde el panel de planificación.'
+			};
+			return;
+		}
+
+		weekDaySectionClipboardMessage = null;
+
+		weekDayDraft = {
+			...weekDayDraft,
+			sections: weekDayDraft.sections.map((section, currentIndex) =>
+				currentIndex === sectionIndex
+					? {
+							...section,
+							dayPartId: weekDaySectionClipboard!.dayPartId,
+							products: weekDaySectionClipboard!.products.map((product, productIndex) => ({
+								...product,
+								sortOrder: String((productIndex + 1) * 10)
+							}))
+						}
+					: section
+			)
+		};
+	}
+
+	async function pasteWeekDaySection(sectionIndex: number) {
+		let clipboardError: unknown = null;
+		if (navigator.clipboard?.readText) {
+			try {
+				const existingProducts = weekDayDraft.sections[sectionIndex]?.products;
+				const clipboardText = await navigator.clipboard.readText();
+				const product = existingProducts ? manualDayProductFromClipboard(clipboardText, existingProducts) : null;
+				if (product) {
+					pasteWeekDaySectionFromClipboard(sectionIndex, product);
+					return;
+				}
+				clipboardError = new Error('El portapapeles no contiene un JSON de producto manual válido.');
+			} catch (error) {
+				clipboardError = error;
+			}
+		} else {
+			clipboardError = new Error('La API del portapapeles no está disponible.');
+		}
+
+		if (weekDaySectionClipboard) {
+			pasteCopiedWeekDaySection(sectionIndex);
+			return;
+		}
+
+		console.error('No se pudo pegar en la sección de planificación.', {
+			sectionIndex,
+			clipboardError
+		});
+		weekDaySectionClipboardMessage = {
+			sectionIndex,
+			text: 'No se pudo pegar: el portapapeles y la sección copiada no contienen datos válidos.'
+		};
+	}
+
+	function planningDayMenuTextForAi(day: ProposedWeekMenuDay) {
+		const nutrition = (values: NutritionalValues) =>
+			`${formatNumber(values.calories)} kcal · ${formatNumber(values.carbohydrates)} g hidratos · ${formatNumber(values.proteins)} g proteínas · ${formatNumber(values.fats)} g grasas`;
+
+		return [
+			`Menú diario: ${formatLongDate(day.date)}`,
+			`Totales del día: ${nutrition(day.nutritionalValues)}`,
+			'',
+			...day.sections.flatMap((section) => [
+				`${section.name} — ${nutrition(section.nutritionalValues)}`,
+				...section.products.map((product) => {
+					if (product.productId === null) return `- ${product.productName}`;
+					const quantity =
+						catalogQuantityMode(product.productId) === 'units'
+							? `${formatNumber(product.units ?? 0)} uds`
+							: `${formatNumber(product.grams ?? 0)} g`;
+					return `- ${product.productName} (${quantity})`;
+				}),
+				''
+			])
+		].join('\n').trim();
+	}
+
+	async function copyPlanningDayForAi(day: ProposedWeekMenuDay) {
+		try {
+			if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
+			await navigator.clipboard.writeText(planningDayMenuTextForAi(day));
+			weekDayAiCopyFeedback = { date: day.date, message: 'Menú copiado para pegar en una IA.', isError: false };
+		} catch {
+			weekDayAiCopyFeedback = { date: day.date, message: 'No se pudo copiar el menú. Prueba de nuevo.', isError: true };
+		}
 	}
 
 	function moveWeekDayProduct(sectionIndex: number, productIndex: number, direction: -1 | 1) {
@@ -2948,7 +3493,60 @@
 
 	function resetProductCreateDraft() {
 		createDraft = emptyProductForm();
+		createProductPasteFeedback = null;
 		clearPhotoSelection('create');
+	}
+
+	function productFormFromClipboard(text: string): Pick<ProductFormValues, 'name' | 'description' | 'calories' | 'carbohydrates' | 'proteins' | 'fats'> | null {
+		try {
+			const value: unknown = JSON.parse(text);
+			if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+
+			const product = value as Record<string, unknown>;
+			const nutritionFields = ['calories', 'carbohydrates', 'proteins', 'fats'] as const;
+			if (
+				typeof product.name !== 'string' ||
+				product.name.trim() === '' ||
+				typeof product.description !== 'string' ||
+				product.description.trim() === '' ||
+				nutritionFields.some((field) => typeof product[field] !== 'number' || !Number.isFinite(product[field]) || product[field] < 0)
+			) {
+				return null;
+			}
+
+			return {
+				name: product.name.trim(),
+				description: product.description.trim(),
+				calories: String(product.calories),
+				carbohydrates: String(product.carbohydrates),
+				proteins: String(product.proteins),
+				fats: String(product.fats)
+			};
+		} catch {
+			return null;
+		}
+	}
+
+	async function pasteCreateProduct() {
+		try {
+			if (!navigator.clipboard?.readText) throw new Error('Clipboard API unavailable');
+			const values = productFormFromClipboard(await navigator.clipboard.readText());
+			if (!values) {
+				createProductPasteFeedback = {
+					text: 'El portapapeles no contiene un JSON de producto válido.',
+					isError: true
+				};
+				return;
+			}
+
+			createDraft = { ...createDraft, ...values };
+			createProductPasteFeedback = { text: 'Datos del producto añadidos al formulario.', isError: false };
+		} catch {
+			createProductPasteFeedback = {
+				text: 'No se pudo leer el portapapeles. Revisa los permisos del navegador.',
+				isError: true
+			};
+		}
 	}
 
 	function resetProductEditDraft() {
@@ -3038,6 +3636,18 @@
 			year: 'numeric',
 			timeZone: 'UTC'
 		}).format(date);
+	}
+
+	function formatPlanningDayFilterLabel(value: string) {
+		const date = parseDateInput(value);
+		if (!date) return value;
+		const formatted = new Intl.DateTimeFormat('es-ES', {
+			weekday: 'short',
+			day: '2-digit',
+			month: '2-digit',
+			timeZone: 'UTC'
+		}).format(date);
+		return formatted.charAt(0).toUpperCase() + formatted.slice(1).replace('.', '');
 	}
 
 	function weekDateRangeLabel(startDate: string, endDate: string) {
@@ -3157,7 +3767,18 @@
 		return data.proposedWeekMenu?.days.find((day) => day.date === date) ?? null;
 	}
 
+	function togglePlanningDayFilter(date: string) {
+		planningDayFilter = planningDayFilter.includes(date)
+			? planningDayFilter.filter((item) => item !== date)
+			: [...planningDayFilter, date];
+	}
+
+	function clearPlanningDayFilter() {
+		planningDayFilter = [];
+	}
+
 	function setActiveProposedWeekMenu(menu: ProposedWeekMenu | null) {
+		clearPlanningDayFilter();
 		data.proposedWeekMenu = menu;
 		data.proposedWeekMenuLoaded = true;
 		data.establishedWeekMenu = null;
@@ -3223,6 +3844,12 @@
 		couponPayerUserId = selectedUserId;
 		publishCouponCodes = [];
 		if (authSession) {
+			if (currentSection === 'coupons') {
+				void loadGlobalCoupons(authSession, Number(selectedUserId), true);
+			}
+			if (currentSection === 'challenges') {
+				void loadChallenges(authSession, Number(selectedUserId), true);
+			}
 			void loadPlanningCoupons(authSession, activeProposedWeekMenuId, Number(selectedUserId), true);
 		}
 	}
@@ -3283,6 +3910,7 @@
 		if (!authSession || !menu || menuId === selectedPlanningMenuId) return;
 
 		selectedPlanningMenuId = menuId;
+		clearPlanningDayFilter();
 		if (typeof window !== 'undefined') {
 			window.localStorage.setItem('foodhelper_selected_planning_menu_id', String(menuId));
 		}
@@ -3621,10 +4249,15 @@
 		return Number.isInteger(value) ? String(value) : value.toFixed(1).replace(/\.0$/, '');
 	}
 
+	function stockRequirementQuantity(value: number, isStockInUnits: boolean) {
+		return `${formatNumber(value)} ${isStockInUnits ? 'uds' : 'g'}`;
+	}
+
 	function formatCurrency(value: number) {
 		return new Intl.NumberFormat('es-ES', {
 			style: 'currency',
-			currency: 'EUR'
+			currency: 'EUR',
+			maximumFractionDigits: 4
 		}).format(value);
 	}
 
@@ -3691,6 +4324,20 @@
 
 	function toggleStockStatsOpen() {
 		setStockStatsOpen(!stockStatsOpen);
+	}
+
+	function setPlanningEvaluationOpen(next: boolean) {
+		planningEvaluationOpen = next;
+		if (typeof window !== 'undefined') {
+			window.localStorage.setItem(planningEvaluationStorageKey, next ? '1' : '0');
+		}
+	}
+
+	function setPlanningHeaderOpen(next: boolean) {
+		planningHeaderOpen = next;
+		if (typeof window !== 'undefined') {
+			window.localStorage.setItem(planningHeaderStorageKey, next ? '1' : '0');
+		}
 	}
 
 	function setStockViewMode(next: StockViewMode) {
@@ -4145,7 +4792,11 @@
 		const selectedStockEntry = editingStockEntry;
 		const selectedStockProduct = stockProduct;
 
-		const values = { ...stockDraft };
+		const evaluatedPrice = evaluateArithmeticExpression(stockDraft.price);
+		const values = {
+			...stockDraft,
+			price: evaluatedPrice === null ? stockDraft.price : String(evaluatedPrice)
+		};
 		const fieldErrors = validateStockForm(values);
 		if (Object.keys(fieldErrors).length > 0) {
 			form = {
@@ -4185,7 +4836,7 @@
 				await updateStockEntryRequest(
 					selectedStockEntry.id,
 					{
-						quantity: Number(values.quantity),
+					quantity: stockQuantityToStoredGrams(Number(values.quantity), selectedStockProduct),
 						price: Number(values.price),
 						expirationDate: values.expirationDate || null,
 						entryDate: values.entryDate
@@ -4196,7 +4847,7 @@
 				await createStockEntryRequest(
 					selectedStockProductId,
 					{
-						quantity: Number(values.quantity),
+					quantity: stockQuantityToStoredGrams(Number(values.quantity), selectedStockProduct),
 						price: Number(values.price),
 						expirationDate: values.expirationDate || null,
 						entryDate: values.entryDate
@@ -4241,7 +4892,7 @@
 		try {
 			await removeStockQuantityRequest(
 				selectedStockEntry.id,
-				{ quantity: selectedStockEntry.quantity },
+				{ quantity: stockQuantityToStoredGrams(selectedStockEntry.quantity, stockProduct ?? productFromStockEntry(selectedStockEntry)) },
 				authorizationHeader(authSession)
 			);
 			deletingStockEntry = null;
@@ -4610,7 +5261,7 @@
 	async function submitUpsertWeekDay(event: SubmitEvent) {
 		event.preventDefault();
 		validationDialog = null;
-		if (!authSession || !activeProposedWeekMenuId) return;
+		if (weekDaySaving || !authSession || !activeProposedWeekMenuId) return;
 
 		const values = { ...weekDayDraft };
 		if (data.proposedWeekMenuDayParts.length === 0) {
@@ -4641,6 +5292,7 @@
 			return;
 		}
 
+		weekDaySaving = true;
 		try {
 			const menu = toProposedWeekMenuModel(
 				await upsertProposedWeekMenuDayRequest(
@@ -4679,6 +5331,8 @@
 				return;
 			}
 			throw error;
+		} finally {
+			weekDaySaving = false;
 		}
 	}
 
@@ -5001,6 +5655,21 @@
 							<Percent class="size-4 shrink-0" aria-hidden="true" />
 							<span class="truncate">Cupones</span>
 						</a>
+					<a
+						class={`flex h-9 items-center gap-2 rounded-md px-2.5 text-sm font-medium ${
+							currentSection === 'challenges'
+								? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]'
+								: 'text-[hsl(var(--muted-foreground))] transition-colors hover:bg-[hsl(var(--secondary))] hover:text-[hsl(var(--foreground))]'
+						}`}
+						href={sectionPath('challenges')}
+						onclick={(event) => {
+							event.preventDefault();
+							void navigateSection('challenges');
+						}}
+					>
+						<Trophy class="size-4 shrink-0" aria-hidden="true" />
+						<span class="truncate">Challenges</span>
+					</a>
 					<a
 						class={`flex h-9 items-center gap-2 rounded-md px-2.5 text-sm font-medium ${
 							currentSection === 'planning'
@@ -5358,6 +6027,18 @@
 				>
 					<Percent class="size-4" aria-hidden="true" />
 					<span class="truncate">Cupones</span>
+				</button>
+				<button
+					type="button"
+					class={`inline-flex min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+						currentSection === 'challenges'
+							? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]'
+							: 'text-[hsl(var(--muted-foreground))]'
+					}`}
+					onclick={() => void navigateSection('challenges')}
+				>
+					<Trophy class="size-4" aria-hidden="true" />
+					<span class="truncate">Challenges</span>
 				</button>
 				<button
 					type="button"
@@ -6365,7 +7046,7 @@
 															<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Producto #{stockEntry.productId}</p>
 														</div>
 													</td>
-													<td class="px-3 py-3 text-right align-top font-medium tabular-nums">{formatNumber(stockEntry.quantity)}</td>
+													<td class="px-3 py-3 text-right align-top font-medium tabular-nums">{formatNumber(stockEntry.quantity)} {stockQuantityLabel(stockEntry)}</td>
 													<td class="px-3 py-3 text-right align-top tabular-nums">{formatCurrency(stockEntry.price)}</td>
 													<td class="px-3 py-3 text-right align-top tabular-nums">{formatDate(stockEntry.expirationDate)}</td>
 													<td class="px-3 py-3 text-right align-top tabular-nums">{formatDate(stockEntry.entryDate)}</td>
@@ -6412,7 +7093,7 @@
 												</div>
 												<div class="shrink-0 text-right">
 													<p class="text-sm font-semibold tabular-nums text-[hsl(var(--foreground))]">{formatNumber(stockEntry.quantity)}</p>
-													<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">uds</p>
+													<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">{stockQuantityLabel(stockEntry)}</p>
 												</div>
 											</div>
 											<div class="grid grid-cols-3 gap-2 text-xs text-[hsl(var(--muted-foreground))]">
@@ -6459,7 +7140,7 @@
 												</div>
 												<div class="shrink-0 text-right">
 													<p class="text-lg font-semibold tabular-nums text-[hsl(var(--foreground))]">{formatNumber(stockEntry.quantity)}</p>
-													<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">uds</p>
+													<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">{stockQuantityLabel(stockEntry)}</p>
 												</div>
 											</div>
 											<dl class="grid grid-cols-2 gap-2 text-sm">
@@ -6476,7 +7157,7 @@
 													<dd class="mt-1 font-medium tabular-nums">{formatDate(stockEntry.entryDate)}</dd>
 												</div>
 												<div class="rounded-md border border-[hsl(var(--border))] p-2.5">
-													<dt class="text-xs text-[hsl(var(--muted-foreground))]">Cantidad</dt>
+													<dt class="text-xs text-[hsl(var(--muted-foreground))]">Cantidad ({stockQuantityLabel(stockEntry)})</dt>
 													<dd class="mt-1 font-medium tabular-nums">{formatNumber(stockEntry.quantity)}</dd>
 												</div>
 											</dl>
@@ -6521,12 +7202,6 @@
 							<div class="min-w-0">
 								<div class="flex flex-wrap items-center gap-3">
 									<h2 class="text-2xl font-semibold tracking-tight text-[hsl(var(--foreground))]">Planificación</h2>
-									{#if activeMenu}
-										<span class="inline-flex w-fit items-center gap-1.5 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]" data-testid="week-date-range">
-											<CalendarClock class="size-3.5" aria-hidden="true" />
-											{weekDateRangeLabel(activeMenu.startDate, activeMenu.endDate)}
-										</span>
-									{/if}
 									{#if planningMenusForSelector().length > 0}
 								<label class="min-w-0">
 									<span class="sr-only">Periodo de planificación</span>
@@ -6552,18 +7227,52 @@
 							<div class="flex flex-wrap gap-2 sm:shrink-0">
 								<Button type="button" onclick={openCreateWeekMenuModal} disabled={!data.backendAvailable}>
 									<Plus class="size-4" aria-hidden="true" />
-									Nueva semana
+									Nueva
 								</Button>
 								{#if activeProposedWeekMenuId}
 									<Button type="button" variant="secondary" onclick={openPublishWeekMenuModal} disabled={!data.backendAvailable}>
 										<CircleCheck class="size-4" aria-hidden="true" />
-										Establecer semana
+										Establecer
 									</Button>
 								{/if}
 								{#if activeMenu}
+									<Button
+										type="button"
+										variant="secondary"
+										size="sm"
+										onclick={() => setPlanningEvaluationOpen(!planningEvaluationOpen)}
+										aria-label={planningEvaluationOpen ? 'Ocultar evaluación' : 'Mostrar evaluación'}
+										title={planningEvaluationOpen ? 'Ocultar evaluación' : 'Mostrar evaluación'}
+										aria-pressed={planningEvaluationOpen}
+										data-testid="planning-evaluation-toggle"
+									>
+										{#if planningEvaluationOpen}
+											<EyeOff class="size-4" aria-hidden="true" />
+										{:else}
+											<Eye class="size-4" aria-hidden="true" />
+										{/if}
+										Evaluación
+									</Button>
+									<Button
+										type="button"
+										variant="secondary"
+										size="sm"
+										onclick={() => setPlanningHeaderOpen(!planningHeaderOpen)}
+										aria-label={planningHeaderOpen ? 'Ocultar cabecera' : 'Mostrar cabecera'}
+										title={planningHeaderOpen ? 'Ocultar cabecera' : 'Mostrar cabecera'}
+										aria-pressed={planningHeaderOpen}
+										data-testid="planning-header-toggle"
+									>
+										{#if planningHeaderOpen}
+											<EyeOff class="size-4" aria-hidden="true" />
+										{:else}
+											<Eye class="size-4" aria-hidden="true" />
+										{/if}
+										Cabecera
+									</Button>
 									<Button type="button" variant="danger" onclick={openDeleteWeekMenuModal} disabled={!data.backendAvailable}>
 										<Trash2 class="size-4" aria-hidden="true" />
-										Borrar planificación
+										Borrar
 									</Button>
 								{/if}
 							</div>
@@ -6603,16 +7312,21 @@
 							</div>
 						{:else}
 							<section class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-sm">
+								{#if planningHeaderOpen}
 								<div class="border-b border-[hsl(var(--border))] p-4">
 									<div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
 										<div class="min-w-0">
 											<div class="flex flex-wrap items-center gap-2">
 												<h3 class="text-base font-semibold text-[hsl(var(--foreground))]">Dias de la semana</h3>
-												<span class="inline-flex w-fit shrink-0 items-center gap-1.5 rounded-md border border-[hsl(var(--border))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]">
-													<CalendarClock class="size-3.5" aria-hidden="true" />
-														{planningDayList.length} dias
-												</span>
-											</div>
+											<span class="inline-flex w-fit shrink-0 items-center gap-1.5 rounded-md border border-[hsl(var(--border))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]">
+												<CalendarClock class="size-3.5" aria-hidden="true" />
+													{planningDayList.length} dias
+											</span>
+											<span class="inline-flex w-fit shrink-0 items-center gap-1.5 rounded-md border border-[hsl(var(--border))] px-2 py-1 text-xs font-medium text-[hsl(var(--muted-foreground))]" data-testid="week-users-count">
+												<UserRound class="size-3.5" aria-hidden="true" />
+												{activeMenu.users} {activeMenu.users === 1 ? 'persona' : 'personas'}
+											</span>
+										</div>
 											<p class="mt-1 max-w-2xl text-sm text-[hsl(var(--muted-foreground))]">Las semanas se pueden dejar vacias y completar dia a dia.</p>
 											<div class="mt-3 flex flex-wrap gap-2">
 												<Button type="button" variant="secondary" onclick={openWeekStockDialog} disabled={!activeMenu}>
@@ -6668,7 +7382,8 @@
 										</div>
 									</div>
 								</div>
-									{#if activeMenu.nutritionalRules}
+								{/if}
+									{#if activeMenu.nutritionalRules && planningEvaluationOpen}
 										<div class="border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.16)] p-4">
 											<NutritionalEvaluationPanel evaluation={activeMenu.nutritionalRules} />
 										</div>
@@ -6690,18 +7405,105 @@
 										</Button>
 									</div>
 								{/if}
-								<div class="divide-y divide-[hsl(var(--border))]">
-									{#each planningDayList as date (date)}
+								<div class="flex flex-col gap-3 border-b border-[hsl(var(--border))] px-4 py-3">
+									<div class="flex flex-wrap items-center gap-2">
+										<span class="text-sm font-medium text-[hsl(var(--muted-foreground))]">Vista</span>
+										<div class="inline-flex rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.35)] p-1" aria-label="Modo de visualización de la planificación">
+										<Button type="button" size="sm" variant={planningViewMode === 'list' ? 'primary' : 'ghost'} onclick={() => (planningViewMode = 'list')} aria-pressed={planningViewMode === 'list'} data-testid="planning-view-mode-list">
+											<LayoutList class="size-4" aria-hidden="true" /> Lista
+										</Button>
+										<Button type="button" size="sm" variant={planningViewMode === 'calendar' ? 'primary' : 'ghost'} onclick={() => (planningViewMode = 'calendar')} aria-pressed={planningViewMode === 'calendar'} data-testid="planning-view-mode-calendar">
+											<CalendarDays class="size-4" aria-hidden="true" /> Calendario
+										</Button>
+										</div>
+									</div>
+									<div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+										<div class="flex min-w-0 flex-wrap items-center gap-1.5" aria-label="Filtrar días de la planificación" data-testid="planning-day-filter">
+											<span class="mr-1 inline-flex items-center gap-1.5 text-sm font-medium text-[hsl(var(--muted-foreground))]">
+												<Filter class="size-4" aria-hidden="true" />
+												Días
+											</span>
+											{#each planningDayList as date (date)}
+												<Button
+													type="button"
+													size="sm"
+													variant={planningDayFilter.includes(date) ? 'secondary' : 'ghost'}
+													onclick={() => togglePlanningDayFilter(date)}
+													aria-pressed={planningDayFilter.includes(date)}
+													data-testid={`planning-day-filter-${date}`}
+												>
+													{formatPlanningDayFilterLabel(date)}
+												</Button>
+											{/each}
+										</div>
+										{#if planningDayFilter.length > 0}
+											<Button type="button" size="sm" variant="ghost" onclick={clearPlanningDayFilter} data-testid="planning-day-filter-clear">
+												<X class="size-4" aria-hidden="true" />
+												Limpiar
+											</Button>
+										{/if}
+									</div>
+								</div>
+								{#if planningViewMode === 'list'}
+									<div class="divide-y divide-[hsl(var(--border))]">
+									{#each filteredPlanningDayList as date (date)}
 										{@const day = proposedWeekMenuDay(date)}
 										<article class="space-y-4 p-4" data-testid={`week-day-card-${date}`}>
 											<div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
 												<div class="min-w-0">
-													<div class="flex flex-wrap items-center gap-2">
-														<h4 class="text-sm font-semibold text-[hsl(var(--foreground))]">{formatLongDate(date)}</h4>
-													</div>
+											<div class="flex flex-wrap items-center gap-2">
+												<h4 class="text-sm font-semibold text-[hsl(var(--foreground))]">{formatLongDate(date)}</h4>
+												{#if day}
+													<span class="inline-flex items-center gap-1 text-xs font-medium tabular-nums text-[hsl(var(--muted-foreground))]" data-testid={`week-day-calories-${date}`}>
+														<Flame class="size-3.5 text-[hsl(var(--accent))]" aria-hidden="true" />
+														{formatNumber(day.nutritionalValues.calories)} kcal
+													</span>
+													<span class="inline-flex items-center gap-1 text-xs font-medium tabular-nums text-[hsl(var(--muted-foreground))]" data-testid={`week-day-carbohydrates-${date}`}>
+														<Wheat class="size-3.5" aria-hidden="true" />
+														{formatNumber(day.nutritionalValues.carbohydrates)} g hidr.
+													</span>
+													<span class="inline-flex items-center gap-1 text-xs font-medium tabular-nums text-[hsl(var(--muted-foreground))]" data-testid={`week-day-proteins-${date}`}>
+														<Drumstick class="size-3.5" aria-hidden="true" />
+														{formatNumber(day.nutritionalValues.proteins)} g prot.
+													</span>
+													<span class="inline-flex items-center gap-1 text-xs font-medium tabular-nums text-[hsl(var(--muted-foreground))]" data-testid={`week-day-fats-${date}`}>
+														<Droplets class="size-3.5" aria-hidden="true" />
+														{formatNumber(day.nutritionalValues.fats)} g grasa
+													</span>
+													<Button
+														type="button"
+														variant="ghost"
+														size="icon"
+														onclick={() => void copyPlanningDayForAi(day)}
+														aria-label={`Copiar menú del ${formatLongDate(date)} para IA`}
+														title="Copiar menú para IA"
+														data-testid={`week-day-ai-copy-${date}`}
+														class="size-7 text-[hsl(var(--accent))] hover:bg-[hsl(var(--accent)/0.12)] hover:text-[hsl(var(--accent))]"
+													>
+														<Lightbulb class="size-4" aria-hidden="true" />
+													</Button>
+													{#if weekDayAiCopyFeedback?.date === date}
+														<span class={`text-xs ${weekDayAiCopyFeedback.isError ? 'text-[hsl(var(--destructive))]' : 'text-[hsl(var(--primary))]'}`} role="status" data-testid={`week-day-ai-copy-feedback-${date}`}>
+															{weekDayAiCopyFeedback.message}
+														</span>
+													{/if}
+												{/if}
+											</div>
 													<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">{day ? `${day.sections.length} secciones · ${weekDayProductCount(day)} productos` : 'Sin menu todavía'}</p>
 												</div>
 												<div class="flex flex-wrap gap-2">
+													{#if day}
+														<Button
+															type="button"
+															variant="secondary"
+								onclick={() => void copyWeekDay(day)}
+															aria-label={`Copiar menú del ${formatLongDate(date)}`}
+															data-testid={`week-day-copy-${date}`}
+														>
+															<Copy class="size-4" aria-hidden="true" />
+															Copiar día
+														</Button>
+													{/if}
 													<Button
 														type="button"
 														variant="secondary"
@@ -6713,11 +7515,16 @@
 														{day ? 'Editar menu' : 'Añadir menu'}
 													</Button>
 												</div>
+												{#if weekDayCopyFeedback?.date === date}
+													<p class="mt-2 text-xs text-[hsl(var(--primary))]" role="status" data-testid={`week-day-copy-feedback-${date}`}>
+														{weekDayCopyFeedback.message}
+													</p>
+												{/if}
 											</div>
 											{#if day}
-													{#if activeMenu.nutritionalRules}
-														<DailyNutritionalEvaluation values={day.nutritionalValues} rules={activeMenu.nutritionalRules} />
-													{:else}
+											{#if planningEvaluationOpen && day.dailyNutritionalEvaluation}
+												<DailyNutritionalEvaluation evaluation={day.dailyNutritionalEvaluation} />
+											{:else if planningEvaluationOpen}
 														<div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
 														<MetricCard label="Calorias" value={formatNumber(day.nutritionalValues.calories)} hint="Total del dia"><Flame class="size-4" aria-hidden="true" /></MetricCard>
 														<MetricCard label="Carbos" value={formatNumber(day.nutritionalValues.carbohydrates)} hint="Total del dia"><Wheat class="size-4" aria-hidden="true" /></MetricCard>
@@ -6732,7 +7539,27 @@
 																<div>
 																	<p class="text-sm font-medium text-[hsl(var(--foreground))]">{section.name}</p>
 																</div>
-																<p class="text-xs text-[hsl(var(--muted-foreground))]">{section.products.length} productos</p>
+																<div class="flex shrink-0 items-center gap-1">
+																	<Button
+																		type="button"
+																		variant="ghost"
+																		size="icon"
+												onclick={() => void copyWeekDaySection(section)}
+																		aria-label={`Copiar sección ${section.name}`}
+																		title={`Copiar sección ${section.name}`}
+																		data-testid={`week-section-copy-${date}-${section.id}`}
+																		class="text-[hsl(var(--primary))] hover:bg-[hsl(var(--primary)/0.1)] hover:text-[hsl(var(--primary))]"
+																	>
+																		<Copy class="size-4 text-[hsl(var(--primary))]" aria-hidden="true" />
+																	</Button>
+																	<p class="text-xs text-[hsl(var(--muted-foreground))]">{section.products.length} productos</p>
+																</div>
+															</div>
+															<div class="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-xs tabular-nums text-[hsl(var(--muted-foreground))]" data-testid={`week-section-nutrition-${date}-${section.id}`}>
+																<span class="inline-flex items-center gap-1"><Flame class="size-3.5 text-[hsl(var(--accent))]" aria-hidden="true" />{formatNumber(section.nutritionalValues.calories)} kcal</span>
+																<span class="inline-flex items-center gap-1"><Wheat class="size-3.5" aria-hidden="true" />{formatNumber(section.nutritionalValues.carbohydrates)} g hidr.</span>
+																<span class="inline-flex items-center gap-1"><Drumstick class="size-3.5" aria-hidden="true" />{formatNumber(section.nutritionalValues.proteins)} g prot.</span>
+																<span class="inline-flex items-center gap-1"><Droplets class="size-3.5" aria-hidden="true" />{formatNumber(section.nutritionalValues.fats)} g grasa</span>
 															</div>
 															<div class="mt-3 space-y-2">
 																{#each section.products as product}
@@ -6760,7 +7587,16 @@
 											{/if}
 										</article>
 									{/each}
-								</div>
+									</div>
+								{:else}
+									<PlanningCalendar
+										menu={activeMenu}
+										dayParts={data.proposedWeekMenuDayParts}
+										dates={filteredPlanningDayList}
+										disabled={!data.backendAvailable || data.proposedWeekMenuDayParts.length === 0}
+										onEditDay={openWeekDayModal}
+									/>
+								{/if}
 							</section>
 						{/if}
 					</section>
@@ -6805,6 +7641,14 @@
 								</label>
 							</div>
 
+							<CouponDefinitionsPanel
+								coupons={globalCoupons}
+								busy={catalogMutationBusy}
+								error={globalCouponsError}
+								onSave={saveCouponDefinition}
+								onDelete={removeCouponDefinition}
+							/>
+
 							<PlanningCouponsPanel
 								coupons={globalCoupons}
 								loaded={globalCouponsLoaded}
@@ -6813,6 +7657,45 @@
 								onRetry={authSession ? () => void loadGlobalCoupons(authSession, Number(couponPayerUserId)) : undefined}
 								emptyTitle="No hay cupones para mostrar"
 								emptyMessage="El backend no ha devuelto cupones para este pagador."
+							/>
+						</section>
+
+					{:else if currentSection === 'challenges'}
+						<section id="challenges" class="space-y-4">
+							<div class="min-w-0">
+								<h2 class="text-2xl font-semibold tracking-tight text-[hsl(var(--foreground))]">Challenges</h2>
+								<p class="mt-1 max-w-2xl text-sm leading-6 text-[hsl(var(--muted-foreground))]">
+									Elige un challenge disponible. La recompensa se añade a la hucha al canjearlo y se inicia su periodo de espera.
+								</p>
+							</div>
+
+							<div class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4 shadow-sm">
+								<label class="block max-w-sm">
+									<span class={fieldLabelClass}>Pagador</span>
+									<select class={inputClass} value={couponPayerUserId} onchange={handleCouponPayerSelection} disabled={!data.backendAvailable || !data.usersLoaded} data-testid="challenge-payer">
+										<option value="" disabled>Selecciona un pagador</option>
+										{#if !data.usersLoaded}<option value={couponPayerUserId} disabled>Cargando personas…</option>{/if}
+										{#each data.users as user}<option value={String(user.id)}>{user.username}</option>{/each}
+									</select>
+								</label>
+							</div>
+
+							<ChallengeDefinitionsPanel
+								{challenges}
+								busy={catalogMutationBusy}
+								error={challengesError}
+								onSave={saveChallengeDefinition}
+								onDelete={removeChallengeDefinition}
+							/>
+
+							<ChallengesPanel
+								{challenges}
+								loaded={challengesLoaded}
+								loading={challengesLoading}
+								error={challengesError}
+								redeemingCode={redeemingChallengeCode}
+								onRedeem={redeemSelectedChallenge}
+								onRetry={authSession ? () => void loadChallenges(authSession, Number(couponPayerUserId), true) : undefined}
 							/>
 						</section>
 
@@ -6849,6 +7732,7 @@
 								initialShoppingList={activeEstablishedMenu.shoppingList}
 								initialUsedStock={activeEstablishedMenu.usedStock}
 								initialWeekStock={activeEstablishedMenu.weekStock}
+								initialRecipeProductions={activeEstablishedMenu.recipeProductions ?? []}
 								showPanel={false}
 								openToken={menuCloseDialogNonce}
 								onClosed={
@@ -6863,10 +7747,11 @@
 							/>
 						{/if}
 
-						<MenuMealsTable
-							menus={data.menus}
-							loaded={data.menusLoaded}
-							selectedMenuId={selectedMenuId}
+		<MenuMealsTable
+			menus={data.menus}
+			loaded={data.menusLoaded}
+			authorization={authSession ? authorizationHeader(authSession) : ''}
+			selectedMenuId={selectedMenuId}
 							onSelectMenu={selectMenu}
 							onEditMenu={editEstablishedMenu}
 							onDeleteMenu={undoEstablishedMenu}
@@ -7025,6 +7910,7 @@
 								initialShoppingList={activeMenu.shoppingList}
 								initialUsedStock={activeMenu.usedStock}
 								initialWeekStock={activeMenu.weekStock}
+								initialRecipeProductions={activeMenu.recipeProductions ?? []}
 							/>
 							<section class="grid gap-3 md:grid-cols-2 xl:grid-cols-4" aria-label="Metricas del menu">
 								<div data-testid="menu-planned-days-card">
@@ -7033,7 +7919,7 @@
 									</MetricCard>
 								</div>
 								<div data-testid="menu-calories-card">
-									<MetricCard label="Calorias" value={formatNumber(activeMenu.nutritionalValues.calories)} hint="Total del menú">
+									<MetricCard label="Calorías medias" value={formatNumber(activeMenu.stockSummary.calories.averagePerPlannedDay)} hint="kcal por día planificado">
 										<Flame class="size-4" aria-hidden="true" />
 									</MetricCard>
 								</div>
@@ -7703,10 +8589,36 @@
 							Introduce la informacion basica y los valores por 100g.
 						</p>
 					</div>
-					<Button variant="ghost" size="icon" type="button" onclick={closeModal} aria-label="Cerrar modal">
-						<X class="size-4" aria-hidden="true" />
-					</Button>
+					<div class="flex shrink-0 items-center gap-1">
+						<Button
+							type="button"
+							variant="secondary"
+							size="sm"
+							onclick={pasteCreateProduct}
+							title="Pegar datos de producto desde JSON"
+							data-testid="create-product-paste"
+						>
+							<ClipboardPaste class="size-4" aria-hidden="true" />
+							Pegar
+						</Button>
+						<Button variant="ghost" size="icon" type="button" onclick={closeModal} aria-label="Cerrar modal">
+							<X class="size-4" aria-hidden="true" />
+						</Button>
+					</div>
 				</div>
+				{#if createProductPasteFeedback}
+					<p
+						class={`mx-5 mt-4 rounded-md border px-3 py-2 text-sm ${
+							createProductPasteFeedback.isError
+								? 'border-[hsl(var(--destructive)/0.35)] bg-[hsl(var(--destructive)/0.08)] text-[hsl(var(--destructive))]'
+								: 'border-[hsl(var(--accent)/0.35)] bg-[hsl(var(--accent)/0.08)] text-[hsl(var(--foreground))]'
+						}`}
+						role="alert"
+						data-testid="create-product-paste-feedback"
+					>
+						{createProductPasteFeedback.text}
+					</p>
+				{/if}
 
 				<form
 					enctype="multipart/form-data"
@@ -7753,6 +8665,11 @@
 									{/if}
 								</label>
 
+								<label class="flex min-w-0 items-start gap-3 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.16)] px-3 py-2.5 md:col-span-2">
+									<input class="mt-0.5 size-4 rounded border-[hsl(var(--input))] accent-[hsl(var(--primary))]" name="isStockInUnits" type="checkbox" bind:checked={createDraft.isStockInUnits} data-testid="create-stock-in-units" />
+									<span class="min-w-0"><span class="block text-sm font-medium text-[hsl(var(--foreground))]">El stock se mide en unidades</span><span class="mt-1 block text-xs text-[hsl(var(--muted-foreground))]">Las cantidades se mostrarán en unidades; se guardan internamente en gramos.</span></span>
+								</label>
+
 								<label class="block min-w-0">
 									<span class={fieldLabelClass}>Precio por defecto</span>
 									<input
@@ -7760,7 +8677,7 @@
 										name="defaultPrice"
 										type="number"
 										min="0"
-										step="any"
+										step="0.0001"
 										inputmode="decimal"
 										bind:value={createDraft.defaultPrice}
 										data-testid="create-default-price"
@@ -7999,19 +8916,24 @@
 											bind:value={editDraft.gramsPerUnit}
 											data-testid="edit-grams-per-unit"
 										/>
-										{#if updateErrors().gramsPerUnit}
-											<small class={fieldErrorClass}>{updateErrors().gramsPerUnit}</small>
-										{/if}
-									</label>
+									{#if updateErrors().gramsPerUnit}
+										<small class={fieldErrorClass}>{updateErrors().gramsPerUnit}</small>
+									{/if}
+								</label>
 
-									<label class="block min-w-0">
+								<label class="flex min-w-0 items-start gap-3 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.16)] px-3 py-2.5 md:col-span-2">
+									<input class="mt-0.5 size-4 rounded border-[hsl(var(--input))] accent-[hsl(var(--primary))]" name="isStockInUnits" type="checkbox" bind:checked={editDraft.isStockInUnits} data-testid="edit-stock-in-units" />
+									<span class="min-w-0"><span class="block text-sm font-medium text-[hsl(var(--foreground))]">El stock se mide en unidades</span><span class="mt-1 block text-xs text-[hsl(var(--muted-foreground))]">Las cantidades se mostrarán en unidades; se guardan internamente en gramos.</span></span>
+								</label>
+
+								<label class="block min-w-0">
 										<span class={fieldLabelClass}>Precio por defecto</span>
 										<input
 											class={inputClass}
 											name="defaultPrice"
 											type="number"
 											min="0"
-											step="any"
+											step="0.0001"
 											inputmode="decimal"
 											bind:value={editDraft.defaultPrice}
 											data-testid="edit-default-price"
@@ -8320,7 +9242,7 @@
 							</div>
 							<div class="grid gap-4 md:grid-cols-2">
 								<label class="block min-w-0 md:col-span-2">
-									<span class={fieldLabelClass}>Cantidad</span>
+									<span class={fieldLabelClass}>Cantidad ({stockQuantityLabel(stockProduct)})</span>
 									<input
 										class={inputClass}
 										name="quantity"
@@ -8340,10 +9262,14 @@
 										class={inputClass}
 										name="price"
 										inputmode="decimal"
-										step="any"
+										step="0.0001"
 										bind:value={stockDraft.price}
+										aria-describedby="stock-price-help"
 										data-testid="stock-price"
 									/>
+									<small id="stock-price-help" class="mt-1 block text-xs text-[hsl(var(--muted-foreground))]">
+										Admite operaciones, por ejemplo: (5 + 12) / 10.
+									</small>
 									{#if stockErrors().price}
 										<small class={fieldErrorClass}>{stockErrors().price}</small>
 									{/if}
@@ -9082,26 +10008,62 @@
 							type="submit"
 							form="week-day-form"
 							size="sm"
-							disabled={!data.backendAvailable || data.proposedWeekMenuDayParts.length === 0}
+							disabled={!data.backendAvailable || data.proposedWeekMenuDayParts.length === 0 || weekDaySaving}
 						>
-							<Save class="size-4" aria-hidden="true" />
-							Guardar
+							{#if weekDaySaving}<RefreshCw class="size-4 animate-spin" aria-hidden="true" />{:else}<Save class="size-4" aria-hidden="true" />{/if}
+							{weekDaySaving ? 'Guardando…' : 'Guardar'}
 						</Button>
-						<Button variant="ghost" size="icon" type="button" onclick={closeModal} aria-label="Cerrar modal">
+						<Button variant="ghost" size="icon" type="button" onclick={closeModal} aria-label="Cerrar modal" disabled={weekDaySaving}>
 							<X class="size-4" aria-hidden="true" />
 						</Button>
 					</div>
 				</div>
 
 				<form id="week-day-form" class="space-y-6 p-5" onsubmit={submitUpsertWeekDay} data-testid="week-day-form">
-					<fieldset class="space-y-6" disabled={!data.backendAvailable}>
+				<fieldset class="space-y-6" disabled={!data.backendAvailable || weekDaySaving}>
 						<section class="space-y-4">
-							<div>
-								<h3 class="text-sm font-semibold text-[hsl(var(--foreground))]">Dia</h3>
-								<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
-									Elige una fecha dentro del rango de la semana activa.
-								</p>
+							<div class="flex flex-wrap items-start justify-between gap-3">
+								<div>
+									<h3 class="text-sm font-semibold text-[hsl(var(--foreground))]">Dia</h3>
+									<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
+										Elige una fecha dentro del rango de la semana activa.
+									</p>
+								</div>
+								<Button type="button" variant="secondary" size="sm" onclick={pasteCopiedWeekDay} data-testid="week-day-paste">
+									<ClipboardPaste class="size-4" aria-hidden="true" />
+									Pegar día completo
+								</Button>
 							</div>
+							{#if weekDayClipboardMessage}
+								<p class="rounded-md border border-[hsl(var(--accent)/0.35)] bg-[hsl(var(--accent)/0.08)] px-3 py-2 text-sm text-[hsl(var(--foreground))]" role="status" data-testid="week-day-paste-feedback">
+									{weekDayClipboardMessage}
+								</p>
+							{/if}
+							{#if weekDayClipboardImportOpen}
+								<div class="space-y-2">
+									<label class="block min-w-0">
+										<span class={fieldLabelClass}>Menú diario copiado</span>
+										<textarea
+											class={`${inputClass} min-h-24 resize-y font-mono text-xs`}
+											bind:this={weekDayClipboardImportInput}
+											bind:value={weekDayClipboardImportText}
+											onpaste={(event) => {
+												const text = event.clipboardData?.getData('text');
+												if (!text) return;
+												event.preventDefault();
+												weekDayClipboardImportText = text;
+												importCopiedWeekDay(text);
+											}}
+											placeholder="Pulsa Ctrl/Cmd + V"
+											data-testid="week-day-paste-input"
+										></textarea>
+									</label>
+									<Button type="button" variant="secondary" size="sm" onclick={() => importCopiedWeekDay()} data-testid="week-day-paste-import">
+										<ClipboardPaste class="size-4" aria-hidden="true" />
+										Importar día
+									</Button>
+								</div>
+							{/if}
 							<label class="block min-w-0">
 								<span class={fieldLabelClass}>Fecha</span>
 								<input
@@ -9184,12 +10146,28 @@
 														<Plus class="size-4" aria-hidden="true" />
 														Catálogo
 													</Button>
-													<Button type="button" variant="secondary" size="sm" onclick={() => addWeekDayManualProduct(sectionIndex)}>
-														<Plus class="size-4" aria-hidden="true" />
-														Manual
-													</Button>
-												</div>
-											</div>
+														<Button type="button" variant="secondary" size="sm" onclick={() => addWeekDayManualProduct(sectionIndex)}>
+															<Plus class="size-4" aria-hidden="true" />
+															Manual
+														</Button>
+															<Button
+																type="button"
+																variant="secondary"
+																size="sm"
+																	onclick={() => pasteWeekDaySection(sectionIndex)}
+																	title="Pegar un producto manual JSON o la sección copiada"
+															data-testid={`week-section-paste-${sectionIndex}`}
+														>
+															<ClipboardPaste class="size-4" aria-hidden="true" />
+															Pegar
+														</Button>
+													</div>
+																	{#if weekDaySectionClipboardMessage?.sectionIndex === sectionIndex}
+																		<p class="rounded-md border border-[hsl(var(--accent)/0.35)] bg-[hsl(var(--accent)/0.08)] px-3 py-2 text-sm text-[hsl(var(--foreground))]" role="alert" data-testid="week-section-paste-feedback">
+																			{weekDaySectionClipboardMessage.text}
+														</p>
+													{/if}
+													</div>
 
 											{#if weekDayErrors().sectionErrors?.[sectionIndex]?.products}
 												<p class="rounded-md border border-[hsl(var(--destructive)/0.2)] bg-[hsl(var(--destructive)/0.06)] px-3 py-2 text-sm text-[hsl(var(--destructive))]">
@@ -9400,13 +10378,14 @@
 					</fieldset>
 
 					<div class="flex flex-col-reverse gap-2 border-t border-[hsl(var(--border))] pt-5 sm:flex-row sm:justify-end">
-						<Button variant="secondary" type="button" onclick={closeModal}>Cancelar</Button>
+						<Button variant="secondary" type="button" onclick={closeModal} disabled={weekDaySaving}>Cancelar</Button>
 					<Button
 						type="submit"
-						disabled={!data.backendAvailable}
+						disabled={!data.backendAvailable || weekDaySaving}
+						data-testid="week-day-save"
 					>
-							<Save class="size-4" aria-hidden="true" />
-							Guardar menu
+							{#if weekDaySaving}<RefreshCw class="size-4 animate-spin" aria-hidden="true" />{:else}<Save class="size-4" aria-hidden="true" />{/if}
+							{weekDaySaving ? 'Guardando menú…' : 'Guardar menu'}
 						</Button>
 					</div>
 				</form>
@@ -9608,9 +10587,9 @@
 													<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Producto #{requirement.productId}</p>
 												</div>
 											</td>
-											<td class="px-3 py-3 text-right align-top tabular-nums">{formatNumber(requirement.requiredUnits)}</td>
-											<td class="px-3 py-3 text-right align-top tabular-nums">{formatNumber(requirement.availableUnits)}</td>
-											<td class="px-3 py-3 text-right align-top tabular-nums">{formatNumber(requirement.missingUnits)}</td>
+											<td class="px-3 py-3 text-right align-top tabular-nums">{stockRequirementQuantity(requirement.requiredUnits, requirement.isStockInUnits)}</td>
+											<td class="px-3 py-3 text-right align-top tabular-nums">{stockRequirementQuantity(requirement.availableUnits, requirement.isStockInUnits)}</td>
+											<td class="px-3 py-3 text-right align-top tabular-nums">{stockRequirementQuantity(requirement.missingUnits, requirement.isStockInUnits)}</td>
 											<td class="px-4 py-3 text-right align-top tabular-nums">{formatCurrency(requirement.estimatedCost)}</td>
 										</tr>
 									{/each}
@@ -9632,15 +10611,15 @@
 									<dl class="grid grid-cols-2 gap-2 text-sm">
 										<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-2.5">
 											<dt class="text-xs text-[hsl(var(--muted-foreground))]">Necesarias</dt>
-											<dd class="mt-1 font-medium tabular-nums">{formatNumber(requirement.requiredUnits)}</dd>
+											<dd class="mt-1 font-medium tabular-nums">{stockRequirementQuantity(requirement.requiredUnits, requirement.isStockInUnits)}</dd>
 										</div>
 										<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-2.5">
 											<dt class="text-xs text-[hsl(var(--muted-foreground))]">Disponibles</dt>
-											<dd class="mt-1 font-medium tabular-nums">{formatNumber(requirement.availableUnits)}</dd>
+											<dd class="mt-1 font-medium tabular-nums">{stockRequirementQuantity(requirement.availableUnits, requirement.isStockInUnits)}</dd>
 										</div>
 										<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-2.5">
 											<dt class="text-xs text-[hsl(var(--muted-foreground))]">Faltan</dt>
-											<dd class="mt-1 font-medium tabular-nums">{formatNumber(requirement.missingUnits)}</dd>
+											<dd class="mt-1 font-medium tabular-nums">{stockRequirementQuantity(requirement.missingUnits, requirement.isStockInUnits)}</dd>
 										</div>
 										<div class="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-2.5">
 											<dt class="text-xs text-[hsl(var(--muted-foreground))]">Coste estimado</dt>
@@ -9658,12 +10637,15 @@
 
 	{#if modalMode === 'product-picker' && productPickerTarget && authSession}
 		<ProductPickerDialog
-			title="Seleccionar producto"
-			description="Busca por nombre o usa los filtros avanzados para encontrar el producto exacto."
+			title={productPickerTarget.type === 'week-day-add' ? 'Añadir productos al menú' : 'Seleccionar producto'}
+			description={productPickerTarget.type === 'week-day-add' ? 'Elige la parte del día y añade uno o varios productos del catálogo.' : 'Busca por nombre o usa los filtros avanzados para encontrar el producto exacto.'}
 			authorization={authorizationHeader(authSession)}
 			products={productPickerProducts()}
-			selectedProductId={productPickerTarget.selectedProductId}
+			selectedProductId={productPickerTarget.type === 'week-day-add' ? '' : productPickerTarget.selectedProductId}
 			onSelect={selectProductFromPicker}
+			dayParts={productPickerTarget.type === 'week-day-add' ? orderedProposedWeekMenuDayParts() : []}
+			initialDayPartId={productPickerTarget.type === 'week-day-add' ? productPickerTarget.dayPartId : ''}
+			onAdd={productPickerTarget.type === 'week-day-add' ? addWeekDayProductFromPicker : undefined}
 			onClose={closeProductPicker}
 		/>
 	{/if}

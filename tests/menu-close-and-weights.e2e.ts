@@ -256,10 +256,27 @@ test('permite ajustar el stock temporal del menu y reducir la lista de la compra
 	await expect(page.getByTestId('menu-week-stock-item-0')).toContainText('1 uds · 2,50 €');
 	await expect(page.getByTestId('menu-week-stock-item-1')).toContainText('Apple');
 	await expect(page.getByTestId('menu-week-stock-item-1')).toContainText('2 uds · 3,10 €');
+	const stockBeforeCloseResponse = await page.request.get(`${backendBaseUrl}/api/v1/products/1/stock`, { headers: authHeaders });
+	expect(stockBeforeCloseResponse.ok()).toBeTruthy();
+	const stockBeforeClose = await stockBeforeCloseResponse.json();
 
 	await expect(menuSelector).toHaveValue(String(establishedMenu.id));
 	await page.getByTestId('menu-week-close-menu').click();
-	await Promise.all([
+	const positiveStockCheckbox = page.getByRole('checkbox', { name: 'Añadir Apple al stock global' });
+	await expect(positiveStockCheckbox).toBeChecked();
+	await expect(page.getByTestId('close-menu-dialog')).toContainText('3 uds');
+	await page.setViewportSize({ width: 375, height: 812 });
+	const mobilePositiveStockCheckbox = page.getByTestId('close-positive-stock-mobile-1');
+	await expect(mobilePositiveStockCheckbox).toBeVisible();
+	await expect(mobilePositiveStockCheckbox).toBeChecked();
+	await mobilePositiveStockCheckbox.uncheck();
+	await expect(page.getByTestId('close-menu-dialog')).toContainText('Positivos al stock global');
+	const [closeRequest] = await Promise.all([
+		page.waitForRequest(
+			(request) =>
+				request.method() === 'POST' &&
+				request.url().endsWith(`/api/v1/menus/${establishedMenu.id}/close`)
+		),
 		page.waitForResponse(
 			(response) =>
 				response.request().method() === 'POST' &&
@@ -268,6 +285,13 @@ test('permite ajustar el stock temporal del menu y reducir la lista de la compra
 		),
 		page.getByTestId('close-menu-dialog').getByRole('button', { name: 'Confirmar cierre' }).click()
 	]);
+	expect(closeRequest.postDataJSON()).toEqual({
+		personIds: [1],
+		excludedPositiveStockProductIds: [1]
+	});
+	const stockAfterCloseResponse = await page.request.get(`${backendBaseUrl}/api/v1/products/1/stock`, { headers: authHeaders });
+	expect(stockAfterCloseResponse.ok()).toBeTruthy();
+	expect(await stockAfterCloseResponse.json()).toEqual(stockBeforeClose);
 	await expect(page.getByTestId('close-menu-dialog')).toHaveCount(0);
 	await expect(menuSelector).toHaveValue(String(dummyEstablishedMenu.id));
 	await expect(page.getByTestId('menu-week-panel')).toBeVisible();

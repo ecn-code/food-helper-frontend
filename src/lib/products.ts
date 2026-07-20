@@ -26,6 +26,7 @@ export type Product = {
 	name: string;
 	description: string;
 	gramsPerUnit: number;
+	isStockInUnits: boolean;
 	nutritionBasis: NutritionBasis;
 	defaultPrice: number | null;
 	nutritionalValues: NutritionalValues;
@@ -38,6 +39,7 @@ export type ProductFormValues = {
 	name: string;
 	description: string;
 	gramsPerUnit: string;
+	isStockInUnits: boolean;
 	defaultPrice: string;
 	calories: string;
 	carbohydrates: string;
@@ -52,6 +54,7 @@ export const emptyProductForm = (): ProductFormValues => ({
 	name: '',
 	description: '',
 	gramsPerUnit: '100',
+	isStockInUnits: false,
 	defaultPrice: '',
 	calories: '',
 	carbohydrates: '',
@@ -64,6 +67,7 @@ export const toProductFormValues = (product: Product): ProductFormValues => ({
 	name: product.name,
 	description: product.description,
 	gramsPerUnit: String(product.gramsPerUnit ?? 100),
+	isStockInUnits: product.isStockInUnits ?? false,
 	defaultPrice: product.defaultPrice === null || product.defaultPrice === undefined ? '' : String(product.defaultPrice),
 	calories: String(product.nutritionalValues.calories),
 	carbohydrates: String(product.nutritionalValues.carbohydrates),
@@ -74,4 +78,12 @@ export const toProductFormValues = (product: Product): ProductFormValues => ({
 
 export function productQuantityMode(product: Pick<Product, 'nutritionBasis'> | null | undefined): 'units' | 'grams' {
 	return product?.nutritionBasis === 'PER_UNIT' ? 'units' : 'grams';
+}
+
+export function stockQuantityLabel(product: Pick<Product, 'isStockInUnits'> | null | undefined) {
+	return product?.isStockInUnits ? 'Unidades' : 'Gramos';
+}
+
+export function stockQuantityToStoredGrams(quantity: number, product: Pick<Product, 'isStockInUnits' | 'gramsPerUnit'>) {
+	return product.isStockInUnits ? quantity * product.gramsPerUnit : quantity;
 }
